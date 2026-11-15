@@ -69,7 +69,7 @@ graph LR
 - Binary layout: magic, format version, shape descriptor, weights (float32 LE), `head_scale`, `loudness`, `input_level_dbu`, name, CRC-32.
 - Reference outputs: render with NeuralAmpModelerCore's `tools/render.cpp` (`render --slim 0.25 model.nam in.wav out.wav`, which selects A2-Lite) on a fixed set of guitar DI recordings, and keep the results as test fixtures. Pin the core's commit. `render` prewarms before processing, so the references start from the settled zero-input state.
 - Inputs and fixtures: `docs/NAM_FORMAT.md` has the shape check, the weight stream, the forward pass, the metadata to keep, and the upstream example models for accept and reject cases.
-- Open: where the shared converter code lives (`editor/` versus `tools/`), how to handle a model without `loudness`, and which DI recordings to use (no DI recordings are in the repo yet; upstream's `example_audio/input.wav` is 2 s).
+- Decided: the converter lives in `editor/src/nam/` and the CLI is `tools/nam_convert.ts`. A model without an A2-Lite `loudness` is accepted, flagged, and plays at unity. The DI stimulus is the first 20 s of the left channel of the sibling projects' `guitar.wav` (local, in `renders/`); upstream's MIT fixtures and the `A2.nam` reference are committed under `tests/fixtures/nam/`. Format and commands: `docs/NAM_FORMAT.md` "Ducky model binary (format 1)" and "Reference renders".
 - **Done when:** both development models convert, and models with a non-Lite shape are rejected with a named reason.
 
 ### M2: A2-Lite engine on the PC

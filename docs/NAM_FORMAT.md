@@ -97,7 +97,7 @@ The last layer's residual output `x_23` is unused. Each layer keeps `(K_l−1)·
 | `loudness` (dB) | **the A2-Lite submodel's own** `model.metadata` | Output level-matching (Knob 2 at noon). The top-level `loudness` belongs to A2-Full, which is the one NAM's `apply_metadata` reads. The two values differ by about 0.1 dB in the development models. |
 | `head_scale` | the A2-Lite weight stream's last float | Part of the network. |
 
-Any field may be missing in other files. `loudness` is optional in NAM (`HasLoudness`), so M1 must decide how to handle a model without it: reject it, or store "unknown" and play it at unity.
+Any field may be missing in other files. `loudness` is optional in NAM (`HasLoudness`). A model without an A2-Lite `loudness` is accepted, plays at unity, and the converter warns (see the binary's `FLAG_HAS_LOUDNESS`).
 
 ## Development models
 
@@ -117,3 +117,67 @@ Both come from TONE3000 (`trainer`), with `input_level_dbu` 15 and `output_level
 | `example_models/wavenet_a1_standard.nam` | Plain `WaveNet`, two layer arrays (16 and 8 channels): an A1 model | Reject: not a container |
 | `example_models/wavenet_a2_feature_test.nam` | Plain `WaveNet`, 4 channels, A2 features exercised | Reject: not a container |
 | `example_audio/input.wav` | 48 kHz, 24-bit, mono, 96,000 frames (2 s) | A short stimulus for reference renders |
+
+## Ducky model binary (format 1)
+
+The converter (`editor/src/nam/convert.ts`, CLI `bun tools/nam_convert.ts IN.nam...`, which writes `IN.bin`) turns the A2-Lite submodel into a fixed 7652-byte image. M2 (the PC engine) and M6 (the pedal) read this format. All values are little-endian.
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | `u8[4]` | magic `"DKNM"` |
+| 4 | `u16` | format version `1` |
+| 6 | `u16` | flags: bit 0 `FLAG_HAS_LOUDNESS`, bit 1 `FLAG_HAS_INPUT_LEVEL` |
+| 8 | `u32` | total size `7652` |
+| 12 | `u8` ×4 | channels 3, bottleneck 3, layers 23, head kernel 16 |
+| 16 | `u8[23]` | kernel sizes |
+| 39 | `u8` | pad 0 |
+| 40 | `u16[23]` | dilations |
+| 86 | `u16` | pad 0 |
+| 88 | `u32` | weight count `1870` |
+| 92 | `f32[1870]` | the A2-Lite `weights[0..1869]` in the "Weight stream" order above, without the trailing `head_scale` |
+| 7572 | `f32` | `head_scale` = `weights[1870]` (not `config.head_scale`) |
+| 7576 | `f32` | A2-Lite `loudness` (dB); 0 when the flag is clear |
+| 7580 | `f32` | top-level `input_level_dbu`; 0 when the flag is clear |
+| 7584 | `u8[64]` | name, ASCII, NUL-padded (at most 63 characters, so always NUL-terminated) |
+| 7648 | `u32` | CRC-32 of bytes `[0, 7648)` |
+
+- **Floats:** each JSON double is rounded to float32.
+- **CRC-32:** IEEE 802.3 / zlib (reflected polynomial `0xEDB88320`, init and final XOR `0xFFFFFFFF`; check value `crc32("123456789") = 0xCBF43926`).
+- **Name:** the top-level `metadata.name`, trimmed, when it is a non-empty string, else the file's basename without `.nam`. Every code point outside U+0020–U+007E becomes `?`, then the name is cut to 63 characters. The pedal's LOG lines are printable ASCII.
+- **Flags:** without `FLAG_HAS_LOUDNESS` the model plays at unity (no level-matching). Without `FLAG_HAS_INPUT_LEVEL` the editor shows the input level as "unknown".
+
+### Reject reasons
+
+The converter throws `ModelRejected(reason, detail)`; the detail names the JSON path and the value found. Checks run in this order:
+
+| Reason | Meaning |
+|---|---|
+| `not-json` | Not JSON, or the top level is not an object. |
+| `not-container` | `architecture` is not `SlimmableContainer` (plain `WaveNet` files: A1 models, or an A2-Full exported alone). |
+| `no-lite-submodel` | No `config.submodels` entry has `max_value` 0.5. |
+| `not-wavenet` | The 0.5 submodel's `architecture` is not `WaveNet`. |
+| `sample-rate` | The 0.5 submodel's `sample_rate` is not 48000. |
+| `shape` | The submodel fails the A2-Lite shape above (upstream `is_a2_shape`, `NAM/wavenet/a2_fast.cpp:832-984`, with its absent-key defaults, plus `channels` 3). An 8-channel model's detail says `(A2-Full)`. |
+| `weights` | `weights` is not exactly 1871 finite numbers. |
+
+## Reference renders
+
+`tools/nam_reference.sh` clones NeuralAmpModelerCore into `build/namcore`, pins it at `d3189ed482ded880c128bf312941266c4fa5ceec` (with its Eigen and AudioDSPTools submodules), and builds `build/namcore-render` with plain `g++ -std=c++20 -O2 -DNAM_ENABLE_A2_FAST` (upstream's CMake fails under CMake 4.5; `-O2` instead of Release's `-Ofast` keeps the references strict IEEE). Every render uses `--slim 0.25`, so the A2-Lite submodel runs. Outputs are mono float32 at 48 kHz, the stimulus's length, and start from the prewarmed state (the first sample of `A2.input.ref.wav` is about −9.74e-4, not 0).
+
+```
+tools/nam_reference.sh          # ~1 min the first time (the build); rerunning rewrites identical files
+uv run tools/make_stimuli.py    # just the guitar stimulus; --guitar WAV for another copy of the pinned file
+bun tools/nam_convert.ts models/*.nam
+make -C editor test check       # converter tests, tsc, Biome
+```
+
+| File | Source | Committed |
+|---|---|---|
+| `tests/fixtures/nam/A2.nam`, `slimmable_container.nam`, `wavenet_a2_feature_test.nam` | upstream `example_models/` at `d3189ed`, byte-for-byte (`A2.nam` sha256 `2d2d7445…fcf4ca`) | yes |
+| `tests/fixtures/nam/input.wav` | upstream `example_audio/input.wav` (mono, 24-bit, 48 kHz, 96,000 frames) | yes |
+| `tests/fixtures/nam/LICENSE` | upstream `LICENSE` (MIT, Steven Atkinson), which covers the files above | yes |
+| `tests/fixtures/nam/A2.input.ref.wav` | `render --slim 0.25 A2.nam input.wav` | yes |
+| `renders/stimuli/guitar_di.wav` | `make_stimuli.py`: left channel, first 20 s (960,000 frames) of `../spx90/guitar.wav` (16-bit stereo 48 kHz, sha256 `af49eb8e…7828f3`), as float32 | no (`renders/` is ignored) |
+| `renders/ref/<model>.<stimulus>.ref.wav` | every `models/*.nam` and `A2.nam` on `input.wav` and `guitar_di.wav` | no (TONE3000 models stay local) |
+
+`guitar.wav` stands in for a DI recording: its channels differ and it peaks at −0.05 dBFS. `make_stimuli.py` refuses any file whose sha256 differs from the pin.

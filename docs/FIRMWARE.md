@@ -44,6 +44,8 @@ uv run tools/usb_log.py 10 --identity   # 10 s of log, preceded by the Identity 
 | `daisy/STM32H750IB_sram_ducky.lds` | libDaisy's BOOT_SRAM script plus the `.dtcm_data`, `.itcm_text`, `.d2_bss`, `.sdram_bss` sections and the 16 KB stack reserve. | |
 | `tests/` | GoogleTest for the host-portable headers. Never include `board.h`, `firmware.h` or `usb_link.h` here. | |
 | `tools/usb_log.py`, `tools/flash_when_ready.sh` | Log reader with `--identity` and `--dfu`, and the flasher. | |
+| `editor/src/nam/`, `tools/nam_convert.ts`, `tools/nam_reference.sh`, `tools/make_stimuli.py` | The `.nam` → model binary converter and its CLI, the NAM reference renders, and their stimulus (`docs/NAM_FORMAT.md`). | |
+| `tests/fixtures/nam/` | Upstream MIT `.nam` and WAV fixtures and the committed `A2.nam` reference render. | |
 
 - **Naming:** namespaces are `dkboard`, `dkfw`, `dkusb`, `dklink`, `dkctl` and `dkdsp`. Macros use the `DK_` prefix, and the board define is `DUCKY_BOARD_HOTHOUSE`.
 - **DSP code** goes under `daisy/src/dsp/`, host-portable and covered by `tests/`. The top-level `Makefile` rebuilds the tests whenever any `daisy/src/*.h`, `daisy/src/dsp/*.h` or `tests/*.h` changes.
