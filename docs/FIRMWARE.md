@@ -15,7 +15,7 @@ This needs `arm-none-eabi-gcc` (tested with 13.3.rel1), `dfu-util`, `uv`, `g++`,
 ## Build, test, flash, log
 
 ```sh
-make test                        # host GoogleTest: build/host/tests (tests/*.cpp)
+make test                        # host GoogleTest: build/host/tests (tests/*.cpp); also builds build/host/render
 make -C daisy -j                 # daisy/build/hothouse/ducky.bin; the link prints the memory-usage table
 tools/flash_when_ready.sh        # sends DFU over USB-MIDI, waits for 0483:df11, flashes 0x90040000
 uv run tools/usb_log.py 10 --identity   # 10 s of log, preceded by the Identity Reply
@@ -42,16 +42,19 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `daisy/src/controls.h` | `dkctl::ToggleFilter` (30 ms toggle hysteresis). | yes |
 | `daisy/src/dsp/blocks.h` | `dkdsp::kSampleRate` (48 kHz), `kBlockSize` (48). | yes |
 | `daisy/src/dsp/mute.h` | `dkdsp::MuteRamp`: FS1's 5 ms linear mute. | yes |
+| `daisy/src/dsp/a2lite.h` | `dkdsp::A2Lite`: the A2-Lite network (`docs/NAM_FORMAT.md` "PC engine"); `dkdsp::a2` holds the shape and memory layout. | yes |
+| `daisy/src/model.h` | `dkmodel::Parse`: validates and decodes a format-1 model binary; `Crc32`. | yes |
 | `daisy/src/memory.h/.cpp` | `DK_ITCM`, `DK_DTCM`, `DK_D2`, `DK_SDRAM` placement and the boot-time TCM copy. | yes (`.h`) |
 | `daisy/src/spsc_ring.h` | The lock-free single-producer/single-consumer ring (USB IRQ → main loop). | yes |
 | `daisy/STM32H750IB_sram_ducky.lds` | libDaisy's BOOT_SRAM script plus the `.dtcm_data`, `.itcm_text`, `.d2_bss`, `.sdram_bss` sections and the 16 KB stack reserve. | |
 | `tests/` | GoogleTest for the host-portable headers. Never include `board.h`, `firmware.h` or `usb_link.h` here. | |
 | `tools/usb_log.py`, `tools/flash_when_ready.sh` | Log reader with `--identity` and `--dfu`, and the flasher. | |
 | `editor/src/nam/`, `tools/nam_convert.ts`, `tools/nam_reference.sh`, `tools/make_stimuli.py` | The `.nam` → model binary converter and its CLI, the NAM reference renders, and their stimulus (`docs/NAM_FORMAT.md`). | |
-| `tests/fixtures/nam/` | Upstream MIT `.nam` and WAV fixtures and the committed `A2.nam` reference render. | |
+| `tools/render.cpp`, `tools/wav.h` | `build/host/render` (`make render`): the engine over a WAV file; `dkwav` WAV reading and float32 writing (host only). | |
+| `tests/fixtures/nam/` | Upstream MIT `.nam` and WAV fixtures, `A2.bin` converted from `A2.nam`, and the committed `A2.nam` reference render. | |
 
-- **Naming:** namespaces are `dkboard`, `dkfw`, `dkusb`, `dklink`, `dkctl` and `dkdsp`. Macros use the `DK_` prefix, and the board define is `DUCKY_BOARD_HOTHOUSE`.
-- **DSP code** goes under `daisy/src/dsp/`, host-portable and covered by `tests/`. The top-level `Makefile` rebuilds the tests whenever any `daisy/src/*.h`, `daisy/src/dsp/*.h` or `tests/*.h` changes.
+- **Naming:** namespaces are `dkboard`, `dkfw`, `dkusb`, `dklink`, `dkctl`, `dkdsp`, `dkmodel` and (host only) `dkwav`. Macros use the `DK_` prefix, and the board define is `DUCKY_BOARD_HOTHOUSE`.
+- **DSP code** goes under `daisy/src/dsp/`, host-portable and covered by `tests/`. The top-level `Makefile` rebuilds the tests and `render` whenever any `daisy/src/*.h`, `daisy/src/dsp/*.h`, `tests/*.h` or `tools/*.h` changes. Tests find fixtures through `DK_REPO_ROOT`, so `build/host/tests` runs from any directory.
 
 ## Threads
 

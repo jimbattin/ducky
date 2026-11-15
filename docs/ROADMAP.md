@@ -19,7 +19,7 @@ A living plan. Milestones are done in order; any of them may be revised, split, 
 | Hardware | Daisy Seed with 64 MB or more of SDRAM (development unit: Seed 1.2, 64 MB). HotHouse. |
 | SysEx | `F0 7D 64 <version> <cmd> … F7`. Device byte `0x64` is unused by sibling projects. Identity Reply and DFU command follow the bad_tape conventions. |
 | Editor | Preset manager plus live status: log, CPU load meter, knob/switch states. It does not control the knobs remotely, because the pedal is "what you see is what you get". |
-| Model files | `models/*.nam` and converted `*.bin` are git-ignored. Only upstream MIT fixtures (`tests/fixtures/nam/`) are committed. |
+| Model files | `models/*.nam` and converted `*.bin` are git-ignored. Only upstream MIT fixtures (`tests/fixtures/nam/`) are committed, plus `A2.bin` converted from upstream `A2.nam`. |
 
 ## Feasibility
 
@@ -74,11 +74,13 @@ graph LR
 - **Result:** `bun tools/nam_convert.ts` converts both development models and upstream `A2.nam` to 7652-byte format-1 binaries, and rejects upstream `slimmable_container.nam` (`no-lite-submodel`) and `wavenet_a2_feature_test.nam` (`not-container`). `tools/nam_reference.sh` renders A2-Lite references for every model on `input.wav` (96,000 samples) and the 20 s guitar stimulus (960,000 samples); reruns are bit-identical.
 - **Docs:** `docs/NAM_FORMAT.md` "Ducky model binary (format 1)" and "Reference renders".
 
-### M2: A2-Lite engine on the PC
+### M2: A2-Lite engine on the PC (done, `a60b2a9`)
 - Portable C++ that does not include libDaisy: block processing and constant-fill reset.
-- `host/render IN.wav OUT.wav --model X.bin`.
+- `build/host/render IN.wav OUT.wav --model X.bin`.
 - GoogleTest against the reference outputs.
 - **Done when:** the maximum error against the reference is about 1e-5, output is the same at any block size, and there are no NaNs or denormals.
+- **Result:** `dkdsp::A2Lite` (`daisy/src/dsp/a2lite.h`) matches all six reference renders bit for bit (max error 0), including both development models on the 20 s guitar stimulus. Output is bit-identical at block sizes 1, 7, 48, 100 and an irregular schedule. Ten seconds of silence then ±1e-40 input leave no NaN or subnormal in the output or the histories; subnormal inputs are flushed to zero. History 76,248 bytes, weights 7,480 bytes. On the PC (`-O2`, scalar) `render` runs about 23× real time.
+- **Docs:** `docs/NAM_FORMAT.md` "PC engine"; `docs/FIRMWARE.md` "Source layout".
 
 ### M3: Benchmark gate (go / no-go)
 - `APP=bench`: the model is compiled in, and the DWT cycle counter times each layer.

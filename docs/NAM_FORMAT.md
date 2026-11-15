@@ -175,9 +175,23 @@ make -C editor test check       # converter tests, tsc, Biome
 |---|---|---|
 | `tests/fixtures/nam/A2.nam`, `slimmable_container.nam`, `wavenet_a2_feature_test.nam` | upstream `example_models/` at `d3189ed`, byte-for-byte (`A2.nam` sha256 `2d2d7445…fcf4ca`) | yes |
 | `tests/fixtures/nam/input.wav` | upstream `example_audio/input.wav` (mono, 24-bit, 48 kHz, 96,000 frames) | yes |
+| `tests/fixtures/nam/A2.bin` | `bun tools/nam_convert.ts tests/fixtures/nam/A2.nam`; `editor/src/nam/convert.test.ts` checks it byte for byte | yes |
 | `tests/fixtures/nam/LICENSE` | upstream `LICENSE` (MIT, Steven Atkinson), which covers the files above | yes |
 | `tests/fixtures/nam/A2.input.ref.wav` | `render --slim 0.25 A2.nam input.wav` | yes |
 | `renders/stimuli/guitar_di.wav` | `make_stimuli.py`: left channel, first 20 s (960,000 frames) of `../spx90/guitar.wav` (16-bit stereo 48 kHz, sha256 `af49eb8e…7828f3`), as float32 | no (`renders/` is ignored) |
 | `renders/ref/<model>.<stimulus>.ref.wav` | every `models/*.nam` and `A2.nam` on `input.wav` and `guitar_di.wav` | no (TONE3000 models stay local) |
 
 `guitar.wav` stands in for a DI recording: its channels differ and it peaks at −0.05 dBFS. `make_stimuli.py` refuses any file whose sha256 differs from the pin.
+
+## PC engine
+
+`daisy/src/dsp/a2lite.h` (`dkdsp::A2Lite`) runs the network from a format-1 image parsed by `daisy/src/model.h` (`dkmodel::Parse`). It keeps upstream `A2FastModel<3>`'s per-output summation order (conv bias, taps oldest first, inputs 0..2 within a tap, then the mixin; the layer1x1 residual as `lb + L0·a0 + L1·a1 + L2·a2`), so on the host (`g++ -O2`, no FMA) its output is bit-identical to every reference render. Differences from upstream:
+
+- **Reset** fills every history with the settled zero-input state in one pass per layer (each ring holds the lookback plus the current frame), instead of running a receptive field of silence.
+- **Subnormal inputs** are flushed to zero (keeping the sign), so no history ever holds a subnormal.
+- **Block size:** `Process` takes any length and runs internally in chunks of `kBlockSize` (48); the output does not depend on how the input is split.
+
+```
+make render
+build/host/render IN.wav OUT.wav --model X.bin [--block N]   # mono float32 48 kHz; channel 0 of a multi-channel input
+```

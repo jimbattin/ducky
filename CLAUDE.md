@@ -46,7 +46,7 @@ This project lives in a private repo that will one day get its history squashed 
 - `daisy/`: Pedal code
 - `editor/`: Editor code (Bun + TS; `src/nam/` is the `.nam` converter shared with `tools/nam_convert.ts`)
 - `models/`: NAM Models (git-ignored)
-- `tests/`: Host GoogleTest; `tests/fixtures/nam/` holds upstream MIT NAM fixtures and the committed reference render
+- `tests/`: Host GoogleTest; `tests/fixtures/nam/` holds upstream MIT NAM fixtures, `A2.bin` converted from `A2.nam`, and the committed reference render
 - `renders/`: Local reference renders and stimuli (git-ignored)
 
 ## Reference material
