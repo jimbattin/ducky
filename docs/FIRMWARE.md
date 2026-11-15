@@ -10,7 +10,7 @@ make -C daisy/libDaisy                    # daisy/libDaisy/build/libdaisy.a
 uv sync                                   # .venv with pyusb for tools/usb_log.py
 ```
 
-This needs `arm-none-eabi-gcc` (tested with 13.3.rel1), `dfu-util`, `uv`, `g++`, and GoogleTest visible to `pkg-config gtest_main`.
+This needs `arm-none-eabi-gcc` (tested with 13.3.rel1), `dfu-util`, `uv`, `g++`, GoogleTest visible to `pkg-config gtest_main`, and Bun (tested with 1.4.4) for `editor/` and `tools/nam_convert.ts`. `make -C editor` installs the editor's dependencies on first use.
 
 ## Build, test, flash, log
 
@@ -19,6 +19,9 @@ make test                        # host GoogleTest: build/host/tests (tests/*.cp
 make -C daisy -j                 # daisy/build/hothouse/ducky.bin; the link prints the memory-usage table
 tools/flash_when_ready.sh        # sends DFU over USB-MIDI, waits for 0483:df11, flashes 0x90040000
 uv run tools/usb_log.py 10 --identity   # 10 s of log, preceded by the Identity Reply
+make -C editor test check        # converter tests (bun:test), tsc, Biome
+bun tools/nam_convert.ts models/*.nam   # .nam -> .bin next to each input (docs/NAM_FORMAT.md)
+tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Reference renders")
 ```
 
 - **Build options:** `daisy/Makefile` takes `BOARD=hothouse` (the only board) and `APP=ducky` (the only app; M3 adds `APP=bench`). The build directory is `daisy/build/<BOARD>`.

@@ -19,7 +19,7 @@ A living plan. Milestones are done in order; any of them may be revised, split, 
 | Hardware | Daisy Seed with 64 MB or more of SDRAM (development unit: Seed 1.2, 64 MB). HotHouse. |
 | SysEx | `F0 7D 64 <version> <cmd> … F7`. Device byte `0x64` is unused by sibling projects. Identity Reply and DFU command follow the bad_tape conventions. |
 | Editor | Preset manager plus live status: log, CPU load meter, knob/switch states. It does not control the knobs remotely, because the pedal is "what you see is what you get". |
-| Model files | `models/*.nam` are git-ignored. |
+| Model files | `models/*.nam` and converted `*.bin` are git-ignored. Only upstream MIT fixtures (`tests/fixtures/nam/`) are committed. |
 
 ## Feasibility
 
@@ -64,13 +64,15 @@ graph LR
 - **Measured:** the development unit reports `seed 1.2-pcm3060` (Seed 1.2, PCM3060 codec), sysclk 480 MHz, 48 kHz, 24-bit, 48-sample blocks. Passthrough load is avg 6 / max 7 permille with 0 underruns. DTCM 16.5 KB of 128 KB (including the 16 KB stack reserve), ITCM 1.2 KB, SRAM 124 KB of 480 KB.
 - **Docs:** `docs/FIRMWARE.md` covers build, flash, log, the source layout, threads, the memory map and the log lines.
 
-### M1: Model converter and reference outputs
+### M1: Model converter and reference outputs (done, `06a26cd`)
 - The `.nam` → binary converter is written in TypeScript and shared by the editor and a Bun command-line tool.
 - Binary layout: magic, format version, shape descriptor, weights (float32 LE), `head_scale`, `loudness`, `input_level_dbu`, name, CRC-32.
 - Reference outputs: render with NeuralAmpModelerCore's `tools/render.cpp` (`render --slim 0.25 model.nam in.wav out.wav`, which selects A2-Lite) on a fixed set of guitar DI recordings, and keep the results as test fixtures. Pin the core's commit. `render` prewarms before processing, so the references start from the settled zero-input state.
 - Inputs and fixtures: `docs/NAM_FORMAT.md` has the shape check, the weight stream, the forward pass, the metadata to keep, and the upstream example models for accept and reject cases.
-- Decided: the converter lives in `editor/src/nam/` and the CLI is `tools/nam_convert.ts`. A model without an A2-Lite `loudness` is accepted, flagged, and plays at unity. The DI stimulus is the first 20 s of the left channel of the sibling projects' `guitar.wav` (local, in `renders/`); upstream's MIT fixtures and the `A2.nam` reference are committed under `tests/fixtures/nam/`. Format and commands: `docs/NAM_FORMAT.md` "Ducky model binary (format 1)" and "Reference renders".
+- Decided: the converter lives in `editor/src/nam/` and the CLI is `tools/nam_convert.ts`. A model without an A2-Lite `loudness` is accepted, flagged, and plays at unity. The DI stimulus is the first 20 s of the left channel of the sibling projects' `guitar.wav` (local, in `renders/`); upstream's MIT fixtures and the `A2.nam` reference are committed under `tests/fixtures/nam/`.
 - **Done when:** both development models convert, and models with a non-Lite shape are rejected with a named reason.
+- **Result:** `bun tools/nam_convert.ts` converts both development models and upstream `A2.nam` to 7652-byte format-1 binaries, and rejects upstream `slimmable_container.nam` (`no-lite-submodel`) and `wavenet_a2_feature_test.nam` (`not-container`). `tools/nam_reference.sh` renders A2-Lite references for every model on `input.wav` (96,000 samples) and the 20 s guitar stimulus (960,000 samples); reruns are bit-identical.
+- **Docs:** `docs/NAM_FORMAT.md` "Ducky model binary (format 1)" and "Reference renders".
 
 ### M2: A2-Lite engine on the PC
 - Portable C++ that does not include libDaisy: block processing and constant-fill reset.
@@ -123,7 +125,7 @@ graph LR
 ### M9: Hardening and release prep
 - Stress tests: fast FS2 presses, uploading while playing, power loss during writes, rapid knob sweeps.
 - Docs: a top-level `README.md`, and bring `docs/FIRMWARE.md` (memory map, measured performance, log lines) up to date.
-- Licence review before the history is squashed.
+- Licence review before the history is squashed, including the upstream MIT fixtures and their `LICENSE` in `tests/fixtures/nam/`.
 
 ## Risks
 

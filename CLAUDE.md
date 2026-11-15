@@ -28,7 +28,7 @@ Presets contain the NAM Model and optional IR. They do not track Input/Output ga
 
 Roadmap, decisions, and milestones: `docs/ROADMAP.md`
 Firmware build/flash/log, source layout, memory map, log lines: `docs/FIRMWARE.md`
-NAM A2 format, A2-Lite shape check, weight order, forward pass: `docs/NAM_FORMAT.md`
+NAM A2 format, A2-Lite shape check, weight order, forward pass, Ducky model binary, converter, reference renders: `docs/NAM_FORMAT.md`
 
 ## Technology
 - Supports NAM A2-lite models
@@ -44,8 +44,10 @@ This project lives in a private repo that will one day get its history squashed 
 - `docs/`: Place all documentation here
 - `tools/`: Reusable tools go here. 
 - `daisy/`: Pedal code
-- `editor/`: Editor code
-- `models/`: NAM Models
+- `editor/`: Editor code (Bun + TS; `src/nam/` is the `.nam` converter shared with `tools/nam_convert.ts`)
+- `models/`: NAM Models (git-ignored)
+- `tests/`: Host GoogleTest; `tests/fixtures/nam/` holds upstream MIT NAM fixtures and the committed reference render
+- `renders/`: Local reference renders and stimuli (git-ignored)
 
 ## Reference material
 - STM32H7: `../dp4/manuals/an4891-stm32h72x-stm32h73x-and-singlecore-stm32h74x75x-system-architecture-and-performance-stmicroelectronics.pdf`
