@@ -183,13 +183,17 @@ make -C editor test check       # converter tests, tsc, Biome
 
 `guitar.wav` stands in for a DI recording: its channels differ and it peaks at −0.05 dBFS. `make_stimuli.py` refuses any file whose sha256 differs from the pin.
 
-## PC engine
+## Engine
 
-`daisy/src/dsp/a2lite.h` (`dkdsp::A2Lite`) runs the network from a format-1 image parsed by `daisy/src/model.h` (`dkmodel::Parse`). It keeps upstream `A2FastModel<3>`'s per-output summation order (conv bias, taps oldest first, inputs 0..2 within a tap, then the mixin; the layer1x1 residual as `lb + L0·a0 + L1·a1 + L2·a2`), so on the host (`g++ -O2`, no FMA) its output is bit-identical to every reference render. Differences from upstream:
+`daisy/src/dsp/a2lite.h` (`dkdsp::A2Lite`) runs the network from a format-1 image parsed by `daisy/src/model.h` (`dkmodel::Parse`). It keeps upstream `A2FastModel<3>`'s per-output summation order (conv bias, taps oldest first, inputs 0..2 within a tap, then the mixin; the layer1x1 residual as `lb + L0·a0 + L1·a1 + L2·a2`), so on the host (`g++ -O2`, no FMA) its output is bit-identical to every reference render. On the device, GCC contracts multiply-adds into FMAs; the error is then 241e-9 on `input.wav[48000, 72000)` (`docs/FIRMWARE.md` "Bench").
 
-- **Reset** fills every history with the settled zero-input state in one pass per layer (each ring holds the lookback plus the current frame), instead of running a receptive field of silence.
+Each chunk of up to 48 frames passes through every layer in turn. A layer reads its input `x_l` from its own history ring and writes `x_{l+1}` straight into the next layer's ring. It works in tiles of 6 frames whose 18 conv sums stay in registers across every kernel tap, then applies the tile's mixin, activation, head sum and residual. Each ring holds its lookback plus one chunk, followed by a 5-frame guard that mirrors its first 5 frames, so any 6 consecutive frames are contiguous in memory (90,600 bytes in all). The stages (`BeginChunk`, `RunLayer`, `EndChunk`) are public so the bench can time each layer. Why the code is shaped as load islands followed by runs of multiply-adds: `docs/M7_PERFORMANCE.md`. Differences from upstream, none of which changes a result bit:
+
+- **Reset** fills every history with the settled zero-input state in one pass per layer, instead of running a receptive field of silence.
 - **Subnormal inputs** are flushed to zero (keeping the sign), so no history ever holds a subnormal.
 - **Block size:** `Process` takes any length and runs internally in chunks of `kBlockSize` (48); the output does not depend on how the input is split.
+- **Leaky ReLU** is `max(z, 0.01·z)`, which equals `z ≥ 0 ? z : 0.01·z` for every `z` and needs no branch.
+- **The last layer's residual** `x_23` is not computed.
 
 ```
 make render

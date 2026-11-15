@@ -29,8 +29,8 @@ A living plan. Milestones are done in order; any of them may be revised, split, 
 | Multiply-adds per second at 48 kHz | ≈ 90 M | ≈ 583 M |
 | Estimated load at 480 MHz, 1.2–2 cycles per multiply-add | 22–37 % | 120–200 % |
 
-- Every weight is used about once per sample, so the multiply-add count tracks the weight count. The estimate assumes a hand-written float kernel that keeps each 3×3 tap matrix in registers across a block. This estimate is not yet measured: milestone M3 decides it.
-- The model looks back 6,346 samples (132 ms). Its history needs about 76 KB for 3 channels, and its weights 7.5 KB. Both fit in DTCM, the processor's fast internal RAM.
+- Every weight is used about once per sample, so the multiply-add count tracks the weight count. The estimate assumes a hand-written float kernel that keeps each 3×3 tap matrix in registers across a block. M3 measured 35 % (2.0 cycles per multiply-add, everything included).
+- The model looks back 6,346 samples (132 ms). Its history takes 91 KB for 3 channels (each layer's ring also holds one block and a 5-frame guard), and its weights 7.5 KB. Both fit in DTCM, the processor's fast internal RAM.
 - Reset is cheap: with silent input every layer settles to a constant value per channel. Compute those once at load time and fill the history with them, instead of running 132 ms of silence through the model.
 - A direct-form IR costs N multiply-adds per sample. A 2048-tap IR uses uniformly partitioned FFT convolution (CMSIS-DSP `arm_rfft_fast_f32`). The `daisy/libDaisy/Drivers/CMSIS-DSP` submodule is initialised by `git submodule update --init --recursive`.
 - NeuralAmpModelerCore has an A2-specific fast path (`NAM/wavenet/a2_fast.cpp`): a shape check, the weight loader and a scalar 3-channel kernel. It is still Eigen-based, but it is the readable reference for the M2 engine.
@@ -80,13 +80,16 @@ graph LR
 - GoogleTest against the reference outputs.
 - **Done when:** the maximum error against the reference is about 1e-5, output is the same at any block size, and there are no NaNs or denormals.
 - **Result:** `dkdsp::A2Lite` (`daisy/src/dsp/a2lite.h`) matches all six reference renders bit for bit (max error 0), including both development models on the 20 s guitar stimulus. Output is bit-identical at block sizes 1, 7, 48, 100 and an irregular schedule. Ten seconds of silence then ±1e-40 input leave no NaN or subnormal in the output or the histories; subnormal inputs are flushed to zero. History 76,248 bytes, weights 7,480 bytes. On the PC (`-O2`, scalar) `render` runs about 23× real time.
-- **Docs:** `docs/NAM_FORMAT.md` "PC engine"; `docs/FIRMWARE.md` "Source layout".
+- **Docs:** `docs/NAM_FORMAT.md` "Engine"; `docs/FIRMWARE.md` "Source layout".
 
-### M3: Benchmark gate (go / no-go)
+### M3: Benchmark gate (done, `0dd970e`)
 - `APP=bench`: the model is compiled in, and the DWT cycle counter times each layer.
 - Optimise: tap matrices held in registers, ITCM code, DTCM history, flush-to-zero.
 - **Done when:** model load is ≤ 45 % at a 48-sample block, and device output matches the PC within tolerance.
 - **If it fails:** try fixed-point or SIMD variants, a larger block, or ask NAM upstream for a smaller shape.
+- **Result (go):** `APP=bench` (`daisy/src/bench.cpp`) logs the device check, the gate and per-layer cycles. The model costs avg 350.7, max 351.9 permille of the 48-sample block against the 450 limit, and the device check passes with max error 241e-9 against the reference (host output is still bit-exact). The first engines measured 520–620 permille. What closed the gap was measuring the core instead of counting instructions: on the Cortex-M7 a load, store, move or add that follows a multiply-accumulate waits about 3 cycles, and GCC's scheduler interleaves them. The engine now runs 6-frame tiles as load islands followed by pure multiply-accumulate runs, with scheduling off, a branch-free leaky ReLU, and each layer writing straight into the next layer's ring. No fallback (fixed point, larger block, smaller shape) was needed.
+- **Also:** `.dtcm_bss` (`DK_DTCM_BSS`), a zeroed DTCM section with no load image, for the engine. `tools/usb_log.py --port` and `DK_USB_PORT` for `tools/flash_when_ready.sh` address one Seed by USB path when several are attached.
+- **Docs:** `docs/M7_PERFORMANCE.md` (the cost model, the rules for DSP code, how to measure); `docs/FIRMWARE.md` "Bench (M3)"; `docs/NAM_FORMAT.md` "Engine".
 
 ### M4: Live amp
 - The engine runs in the audio callback with one compiled-in model.
@@ -102,6 +105,7 @@ graph LR
   - The extreme knob position bypasses the filter.
 - Mid peaking filter for SW3.
 - Spec in `docs/FILTERS.md`; tests on the PC (frequency response, stability under knob sweeps, no clicks when switching slopes).
+- Kernels follow `docs/M7_PERFORMANCE.md`. The IR convolver's FFT is CMSIS-DSP's, built with libDaisy, and has not been measured on this core.
 - **Done when:** the whole chain stays within budget on hardware, measured by `APP=bench` and the live load meter.
 
 ### M6: Preset store and switching
@@ -131,6 +135,6 @@ graph LR
 
 ## Risks
 
-- **CPU:** the generic NAM core is built on Eigen, which has no float SIMD on Cortex-M7, so it is assumed too slow. The custom kernel is the plan, and M3 is the gate.
+- **CPU:** the generic NAM core is built on Eigen, which has no float SIMD on Cortex-M7, so it is assumed too slow. The custom kernel passed the M3 gate at 35 % for the model alone; the IR, the filters and the callback's own work (M4, M5) must fit in the rest. The kernel's speed depends on GCC keeping the instruction order it was written in (`docs/M7_PERFORMANCE.md`), so a toolchain or flag change needs a bench run.
 - **Locked model shape:** if NAM revises A2-Lite, the firmware needs an update. The shape descriptor plus the editor's check keep unsupported models from playing incorrectly.
 - **QSPI coexistence:** another firmware's image could grow into the preset region. The largest sibling image is about 2.2 MB, and the presets start above 4 MB.
