@@ -6,11 +6,11 @@ A living plan. Milestones are done in order; any of them may be revised, split, 
 
 | Topic | Decision |
 |---|---|
-| Model format | NAM A2 `.nam` (`SlimmableContainer`, 48 kHz). Only the A2-Lite submodel (`max_value` 0.5) runs. A1 models and A2-Full are rejected. |
+| Model format | NAM A2 `.nam` (`SlimmableContainer`, 48 kHz). Only the A2-Lite submodel (`max_value` 0.5) runs. A1 models and A2-Full are rejected. Format, weight order and forward pass: `docs/NAM_FORMAT.md`. |
 | Model shape | A2-Lite is fixed at compile time: 23 layers, 3 channels, bottleneck 3, kernels 6 (layers 15–16: 15), dilations `1 3 7 17 41 101 239 ×2, 1 13, 1 3 7 17 41 101 239`, LeakyReLU 0.01, no gating, FiLM, or groups. The head is a convolution with kernel 16, then `head_scale`. The editor rejects any other shape. Each stored model carries a shape descriptor, and the firmware checks it. |
 | Sample rate / block size | 48 kHz and 48 samples (1 ms). No resampling. |
 | Input gain (Knob 1) | Relative trim of ±12 dB, 0 dB at noon. Codec full scale feeds the model unchanged. The model's `input_level_dbu` is shown in the editor, not applied, and there is no hardware calibration. |
-| Output (Knob 2) | Off … +12 dB, unity at noon. Each preset's output is level-matched using the model's `loudness` metadata. |
+| Output (Knob 2) | Off … +12 dB, unity at noon. Each preset's output is level-matched using the A2-Lite submodel's own `metadata.loudness`. The top-level `loudness` is A2-Full's, and the two differ by about 0.1 dB. |
 | Cut filters | Knob 5 sets the low-cut (high-pass) cutoff, 20–500 Hz. Knob 4 sets the high-cut (low-pass) cutoff, 1.5–20 kHz. Both use a log taper. Turning the low-cut fully counter-clockwise or the high-cut fully clockwise bypasses that filter. Knob 6 sets the low-cut resonance and Knob 3 the high-cut resonance (Q 0.5 to about 2, only on the 12 and 24 dB slopes). SW1 sets the low-cut slope and SW2 the high-cut slope: up 6, middle 12, down 24 dB/oct. |
 | Mid (SW3) | Peaking filter at 515 Hz: −7 dB / bypass / +5 dB. |
 | IR | Optional, up to 2048 taps (about 43 ms). The editor resamples to 48 kHz, trims, and normalises. It warns when the model's `gear_type` already includes a cab. |
@@ -32,7 +32,8 @@ A living plan. Milestones are done in order; any of them may be revised, split, 
 - Every weight is used about once per sample, so the multiply-add count tracks the weight count. The estimate assumes a hand-written float kernel that keeps each 3×3 tap matrix in registers across a block. This estimate is not yet measured: milestone M3 decides it.
 - The model looks back 6,346 samples (132 ms). Its history needs about 76 KB for 3 channels, and its weights 7.5 KB. Both fit in DTCM, the processor's fast internal RAM.
 - Reset is cheap: with silent input every layer settles to a constant value per channel. Compute those once at load time and fill the history with them, instead of running 132 ms of silence through the model.
-- A direct-form IR costs N multiply-adds per sample. A 2048-tap IR uses uniformly partitioned FFT convolution (CMSIS-DSP `arm_rfft_fast_f32`). The nested `daisy/libDaisy/Drivers/CMSIS-DSP` submodule is currently empty and must be initialised.
+- A direct-form IR costs N multiply-adds per sample. A 2048-tap IR uses uniformly partitioned FFT convolution (CMSIS-DSP `arm_rfft_fast_f32`). The `daisy/libDaisy/Drivers/CMSIS-DSP` submodule is initialised by `git submodule update --init --recursive`.
+- NeuralAmpModelerCore has an A2-specific fast path (`NAM/wavenet/a2_fast.cpp`): a shape check, the weight loader and a scalar 3-channel kernel. It is still Eigen-based, but it is the readable reference for the M2 engine.
 
 ## Milestones
 
@@ -50,9 +51,9 @@ graph LR
   M8 --> M9[M9 Hardening]
 ```
 
-### M0: Scaffold, passthrough, DFU
+### M0: Scaffold, passthrough, DFU (done, `06ea416`)
 - Same layout as bad_tape:
-  - `daisy/Makefile`: `APP_TYPE = BOOT_SRAM`, `BOARD=hothouse`, build id, and `APP=` variants.
+  - `daisy/Makefile`: `APP_TYPE = BOOT_SRAM`, `BOARD=hothouse`, build id, and `APP=ducky` (M3 adds `APP=bench`).
   - HotHouse `board.h`.
   - `memory.h` placement macros.
   - Linker script with fast-RAM sections (DTCM, ITCM) and SDRAM sections.
@@ -60,12 +61,15 @@ graph LR
 - USB-MIDI link: Identity Reply, HELLO, LOG, DFU command. `tools/flash_when_ready.sh`.
 - Audio: left input copied to both outputs at 48 kHz / 48 samples. FS1 mutes with a ramp, and LED1 follows. A status log line reports CPU load, underruns, and knob states.
 - **Done when:** the pedal flashes over USB-MIDI DFU with no button presses, passthrough is clean, and the Identity Reply parses. Board revision and codec are confirmed and recorded.
-- **Measured:** the development unit reports `seed 1.2-pcm3060` (Seed 1.2, PCM3060 codec), sysclk 480 MHz, 48 kHz, 24-bit, 48-sample blocks. Passthrough load is avg 6 / max 6 permille with 0 underruns. DTCM 16.5 KB of 128 KB (including the 16 KB stack reserve), ITCM 1.2 KB, SRAM 124 KB of 480 KB.
+- **Measured:** the development unit reports `seed 1.2-pcm3060` (Seed 1.2, PCM3060 codec), sysclk 480 MHz, 48 kHz, 24-bit, 48-sample blocks. Passthrough load is avg 6 / max 7 permille with 0 underruns. DTCM 16.5 KB of 128 KB (including the 16 KB stack reserve), ITCM 1.2 KB, SRAM 124 KB of 480 KB.
+- **Docs:** `docs/FIRMWARE.md` covers build, flash, log, the source layout, threads, the memory map and the log lines.
 
 ### M1: Model converter and reference outputs
 - The `.nam` → binary converter is written in TypeScript and shared by the editor and a Bun command-line tool.
 - Binary layout: magic, format version, shape descriptor, weights (float32 LE), `head_scale`, `loudness`, `input_level_dbu`, name, CRC-32.
-- Reference outputs: run the official NeuralAmpModelerCore on a fixed set of guitar DI recordings and keep the results as test fixtures.
+- Reference outputs: render with NeuralAmpModelerCore's `tools/render.cpp` (`render --slim 0.25 model.nam in.wav out.wav`, which selects A2-Lite) on a fixed set of guitar DI recordings, and keep the results as test fixtures. Pin the core's commit. `render` prewarms before processing, so the references start from the settled zero-input state.
+- Inputs and fixtures: `docs/NAM_FORMAT.md` has the shape check, the weight stream, the forward pass, the metadata to keep, and the upstream example models for accept and reject cases.
+- Open: where the shared converter code lives (`editor/` versus `tools/`), how to handle a model without `loudness`, and which DI recordings to use (no DI recordings are in the repo yet; upstream's `example_audio/input.wav` is 2 s).
 - **Done when:** both development models convert, and models with a non-Lite shape are rejected with a named reason.
 
 ### M2: A2-Lite engine on the PC
@@ -118,7 +122,7 @@ graph LR
 
 ### M9: Hardening and release prep
 - Stress tests: fast FS2 presses, uploading while playing, power loss during writes, rapid knob sweeps.
-- Docs: `README.md`, and `daisy/README.md` with the memory map, measured performance, and log lines.
+- Docs: a top-level `README.md`, and bring `docs/FIRMWARE.md` (memory map, measured performance, log lines) up to date.
 - Licence review before the history is squashed.
 
 ## Risks

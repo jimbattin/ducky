@@ -27,6 +27,8 @@ Presets contain the NAM Model and optional IR. They do not track Input/Output ga
 - SW 3: Mid boost/scoop (-7db, bypass, +5db) at 515hz
 
 Roadmap, decisions, and milestones: `docs/ROADMAP.md`
+Firmware build/flash/log, source layout, memory map, log lines: `docs/FIRMWARE.md`
+NAM A2 format, A2-Lite shape check, weight order, forward pass: `docs/NAM_FORMAT.md`
 
 ## Technology
 - Supports NAM A2-lite models
@@ -51,6 +53,7 @@ This project lives in a private repo that will one day get its history squashed 
   - `../dp4/manuals/DDI0489B_cortex_m7_trm.pdf`
   - `../dp4/manuals/pm0253-stm32f7-series-and-stm32h7-series-cortexm7-processor-programming-manual-stmicroelectronics.pdf`
 - NAM website:https://www.neuralampmodeler.com/
+- NAM reference implementation: https://github.com/sdatkinson/NeuralAmpModelerCore (`NAM/wavenet/a2_fast.cpp`, `tools/render.cpp`; see `docs/NAM_FORMAT.md`)
 - Models: https://www.tone3000.com/
 - HotHouse: `../hothouse_pcb` (You can also lok at the `../bad_tape` project as an example)
 
