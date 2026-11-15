@@ -1,0 +1,17 @@
+/build/
+/daisy/build/
+*.bin
+*.elf
+*.hex
+*.map
+.venv/
+__pycache__/
+*.pyc
+/renders/
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+/editor/node_modules/
+/editor/dist/
