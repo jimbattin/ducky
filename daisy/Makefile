@@ -1,5 +1,6 @@
 # ducky: the Ducky NAM player pedal on the Daisy Seed in a Cleveland Music Co. HotHouse (src/board.h).
 # APP=ducky (default): the pedal firmware, build/<BOARD>/ducky.bin.
+# APP=bench: the A2-Lite benchmark and device check (src/bench.cpp, no audio), build/<BOARD>-bench/ducky_bench.bin.
 
 # The app runs from SRAM, loaded from QSPI by the Daisy bootloader.
 export APP_TYPE = BOOT_SRAM
@@ -19,8 +20,12 @@ ifeq ($(APP),ducky)
 TARGET = ducky
 CPP_SOURCES = src/ducky.cpp src/usb_link.cpp src/memory.cpp
 override BUILD_DIR = build/$(BOARD)
+else ifeq ($(APP),bench)
+TARGET = ducky_bench
+CPP_SOURCES = src/bench.cpp src/usb_link.cpp src/memory.cpp
+override BUILD_DIR = build/$(BOARD)-bench
 else
-$(error APP must be ducky, not '$(APP)')
+$(error APP must be ducky or bench, not '$(APP)')
 endif
 $(shell mkdir -p $(BUILD_DIR))
 
@@ -37,10 +42,13 @@ ifeq ($(wildcard $(LIBDAISY_DIR)/build/libdaisy.a),)
 $(error libdaisy.a not built. From the repo root run: make -C daisy/libDaisy)
 endif
 
-OPT = -O3
+# No instruction scheduling: GCC's Cortex-M7 model interleaves FP loads with multiply-accumulates, and on this core a
+# load, store, move or add right after a multiply-accumulate waits about 3 cycles (docs/M7_PERFORMANCE.md).
+# Unscheduled, the DSP's statement order is its instruction order (src/dsp/a2lite.h).
+OPT = -O3 -fno-schedule-insns -fno-schedule-insns2
 CPP_STANDARD = -std=gnu++17
 # libDaisy's BOOT_SRAM script with .data/.bss in AXI SRAM, plus .dtcm_data/.itcm_text (copied at boot, src/memory.cpp),
-# .d2_bss and .sdram_bss (reserved for later milestones).
+# .dtcm_bss (zeroed at boot), and .d2_bss and .sdram_bss (reserved for later milestones).
 LDSCRIPT = STM32H750IB_sram_ducky.lds
 
 # The build id the Identity Reply carries (src/link.h): the repo's short commit, with +dirty when tracked
@@ -59,6 +67,12 @@ SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
 include $(SYSTEM_FILES_DIR)/Makefile
 
 C_DEFS += $(BOARD_DEF)
+
+ifeq ($(APP),bench)
+# src/bench.cpp .incbins these fixtures by absolute path; rebuild when they change.
+C_DEFS += -DDK_REPO_ROOT='"$(abspath $(CURDIR)/..)"'
+$(BUILD_DIR)/bench.o: ../tests/fixtures/nam/A2.bin ../tests/fixtures/nam/input.wav ../tests/fixtures/nam/A2.input.ref.wav
+endif
 
 # Relink when the linker script changes: the core link rule lists only $(OBJECTS) and Makefile as prerequisites.
 $(BUILD_DIR)/$(TARGET).elf: $(LDSCRIPT)

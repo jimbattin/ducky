@@ -7,6 +7,8 @@
 //   from ITCM only when inlined into its caller, so hot ones must be [[gnu::always_inline]]; `arm-none-eabi-nm` on the
 //   image shows what landed where.
 //   DK_DTCM: a variable in DTCM (zero-wait data, not cached). Any initialiser works.
+//   DK_DTCM_BSS: a zero-initialised variable in DTCM (.dtcm_bss), NOLOAD, zeroed at boot by memory.cpp, so it has no
+//   load image. Only for objects whose static initialiser is all zeros (no dynamic constructor).
 //   DK_SDRAM: a variable in the external SDRAM (.sdram_bss). NOLOAD: startup neither initialises nor zeroes it, so
 //   its owner clears it. No initialiser.
 //   DK_D2: a variable in D2 SRAM (.d2_bss), NOLOAD, cleared by its owner.
@@ -21,11 +23,13 @@
 #define DK_ITCM_SECTION(n) ".itcm_text." DK_ITCM_STR(n)
 #define DK_ITCM __attribute__((section(DK_ITCM_SECTION(__COUNTER__))))
 #define DK_DTCM __attribute__((section(".dtcm_data")))
+#define DK_DTCM_BSS __attribute__((section(".dtcm_bss")))
 #define DK_SDRAM __attribute__((section(".sdram_bss")))
 #define DK_D2 __attribute__((section(".d2_bss")))
 #else
 #define DK_ITCM
 #define DK_DTCM
+#define DK_DTCM_BSS
 #define DK_SDRAM
 #define DK_D2
 #endif
