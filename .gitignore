@@ -1,6 +1,7 @@
 /build/
 /daisy/build/
 *.bin
+!/tests/fixtures/nam/A2.bin
 *.elf
 *.hex
 *.map

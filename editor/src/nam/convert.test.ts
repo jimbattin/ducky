@@ -80,6 +80,11 @@ test("A2.nam converts to the format-1 layout", () => {
   expect(info.headScale).toBe(lite.weights[1870]!);
 });
 
+test("A2.nam converts to the committed A2.bin", async () => {
+  const committed = new Uint8Array(await Bun.file(`${FIXTURES}/A2.bin`).arrayBuffer());
+  expect(convertNam(a2Text, "A2").bin).toEqual(committed);
+});
+
 describe("rejections", () => {
   const cases: [string, () => string | Promise<string>, RejectReason, string?][] = [
     ["truncated JSON", () => "{", "not-json"],
