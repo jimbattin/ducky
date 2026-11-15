@@ -1,0 +1,64 @@
+# ducky: the Ducky NAM player pedal on the Daisy Seed in a Cleveland Music Co. HotHouse (src/board.h).
+# APP=ducky (default): the pedal firmware, build/<BOARD>/ducky.bin.
+
+# The app runs from SRAM, loaded from QSPI by the Daisy bootloader.
+export APP_TYPE = BOOT_SRAM
+
+# BOARD: hothouse (default, Cleveland Music Co. HotHouse). Other hosts are added here and in src/board.h.
+BOARD ?= hothouse
+ifeq ($(BOARD),hothouse)
+BOARD_DEF = -DDUCKY_BOARD_HOTHOUSE=1
+else
+$(error BOARD must be hothouse, not '$(BOARD)')
+endif
+
+# Source lists must be set before including the core Makefile: it evaluates vpath directives at parse time.
+# One build directory per board and app (the objects differ); libDaisy's mkdir has no -p.
+APP ?= ducky
+ifeq ($(APP),ducky)
+TARGET = ducky
+CPP_SOURCES = src/ducky.cpp src/usb_link.cpp src/memory.cpp
+override BUILD_DIR = build/$(BOARD)
+else
+$(error APP must be ducky, not '$(APP)')
+endif
+$(shell mkdir -p $(BUILD_DIR))
+
+# libDaisy is the daisy/libDaisy submodule (v9.0.0).
+LIBDAISY_DIR ?= libDaisy
+# Stop with the fix if the libDaisy submodule, its nested driver submodules, or its library is missing.
+ifeq ($(wildcard $(LIBDAISY_DIR)/core/Makefile),)
+$(error libDaisy not found at $(LIBDAISY_DIR). From the repo root run: git submodule update --init --recursive && make -C daisy/libDaisy)
+endif
+ifeq ($(wildcard $(LIBDAISY_DIR)/Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h),)
+$(error libDaisy's driver submodules are missing under $(LIBDAISY_DIR). From the repo root run: git submodule update --init --recursive && make -C daisy/libDaisy)
+endif
+ifeq ($(wildcard $(LIBDAISY_DIR)/build/libdaisy.a),)
+$(error libdaisy.a not built. From the repo root run: make -C daisy/libDaisy)
+endif
+
+OPT = -O3
+CPP_STANDARD = -std=gnu++17
+# libDaisy's BOOT_SRAM script with .data/.bss in AXI SRAM, plus .dtcm_data/.itcm_text (copied at boot, src/memory.cpp),
+# .d2_bss and .sdram_bss (reserved for later milestones).
+LDSCRIPT = STM32H750IB_sram_ducky.lds
+
+# The build id the Identity Reply carries (src/link.h): the repo's short commit, with +dirty when tracked
+# files differ, or unknown outside git. $(BUILD_DIR)/build_id.c is rewritten only when the id changes, so an
+# unchanged tree relinks nothing.
+BUILD_ID_HEAD := $(shell git -C $(CURDIR)/.. rev-parse --short HEAD 2>/dev/null)
+BUILD_ID := $(if $(BUILD_ID_HEAD),$(BUILD_ID_HEAD)$(if $(shell git -C $(CURDIR)/.. status --porcelain --untracked-files=no 2>/dev/null),+dirty),unknown)
+BUILD_ID_C := $(BUILD_DIR)/build_id.c
+BUILD_ID_SRC := const char kBuildId[] = "$(BUILD_ID)";
+ifneq ($(BUILD_ID_SRC),$(shell cat $(BUILD_ID_C) 2>/dev/null))
+$(shell printf '%s\n' '$(BUILD_ID_SRC)' > $(BUILD_ID_C))
+endif
+C_SOURCES = $(BUILD_ID_C)
+
+SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
+include $(SYSTEM_FILES_DIR)/Makefile
+
+C_DEFS += $(BOARD_DEF)
+
+# Relink when the linker script changes: the core link rule lists only $(OBJECTS) and Makefile as prerequisites.
+$(BUILD_DIR)/$(TARGET).elf: $(LDSCRIPT)
