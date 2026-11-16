@@ -189,7 +189,7 @@ load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS     
 
 - **Level:** the IR's unit-energy normalisation makes a cab IR louder than no IR for an amp model: on `A2.bin` with `input.wav` the render's RMS rises 10.7 dB and its peak 11.9 dB (the FDMN mix peaks at +12.2 dB at 129 Hz). On the pedal at the same controls the `out` peak went from −9…−15 dBFS to −9…0 dBFS.
 
-## Bench (M3, M5)
+## Bench
 
 `APP=bench` (`daisy/src/bench.cpp`) has no audio. It compiles in `tests/fixtures/nam/A2.bin`, `tests/fixtures/ir/decay.bin` and a slice of `input.wav` and `A2.input.ref.wav` (`.incbin`; the Makefile rebuilds `bench.o` when they change). It places the engine like the pedal does: the object in DTCM, its stages and the timed blocks in ITCM; the EQ in DTCM and the pedal's convolver (`gIrAxi`) in AXI SRAM, with a second one (`gIrD2`) in D2 SRAM for comparison. Each pass:
 

@@ -12,14 +12,14 @@ A living plan. Milestones are done in order; any of them may be revised, split, 
 | Input gain (Knob 1) | Relative trim of ±12 dB around the model's input calibration at noon (M4): NeuralAmpModelerPlugin's `+4.5 dBu − input_level_dbu`, where +4.5 dBu is the level at the input jack that reaches 0 dBFS (from the datasheets, not measured). A model without `input_level_dbu` is assumed captured at +12 dBu. |
 | Output (Knob 2) | Off … +12 dB, unity at noon. Each preset's output is level-matched using the A2-Lite submodel's own `metadata.loudness`. The top-level `loudness` is A2-Full's, and the two differ by about 0.1 dB. `loudness` is measured at the capture level, so after the input calibration a clean model plays a little quieter than a driven one (M4: about 1.8 dB). |
 | Cut filters | Knob 5 sets the low-cut (high-pass) cutoff, 20–500 Hz. Knob 4 sets the high-cut (low-pass) cutoff, 1.5–20 kHz. Both use a log taper. Turning the low-cut fully counter-clockwise or the high-cut fully clockwise bypasses that filter. Knob 6 sets the low-cut resonance and Knob 3 the high-cut resonance (Q 0.5 to about 2, only on the 12 and 24 dB slopes). SW1 sets the low-cut slope and SW2 the high-cut slope: up 6, middle 12, down 24 dB/oct. |
-| Mid (SW3) | Peaking filter at 515 Hz: −7 dB / bypass / +5 dB. |
-| IR | Optional, up to 2048 taps (about 43 ms). The editor resamples to 48 kHz, trims, and normalises. It warns when the model's `gear_type` already includes a cab. |
+| Mid (SW3) | Peaking filter at 515 Hz, Q 1: up +5 dB, middle bypass, down −7 dB. |
+| IR | Optional, up to 2048 taps (about 43 ms). The converter (`editor/src/ir/`, shared by the editor and `tools/ir_convert.ts`) resamples to 48 kHz, trims with a 64-tap fade, and normalises to unit energy. The editor warns when the model's `gear_type` already includes a cab. |
 | Preset switching | FS2 steps forward through filled slots only and wraps. Audio fades out, the model is swapped and reset, then audio fades back in (a gap of about 20–30 ms, no crossfade). LED2 blinks N times for slot N. The last slot is remembered across power cycles. |
 | Preset persistence | Presets survive switching to another firmware and back. They live in the upper 4 MB of the QSPI flash, outside any firmware image and outside bad_tape's saved values at `0x903FE000`. |
 | Hardware | Daisy Seed with 64 MB or more of SDRAM (development unit: Seed 1.2, 64 MB). HotHouse. |
 | SysEx | `F0 7D 64 <version> <cmd> … F7`. Device byte `0x64` is unused by sibling projects. Identity Reply and DFU command follow the bad_tape conventions. |
 | Editor | Preset manager plus live status: log, CPU load meter, knob/switch states. It does not control the knobs remotely, because the pedal is "what you see is what you get". |
-| Model files | `models/*.nam` and converted `*.bin` are git-ignored. Only upstream MIT fixtures (`tests/fixtures/nam/`) are committed, plus `A2.bin` converted from upstream `A2.nam`. |
+| Model and IR files | `models/*.nam`, converted `*.bin` and `irs/` are git-ignored. Only upstream MIT fixtures (`tests/fixtures/nam/`) are committed, plus `A2.bin` converted from upstream `A2.nam` and the generated IR fixture `tests/fixtures/ir/decay.{wav,bin}`. |
 
 ## Feasibility
 
@@ -32,7 +32,7 @@ A living plan. Milestones are done in order; any of them may be revised, split, 
 - Every weight is used about once per sample, so the multiply-add count tracks the weight count. The estimate assumes a hand-written float kernel that keeps each 3×3 tap matrix in registers across a block. M3 measured 35 % (2.0 cycles per multiply-add, everything included).
 - The model looks back 6,346 samples (132 ms). Its history takes 91 KB for 3 channels (each layer's ring also holds one block and a 5-frame guard), and its weights 7.5 KB. Both fit in DTCM, the processor's fast internal RAM.
 - Reset is cheap: with silent input every layer settles to a constant value per channel. Compute those once at load time and fill the history with them, instead of running 132 ms of silence through the model.
-- A direct-form IR costs N multiply-adds per sample. A 2048-tap IR uses uniformly partitioned FFT convolution (CMSIS-DSP `arm_rfft_fast_f32`). The `daisy/libDaisy/Drivers/CMSIS-DSP` submodule is initialised by `git submodule update --init --recursive`.
+- A direct-form IR costs N multiply-adds per sample. A 2048-tap IR uses uniformly partitioned FFT convolution (CMSIS-DSP `arm_rfft_fast_f32`); M5 measured it at 11 % of the block period. The `daisy/libDaisy/Drivers/CMSIS-DSP` submodule is initialised by `git submodule update --init --recursive`; `libdaisy.a` does not contain it, so `daisy/cmsis_fft.mk` lists the sources both builds compile.
 - NeuralAmpModelerCore has an A2-specific fast path (`NAM/wavenet/a2_fast.cpp`): a shape check, the weight loader and a scalar 3-channel kernel. It is still Eigen-based, but it is the readable reference for the M2 engine.
 
 ## Milestones
@@ -89,7 +89,7 @@ graph LR
 - **If it fails:** try fixed-point or SIMD variants, a larger block, or ask NAM upstream for a smaller shape.
 - **Result (go):** `APP=bench` (`daisy/src/bench.cpp`) logs the device check, the gate and per-layer cycles. The model costs avg 350.7, max 351.9 permille of the 48-sample block against the 450 limit, and the device check passes with max error 241e-9 against the reference (host output is still bit-exact). The first engines measured 520–620 permille. What closed the gap was measuring the core instead of counting instructions: on the Cortex-M7 a load, store, move or add that follows a multiply-accumulate waits about 3 cycles, and GCC's scheduler interleaves them. The engine now runs 6-frame tiles as load islands followed by pure multiply-accumulate runs, with scheduling off, a branch-free leaky ReLU, and each layer writing straight into the next layer's ring. No fallback (fixed point, larger block, smaller shape) was needed.
 - **Also:** `.dtcm_bss` (`DK_DTCM_BSS`), a zeroed DTCM section with no load image, for the engine. `tools/usb_log.py --port` and `DK_USB_PORT` for `tools/flash_when_ready.sh` address one Seed by USB path when several are attached.
-- **Docs:** `docs/M7_PERFORMANCE.md` (the cost model, the rules for DSP code, how to measure); `docs/FIRMWARE.md` "Bench (M3)"; `docs/NAM_FORMAT.md` "Engine".
+- **Docs:** `docs/M7_PERFORMANCE.md` (the cost model, the rules for DSP code, how to measure); `docs/FIRMWARE.md` "Bench"; `docs/NAM_FORMAT.md` "Engine".
 
 ### M4: Live amp (done, `047ddc6`)
 - The engine runs in the audio callback with one compiled-in model.
@@ -111,11 +111,12 @@ graph LR
 - Mid peaking filter for SW3.
 - Spec in `docs/FILTERS.md`; tests on the PC (frequency response, stability under knob sweeps, no clicks when switching slopes).
 - Kernels follow `docs/M7_PERFORMANCE.md`. The IR convolver's FFT is CMSIS-DSP's. libDaisy's `libdaisy.a` turned out not to contain CMSIS-DSP, so both builds compile the FFT sources themselves (`daisy/cmsis_fft.mk`).
+- Test data: example IRs in `irs/` (git-ignored, commercial York Audio 4×12 packs). Each pack has `44.1k`, `48k` and `96k` WAV folders (mono, 24-bit PCM, 500 ms: 22,050 / 24,000 / 48,000 frames, some about 50 frames longer) and a `Kemper Converted` folder of `.kipr` files, which are not supported. So the 48k WAVs exercise trimming to 2048 taps, and the 44.1k and 96k WAVs exercise resampling. The folders also hold macOS `._*` AppleDouble files and `.DS_Store`, which an importer must skip.
 - **Done when:** the whole chain stays within budget on hardware, measured by `APP=bench` and the live load meter.
 - **Decided:** the IR is compiled in with `daisy/Makefile` `IR=FILE.bin` (default none) until M6. `tools/ir_convert.ts` (`editor/src/ir/`) converts a WAV to the IR binary: resampled to 48 kHz (windowed sinc), truncated to 2048 taps with a 64-tap fade, normalised to unit energy. The convolver is uniformly partitioned overlap-save, 48-tap partitions, 128-point FFT, zero latency. All filter sections are TPT (Simper) one-poles and SVFs; all slopes run every block and a slope switch or bypass crossfades over 5 ms. SW3 is up +5 dB, middle bypass, down −7 dB at 515 Hz, Q 1. A bad IR stops audio like a bad model. Spec: `docs/FILTERS.md`.
 - **Measured (Seed 1.2):** bench chain max 496.4 permille (gate 550, go); IR convolver 109.4 permille from AXI SRAM against 137.6 from D2 SRAM, so it stays in AXI SRAM; EQ 31.8; IR check on the device 214e-9. Live with `A2.bin` and a York FDMN IR: load avg 499, max 501 permille, 0 underruns over 5 minutes; 392/393 without an IR. All 3,480 example WAVs convert.
 - **Open:** the knob ends of Knobs 4 and 5 (whether fully CW/CCW reach the 0.02 bypass threshold) are not yet checked on the pedal. Unit energy makes a cab IR about 11 dB louder than no IR on `A2.bin`, and the pedal's output reached 0 dBFS at noon on the output knob.
-- **Docs:** `docs/FILTERS.md`; `docs/FIRMWARE.md` "Threads", "Log lines" (`ir`), "Measured (M5)", "Bench (M3, M5)" and the `IR=` build option.
+- **Docs:** `docs/FILTERS.md`; `docs/FIRMWARE.md` "Threads", "Log lines" (`ir`), "Measured (M5)", "Bench" and the `IR=` build option.
 
 ### M6: Preset store and switching
 - Flash region in the upper 4 MB, clear of the last flash addresses (chip erratum `ES0392 2.7.5`). 8 slots, each holding a header, model, optional IR, and CRC. A small two-copy state record holds the last slot.
@@ -144,6 +145,6 @@ graph LR
 
 ## Risks
 
-- **CPU:** the generic NAM core is built on Eigen, which has no float SIMD on Cortex-M7, so it is assumed too slow. The custom kernel passed the M3 gate at 35 % for the model alone; the IR, the filters and the callback's own work (M4, M5) must fit in the rest. The kernel's speed depends on GCC keeping the instruction order it was written in (`docs/M7_PERFORMANCE.md`), so a toolchain or flag change needs a bench run.
+- **CPU:** the generic NAM core is built on Eigen, which has no float SIMD on Cortex-M7, so it is assumed too slow. The custom kernel passed the M3 gate at 35 % for the model alone. With the IR and the EQ (M5) the bench chain is at 49.6 % (gate 55 %) and the pedal at 50.1 % live, so M6's preset switching and later work have about half the block period left. The kernel's speed depends on GCC keeping the instruction order it was written in (`docs/M7_PERFORMANCE.md`), so a toolchain or flag change needs a bench run.
 - **Locked model shape:** if NAM revises A2-Lite, the firmware needs an update. The shape descriptor plus the editor's check keep unsupported models from playing incorrectly.
 - **QSPI coexistence:** another firmware's image could grow into the preset region. The largest sibling image is about 2.2 MB, and the presets start above 4 MB.

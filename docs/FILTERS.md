@@ -99,7 +99,7 @@ The York Audio packs in `irs/` (3,480 WAVs at 44.1, 48 and 96 kHz, 500 ms each, 
 
 ### Mid (SW3)
 
-A bell at 515 Hz, Q 1.0, constant-Q form: `A = 10^(dB/40)`, `k = 1/(Q·A)`, `m1 = k(A² − 1)`. SW3 **up is +5 dB (boost), middle bypass, down −7 dB (scoop)** — the opposite of the order in which `CLAUDE.md` lists them, chosen for M5. The gain is smoothed in dB (20 ms), so a flip glides; at 0 dB (`|dB| < 1e-3`) `m1` is exactly 0 and the output is the input bit for bit.
+A bell at 515 Hz, Q 1.0, constant-Q form: `A = 10^(dB/40)`, `k = 1/(Q·A)`, `m1 = k(A² − 1)`. SW3 **up is +5 dB (boost), middle bypass, down −7 dB (scoop)**. The gain is smoothed in dB (20 ms), so a flip glides; at 0 dB (`|dB| < 1e-3`) `m1` is exactly 0 and the output is the input bit for bit.
 
 ### Tests
 

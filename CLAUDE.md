@@ -22,9 +22,9 @@ Presets contain the NAM Model and optional IR. They do not track Input/Output ga
 - Knob 4: High-cut frequency
 - Knob 5: Low-cut frequency
 - Knob 6: Low-cut resonance
-- SW1: low-cut slope (6, 12, 24db)
-- SW 2: high-cut slope (6, 12, 24db)
-- SW 3: Mid boost/scoop (-7db, bypass, +5db) at 515hz
+- SW1: low-cut slope (up 6, middle 12, down 24db)
+- SW 2: high-cut slope (up 6, middle 12, down 24db)
+- SW 3: Mid at 515hz (up +5db boost, middle bypass, down -7db scoop)
 
 Roadmap, decisions, and milestones: `docs/ROADMAP.md`
 Firmware build/flash/log, source layout, memory map, log lines, bench (`APP=bench`): `docs/FIRMWARE.md`
@@ -49,6 +49,7 @@ This project lives in a private repo that will one day get its history squashed 
 - `daisy/`: Pedal code
 - `editor/`: Editor code (Bun + TS; `src/nam/` is the `.nam` converter shared with `tools/nam_convert.ts`, `src/ir/` the `.wav` IR converter shared with `tools/ir_convert.ts`)
 - `models/`: NAM Models (git-ignored)
+- `irs/`: Example cab IRs (commercial York Audio packs; git-ignored). Mono 24-bit PCM WAV, 500 ms, in 44.1k/48k/96k folders, plus Kemper `.kipr` (not supported); macOS `._*` and `.DS_Store` files mixed in
 - `tests/`: Host GoogleTest; `tests/fixtures/nam/` holds upstream MIT NAM fixtures, `A2.bin` converted from `A2.nam`, and the committed reference render; `tests/fixtures/ir/` a generated IR (`decay.wav`, `decay.bin`)
 - `renders/`: Local reference renders and stimuli (git-ignored)
 

@@ -2,7 +2,7 @@
 
 What the Daisy Seed's Cortex-M7 (STM32H750, 480 MHz, FPv5-D16) actually charges for float code, measured on the device, and how to write DSP that fits it. Read this before writing or optimising any kernel in `daisy/src/dsp/`.
 
-These measurements took the A2-Lite engine from 570 to 352 permille of the block period with no change to its arithmetic (`docs/FIRMWARE.md` "Bench (M3)"). Everything here was measured with GCC 13.3.rel1, code in ITCM, data in DTCM. The numbers are observations; the mechanism inside the core is not established.
+These measurements took the A2-Lite engine from 570 to 352 permille of the block period with no change to its arithmetic (`docs/FIRMWARE.md` "Bench"). Everything here was measured with GCC 13.3.rel1, code in ITCM, data in DTCM. The numbers are observations; the mechanism inside the core is not established.
 
 ## The short version
 
@@ -185,7 +185,9 @@ Ideas with an estimate but no device run:
 - **3-frame tiles**: slightly cheaper taps, more epilogue overhead per frame; about level.
 - **Separate `vmul` and `vadd` instead of `vfma`** where memory and arithmetic must alternate (an in-place `y[i] += a·x[i]`): neither is penalised beside loads and stores, but the result is not fused, so it rounds differently.
 
-Not measured at all: double precision; `vdiv`, `vsqrt`, `vcvt`; moves between core and FP registers; `vmaxnm`, `vsub`, `vneg` or `vabs` directly after a multiply-accumulate (assumed to behave like `vadd`); data in cached AXI SRAM, D2 SRAM or SDRAM; code outside ITCM; libDaisy and CMSIS-DSP, which are built separately with scheduling on.
+Not measured at all: double precision; `vdiv`, `vsqrt`, `vcvt`; moves between core and FP registers; `vmaxnm`, `vsub`, `vneg` or `vabs` directly after a multiply-accumulate (assumed to behave like `vadd`); data in SDRAM; code outside ITCM; libDaisy, which is built separately with scheduling on. CMSIS-DSP's FFT is built with Ducky's flags (no scheduling) and runs from AXI SRAM.
+
+Measured only as whole stages (M5, `docs/FILTERS.md`): the IR convolver, whose 66 KB of spectra stream through the 16 KB D-cache every block, costs 109 permille with its data in AXI SRAM and 138 in D2 SRAM; the EQ's recursive filters cost 15,135 cycles a block (two 3-slope cut filters and a bell, about 315 cycles per sample, including two `powf` and a `tanf` per cut filter and a `powf` for the bell per block).
 
 Expectations that follow from the measurements but were not tested:
 

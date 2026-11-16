@@ -18,5 +18,6 @@ __pycache__/
 /editor/node_modules/
 /editor/dist/
 /models/*.nam
+/irs/
 compile_commands.json
 .cache/
