@@ -39,18 +39,26 @@ private:
     int count_ = 0;
 };
 
-// LED2's preset number: n blinks, each kBlinkOnBlocks on then kBlinkOffBlocks off, then off.
+// LED2's preset number: n blinks, each kBlinkOnBlocks on then kBlinkOffBlocks off, then kBlinkPauseBlocks off, repeated.
 constexpr int kBlinkOnBlocks = 150, kBlinkOffBlocks = 150;  // 150 ms on, 150 ms off at the 1 kHz block rate
+constexpr int kBlinkPauseBlocks = 5000;                     // 5 s dark between repeats
 class Blinker {
 public:
-    // n blinks from the next Tick; restarts any pattern in progress; n <= 0 is off.
+    // n blinks from the next Tick, repeating; restarts any pattern in progress; n <= 0 is off.
     void Start(int n) {
-        remaining_ = n > 0 ? n : 0;
+        n_ = remaining_ = n > 0 ? n : 0;
         phase_ = 0;
     }
     // Once per block: true (on) for the first kBlinkOnBlocks of each of the n periods.
     bool Tick() {
-        if (remaining_ == 0) return false;
+        if (n_ == 0) return false;
+        if (remaining_ == 0) {  // the pause before the next repeat
+            if (++phase_ == kBlinkPauseBlocks) {
+                phase_ = 0;
+                remaining_ = n_;
+            }
+            return false;
+        }
         const bool on = phase_ < kBlinkOnBlocks;
         if (++phase_ == kBlinkOnBlocks + kBlinkOffBlocks) {
             phase_ = 0;
@@ -60,7 +68,7 @@ public:
     }
 
 private:
-    int remaining_ = 0, phase_ = 0;
+    int n_ = 0, remaining_ = 0, phase_ = 0;
 };
 
 }  // namespace dkctl

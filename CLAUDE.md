@@ -15,7 +15,7 @@ Presets contain the NAM Model and optional IR. They do not track Input/Output ga
 
 ## Controls
 - FS1: Mute. LED1 active when not muted; off when muted
-- FS2: Next preset (skips empty slots, wraps). LED2 blinks N times for slot N
+- FS2: Next preset (skips empty slots, wraps). LED2 blinks N times for slot N, repeating after 5 s dark
 - Knob 1: Input Gain trim, relative (Noon is the model's input calibration from `input_level_dbu`, ±12 dB)
 - Knob 2: Output Volume (Noon is unity)
 - Knob 3: High-cut resonance

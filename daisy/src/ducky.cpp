@@ -413,10 +413,9 @@ void writeState(int slot) {
     dkusb::Log("state slot %d seq %lu %lu ms", slot + 1, (unsigned long)seq, (unsigned long)(System::GetNow() - t0));
 }
 
-// Sets the wanted slot; a slot (not dry) starts LED2's blinks for it.
+// Sets the wanted slot and restarts LED2's repeating blinks for it; dry turns them off.
 void retarget(int s) {
     gTarget = s;
-    if (s < 0) return;
     gBlinkCount.store(uint8_t(s + 1), std::memory_order_relaxed);
     gBlinkReq.store(++gBlinkSeq, std::memory_order_release);
 }

@@ -49,13 +49,16 @@ std::vector<int> Runs(Blinker& b, int ticks) {
 
 }  // namespace
 
-TEST(Blinker, ThreeBlinksThenOff) {
+TEST(Blinker, ThreeBlinksThenPauseThenRepeat) {
     Blinker b;
     b.Start(3);
-    const int period = kBlinkOnBlocks + kBlinkOffBlocks;
-    const std::vector<int> want{kBlinkOnBlocks, kBlinkOffBlocks, kBlinkOnBlocks, kBlinkOffBlocks, kBlinkOnBlocks,
-                                kBlinkOffBlocks + 1000};
-    EXPECT_EQ(Runs(b, 3 * period + 1000), want);
+    const std::vector<int> want{kBlinkOnBlocks, kBlinkOffBlocks, kBlinkOnBlocks, kBlinkOffBlocks,
+                                kBlinkOnBlocks, kBlinkOffBlocks + kBlinkPauseBlocks,
+                                kBlinkOnBlocks, kBlinkOffBlocks, kBlinkOnBlocks, kBlinkOffBlocks,
+                                kBlinkOnBlocks, kBlinkOffBlocks + kBlinkPauseBlocks,
+                                kBlinkOnBlocks};
+    const int cycle = 3 * (kBlinkOnBlocks + kBlinkOffBlocks) + kBlinkPauseBlocks;
+    EXPECT_EQ(Runs(b, 2 * cycle + kBlinkOnBlocks), want);
 }
 
 TEST(Blinker, StartRestartsMidPattern) {
@@ -72,4 +75,12 @@ TEST(Blinker, IdleAndZeroAreOff) {
     EXPECT_FALSE(b.Tick());
     b.Start(0);
     EXPECT_FALSE(b.Tick());
+}
+
+TEST(Blinker, ZeroStopsRepeats) {
+    Blinker b;
+    b.Start(1);
+    b.Tick();
+    b.Start(0);
+    for (int i = 0; i < 2 * (kBlinkOnBlocks + kBlinkOffBlocks + kBlinkPauseBlocks); ++i) EXPECT_FALSE(b.Tick());
 }
