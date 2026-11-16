@@ -62,6 +62,37 @@ export function buildSlot(model: Uint8Array, ir: Uint8Array | null, name: string
   return out;
 }
 
+/** A stored preset's parts, as buildSlot takes them. */
+export interface SlotParts {
+  name: string;
+  model: Uint8Array;
+  ir: Uint8Array | null;
+}
+
+// A whole preset image (as READ returns it) split into its name, model and IR; the preset's CRC is checked here and
+// the model's and IR's own CRCs by buildSlot when the parts are reused.
+export function splitSlot(image: Uint8Array): SlotParts {
+  if (image.length < PRESET_HEADER_SIZE) throw new PresetError(`preset: ${image.length} bytes`);
+  if (String.fromCharCode(...image.subarray(0, 4)) !== PRESET_MAGIC) throw new PresetError("preset: magic");
+  const dv = new DataView(image.buffer, image.byteOffset, image.length);
+  const version = dv.getUint16(OFF_VERSION, true);
+  if (version !== PRESET_FORMAT_VERSION)
+    throw new PresetError(`preset: version ${version}, need ${PRESET_FORMAT_VERSION}`);
+  const hasIr = (dv.getUint16(OFF_FLAGS, true) & PRESET_FLAG_HAS_IR) !== 0;
+  const modelEnd = PRESET_HEADER_SIZE + MODEL_BIN_SIZE;
+  const size = modelEnd + (hasIr ? IR_BIN_SIZE : 0) + 4;
+  if (dv.getUint32(OFF_SIZE, true) !== size || image.length !== size)
+    throw new PresetError(`preset: size ${image.length}, need ${size}`);
+  if (dv.getUint32(size - 4, true) !== crc32(image.subarray(0, size - 4))) throw new PresetError("preset: crc");
+  const nameBytes = image.subarray(OFF_NAME, OFF_NAME + PRESET_NAME_SIZE);
+  const end = nameBytes.indexOf(0);
+  return {
+    name: String.fromCharCode(...nameBytes.subarray(0, end < 0 ? nameBytes.length : end)),
+    model: image.slice(PRESET_HEADER_SIZE, modelEnd),
+    ir: hasIr ? image.slice(modelEnd, modelEnd + IR_BIN_SIZE) : null,
+  };
+}
+
 // The BANK_BYTES image: slot k at k * SLOT_BYTES, 0xFF everywhere else.
 export function buildBank(slots: readonly (Uint8Array | null)[]): Uint8Array {
   if (slots.length !== SLOT_COUNT) throw new PresetError(`bank: ${slots.length} slots, need ${SLOT_COUNT}`);

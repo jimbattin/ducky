@@ -1,10 +1,12 @@
-import { useState } from "preact/hooks";
-import { MAX_NAME, SLOT_STATUS_NAMES, type SlotMessage } from "../link/protocol";
+import type { SlotView } from "../draft";
+import type { SlotMessage } from "../link/protocol";
 import { GroupBox } from "./GroupBox";
 import { Lamp } from "./Lamp";
 
 interface Props {
   slots: readonly SlotMessage[];
+  /** Per slot: what it shows, the unsaved draft's values when it has one. */
+  views: readonly SlotView[];
   /** The playing slot, null when dry or unknown. */
   playing: number | null;
   selected: number;
@@ -12,8 +14,11 @@ interface Props {
   /** Slot actions are possible: synced and nothing busy. */
   enabled: boolean;
   onSwap: (a: number, b: number) => void;
-  onRename: (slot: number, name: string) => void;
   onErase: (slot: number) => void;
+  /** Slots with unsaved changes. */
+  edits: number;
+  onSave: () => void;
+  onDiscard: () => void;
 }
 
 const OK = 0;
@@ -24,19 +29,16 @@ const swappable = (s: SlotMessage | undefined): s is SlotMessage =>
   s !== undefined && (s.status === OK || s.status === EMPTY);
 
 /**
- * The 8 slots: the playing lamp, the preset, model and IR names, and the per-slot actions. Clicking a row selects it;
- * the slot number is the selection's keyboard button.
+ * The 8 slots: the playing lamp, the preset, model and IR names (unsaved changes in amber), the per-slot actions, and
+ * Save / Discard for every unsaved change. Clicking a row selects it; the slot number is the selection's keyboard
+ * button.
  */
-export function SlotTable({ slots, playing, selected, onSelect, enabled, onSwap, onRename, onErase }: Props) {
-  const [renaming, setRenaming] = useState<{ slot: number; text: string } | null>(null);
+export function SlotTable(p: Props) {
+  const { slots, views, playing, selected, onSelect, enabled, onSwap, onErase, edits } = p;
   const canSwap = (a: number, b: number): boolean => {
     const sa = slots[a];
     const sb = slots[b];
     return enabled && swappable(sa) && swappable(sb) && !(sa.status === EMPTY && sb.status === EMPTY);
-  };
-  const commit = () => {
-    if (renaming) onRename(renaming.slot, renaming.text);
-    setRenaming(null);
   };
 
   return (
@@ -60,15 +62,14 @@ export function SlotTable({ slots, playing, selected, onSelect, enabled, onSwap,
           {slots.map((s) => {
             const k = s.slot;
             const n = k + 1;
-            const ok = s.status === OK;
-            const state = ok ? "ok" : s.status === EMPTY ? "empty" : "corrupt";
-            const editing = renaming?.slot === k;
+            const v = views[k]!;
             return (
               <tr
                 key={k}
                 class="slot-row"
                 aria-selected={k === selected}
                 data-selected={k === selected}
+                data-edited={v.edited}
                 onClick={() => onSelect(k)}
               >
                 <td>
@@ -86,38 +87,15 @@ export function SlotTable({ slots, playing, selected, onSelect, enabled, onSwap,
                     {n}
                   </button>
                 </td>
-                {editing ? (
-                  <td class="slot-rename">
-                    <input
-                      type="text"
-                      aria-label={`New name for slot ${n}`}
-                      maxLength={MAX_NAME}
-                      value={renaming.text}
-                      // biome-ignore lint/a11y/noAutofocus: the field opens on the Rename button's press
-                      autoFocus
-                      onInput={(e) => setRenaming({ slot: k, text: e.currentTarget.value })}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") commit();
-                        else if (e.key === "Escape") setRenaming(null);
-                      }}
-                    />
-                    <button type="button" class="btn small" onClick={commit}>
-                      OK
-                    </button>
-                    <button type="button" class="btn small" onClick={() => setRenaming(null)}>
-                      Cancel
-                    </button>
-                  </td>
-                ) : (
-                  <td class="slot-cell" data-state={state} title={ok ? s.name : undefined}>
-                    {ok ? s.name : state === "empty" ? "Empty" : `Corrupt (${SLOT_STATUS_NAMES[s.status] ?? s.status})`}
-                  </td>
-                )}
-                <td class="slot-cell" title={ok ? s.model : undefined}>
-                  {ok ? s.model : ""}
+                <td class="slot-cell" data-state={v.state} title={v.state === "ok" ? v.name : undefined}>
+                  {v.name}
+                  {v.edited && <span class="visually-hidden"> (unsaved)</span>}
                 </td>
-                <td class="slot-cell" title={ok && s.hasIr ? s.ir : undefined}>
-                  {ok ? (s.hasIr ? s.ir : "—") : ""}
+                <td class="slot-cell" title={v.model || undefined}>
+                  {v.model}
+                </td>
+                <td class="slot-cell" title={v.ir || undefined}>
+                  {v.ir}
                 </td>
                 <td class="slot-buttons">
                   <button
@@ -143,15 +121,6 @@ export function SlotTable({ slots, playing, selected, onSelect, enabled, onSwap,
                   <button
                     type="button"
                     class="btn small"
-                    aria-label={`Rename slot ${n}`}
-                    disabled={!enabled || !ok || editing}
-                    onClick={() => setRenaming({ slot: k, text: s.name })}
-                  >
-                    Rename
-                  </button>
-                  <button
-                    type="button"
-                    class="btn small"
                     aria-label={`Erase slot ${n}`}
                     disabled={!enabled || s.status === EMPTY}
                     onClick={() => onErase(k)}
@@ -164,6 +133,17 @@ export function SlotTable({ slots, playing, selected, onSelect, enabled, onSwap,
           })}
         </tbody>
       </table>
+      <div class="edit-actions">
+        <span class="edit-count">
+          {edits === 0 ? "No unsaved changes" : `${edits} slot${edits === 1 ? "" : "s"} changed`}
+        </span>
+        <button type="button" class="btn" disabled={edits === 0} onClick={p.onDiscard}>
+          Discard
+        </button>
+        <button type="button" class="btn" disabled={!enabled || edits === 0} onClick={p.onSave}>
+          Save
+        </button>
+      </div>
     </GroupBox>
   );
 }

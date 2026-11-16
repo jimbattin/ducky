@@ -1,17 +1,15 @@
-import { useRef, useState } from "preact/hooks";
-import { Details } from "./components/Details";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { EqGraph } from "./components/EqGraph";
 import { FrontPanel } from "./components/FrontPanel";
-import { GroupBox } from "./components/GroupBox";
-import { ImportBox } from "./components/ImportBox";
 import { LogView } from "./components/LogView";
+import { SlotEditor } from "./components/SlotEditor";
 import { SlotTable } from "./components/SlotTable";
 import { NO_STATUS, type Status, StatusLine } from "./components/StatusLine";
 import { type NavTab, TabNav } from "./components/TabNav";
 import { Toolbar } from "./components/Toolbar";
+import { baseDraft, type Draft, draftProblem, isEdited, saveDraft, slotView } from "./draft";
 import { dfuMsg } from "./link/protocol";
 import type { PedalSession } from "./link/session";
-import { NAME_MAX, sanitiseName } from "./name";
 import { errorText, usePedal } from "./usePedal";
 
 type TabId = "presets" | "eq" | "log";
@@ -22,6 +20,15 @@ const TABS: readonly NavTab<TabId>[] = [
 ];
 const OK = 0;
 
+type Drafts = Readonly<Partial<Record<number, Draft>>>;
+const without = (ds: Drafts, ...slots: number[]): Partial<Record<number, Draft>> => {
+  const out = { ...ds };
+  for (const k of slots) delete out[k];
+  return out;
+};
+const slotList = (ks: readonly number[]): string =>
+  `slot${ks.length === 1 ? "" : "s"} ${ks.map((k) => k + 1).join(", ")}`;
+
 export function App() {
   const { s, link, serial, refreshSlots } = usePedal();
   const [tab, setTab] = useState<TabId>("presets");
@@ -29,10 +36,24 @@ export function App() {
   const busyRef = useRef(false);
   const [status, setStatus] = useState<Status>(NO_STATUS);
   const [selected, setSelected] = useState(0);
+  /** Unsaved edits per slot; Save applies them, Discard drops them. */
+  const [drafts, setDrafts] = useState<Drafts>({});
 
   const linked = s.link.linked;
   const ready = linked && s.synced && busy === null;
   const playing = s.status ? s.status.slot : (s.slots?.find((x) => x.playing)?.slot ?? null);
+  const edited = (s.slots ?? []).filter((x) => {
+    const d = drafts[x.slot];
+    return d !== undefined && isEdited(d, x);
+  });
+  const unsaved = edited.length > 0;
+
+  useEffect(() => {
+    if (!unsaved) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [unsaved]);
 
   // One pedal operation at a time.
   const act = async (label: string, fn: () => Promise<string>): Promise<void> => {
@@ -49,44 +70,27 @@ export function App() {
       setBusy(null);
     }
   };
-  /** A slot change, then LIST and the infos again whatever its outcome: the table shows what the flash holds. */
+  /** Slot changes, then LIST and the infos again whatever their outcome: the table shows what the flash holds. */
   const slotChange = (label: string, fn: (session: PedalSession) => Promise<string>) =>
     act(label, () =>
       serial(async (session) => {
-        let text: string;
         try {
-          text = await fn(session);
-        } catch (e) {
+          return await fn(session);
+        } finally {
           await refreshSlots(session).catch(() => undefined);
-          throw e;
         }
-        await refreshSlots(session);
-        return text;
       }),
     );
 
-  const onUpload = (slot: number, image: Uint8Array, name: string) =>
-    void slotChange("UPLOADING… 0 %", async (session) => {
-      const r = await session.upload(slot, image, (sent, size) =>
-        setBusy(`UPLOADING… ${Math.floor((100 * sent) / size)} %`),
-      );
-      return `Uploaded "${name}" to slot ${slot + 1} (flash ${r.flashMs} ms)`;
-    });
-  const onRename = (slot: number, input: string) => {
-    const name = sanitiseName(input.trim());
-    if (name === "") {
-      setStatus({ text: `A name needs 1-${NAME_MAX} characters`, error: true });
-      return;
-    }
-    if (name === s.slots?.[slot]?.name) return;
-    void slotChange("RENAMING…", async (session) => {
-      await session.rename(slot, name);
-      return `Renamed slot ${slot + 1} to "${name}"`;
-    });
-  };
   const onSwap = (a: number, b: number) =>
     void slotChange("SWAPPING…", async (session) => {
       await session.swap(a, b);
+      setDrafts((ds) => {
+        const out = without(ds, a, b);
+        if (ds[a]) out[b] = ds[a];
+        if (ds[b]) out[a] = ds[b];
+        return out;
+      });
       setSelected(b);
       return `Swapped slots ${Math.min(a, b) + 1} and ${Math.max(a, b) + 1}`;
     });
@@ -96,8 +100,37 @@ export function App() {
     if (!window.confirm(question)) return;
     void slotChange("ERASING…", async (session) => {
       await session.erase(slot);
+      setDrafts((ds) => without(ds, slot));
       return `Erased slot ${slot + 1}`;
     });
+  };
+  const onSave = () => {
+    for (const x of edited) {
+      const problem = draftProblem(drafts[x.slot]!);
+      if (problem !== null) {
+        setSelected(x.slot);
+        setStatus({ text: `Slot ${x.slot + 1}: ${problem}`, error: true });
+        return;
+      }
+    }
+    const emptied = edited.filter((x) => x.status === OK && drafts[x.slot]!.model.kind === "none").map((x) => x.slot);
+    if (emptied.length > 0 && !window.confirm(`Saving empties ${slotList(emptied)}. Continue?`)) return;
+    const work = edited.map((x) => [x, drafts[x.slot]!] as const);
+    void slotChange("SAVING…", async (session) => {
+      const done: number[] = [];
+      for (const [x, d] of work) {
+        const label = `SAVING SLOT ${x.slot + 1}…`;
+        setBusy(label);
+        await saveDraft(session, x, d, (f) => setBusy(`${label} ${Math.floor(100 * f)} %`));
+        done.push(x.slot);
+        setDrafts((ds) => without(ds, x.slot));
+      }
+      return `Saved ${slotList(done)}`;
+    });
+  };
+  const onDiscard = () => {
+    if (!window.confirm(`Discard the unsaved changes to ${slotList(edited.map((x) => x.slot))}?`)) return;
+    setDrafts({});
   };
   const onDfu = () => {
     if (
@@ -113,29 +146,33 @@ export function App() {
   };
 
   const sel = s.slots?.[selected];
-  const info = s.infos[selected] ?? null;
   const presets = !linked ? (
     <p class="tab-empty">Waiting for the pedal.</p>
-  ) : s.slots === null ? (
+  ) : s.slots === null || sel === undefined ? (
     <p class="tab-empty">{s.syncError ?? "Reading the pedal…"}</p>
   ) : (
     <>
       <SlotTable
         slots={s.slots}
+        views={s.slots.map((x) => slotView(x, drafts[x.slot]))}
         playing={playing}
         selected={selected}
         onSelect={setSelected}
         enabled={ready}
         onSwap={onSwap}
-        onRename={onRename}
         onErase={onErase}
+        edits={edited.length}
+        onSave={onSave}
+        onDiscard={onDiscard}
       />
-      {sel?.status === OK && (
-        <GroupBox title={`Slot ${selected + 1}`}>
-          {info ? <Details model={info.model} ir={info.ir} /> : <p class="tab-empty">Reading…</p>}
-        </GroupBox>
-      )}
-      <ImportBox slots={s.slots} selected={selected} enabled={ready} onUpload={onUpload} />
+      <SlotEditor
+        key={selected}
+        slot={sel}
+        info={s.infos[selected] ?? null}
+        draft={drafts[selected] ?? baseDraft(sel)}
+        onChange={(d) => setDrafts((ds) => ({ ...ds, [selected]: d }))}
+        onRevert={() => setDrafts((ds) => without(ds, selected))}
+      />
     </>
   );
 

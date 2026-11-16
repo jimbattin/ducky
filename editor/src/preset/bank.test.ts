@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { crc32 } from "../nam/crc32";
-import { BANK_BYTES, buildBank, buildSlot, PresetError, SLOT_BYTES, SLOT_COUNT } from "./bank";
+import { BANK_BYTES, buildBank, buildSlot, PresetError, SLOT_BYTES, SLOT_COUNT, splitSlot } from "./bank";
 
 const FIXTURES = `${import.meta.dir}/../../../tests/fixtures`;
 const read = async (rel: string) => new Uint8Array(await Bun.file(`${FIXTURES}/${rel}`).arrayBuffer());
@@ -9,6 +9,17 @@ const ir = await read("ir/decay.bin");
 
 test("the A2 + decay slot matches the committed fixture byte for byte", async () => {
   expect(buildSlot(model, ir, "A2 + decay")).toEqual(await read("preset/A2_decay.bin"));
+});
+
+test("splitSlot returns the parts a stored preset was built from", async () => {
+  expect(splitSlot(await read("preset/A2_decay.bin"))).toEqual({ name: "A2 + decay", model, ir });
+  expect(splitSlot(buildSlot(model, null, "A2"))).toEqual({ name: "A2", model, ir: null });
+});
+
+test("splitSlot rejects a corrupted image read back", async () => {
+  const image = (await read("preset/A2_decay.bin")).slice();
+  image[5000]! ^= 0xff;
+  expect(() => splitSlot(image)).toThrow("preset: crc");
 });
 
 test("a model-only slot is 7988 bytes with flags 0 and a valid CRC", () => {
