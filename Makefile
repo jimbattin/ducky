@@ -1,4 +1,5 @@
-# Host builds, no libDaisy: `make host` -> build/host/tests and build/host/render; `make test` builds and runs the tests.
+# Host builds, no libDaisy: `make host` -> build/host/tests and build/host/render; `make test` runs the tests and
+# checks docs/MIDI.md is current; `make midi-doc` regenerates docs/MIDI.md from daisy/src/link.h.
 include daisy/cmsis_fft.mk
 
 HOST_DIR := build/host
@@ -20,6 +21,9 @@ $(HOST_DIR)/tests: $(TEST_SOURCES) $(DSP_HEADERS) $(HOST_CMSIS_OBJS) | $(HOST_DI
 $(HOST_DIR)/render: tools/render.cpp $(DSP_HEADERS) $(HOST_CMSIS_OBJS) | $(HOST_DIR)
 	$(CXX) $(HOST_CXXFLAGS) tools/render.cpp $(HOST_CMSIS_OBJS) -o $@
 
+$(HOST_DIR)/gen_midi_doc: tools/gen_midi_doc.cpp $(DSP_HEADERS) | $(HOST_DIR)
+	$(CXX) $(HOST_CXXFLAGS) tools/gen_midi_doc.cpp -o $@
+
 # Third-party C: no -Werror, and $(CC) (g++ would compile .c as C++).
 $(HOST_DIR)/cmsis/%.o: %.c daisy/cmsis_fft.mk | $(HOST_DIR)/cmsis
 	$(CC) -std=gnu11 -O2 -D__GNUC_PYTHON__ $(CMSIS_FFT_DEFS) -I$(CMSIS_DIR)/Include -I$(CMSIS_DIR)/PrivateInclude -c $< -o $@
@@ -29,10 +33,17 @@ render: $(HOST_DIR)/render
 $(HOST_DIR) $(HOST_DIR)/cmsis:
 	mkdir -p $@
 
-test: host
+test: host check-midi-doc
 	$(HOST_DIR)/tests
+
+midi-doc: $(HOST_DIR)/gen_midi_doc
+	$(HOST_DIR)/gen_midi_doc > docs/MIDI.md
+
+# Fails when docs/MIDI.md is not what `make midi-doc` would write.
+check-midi-doc: $(HOST_DIR)/gen_midi_doc
+	$(HOST_DIR)/gen_midi_doc | diff -u docs/MIDI.md -
 
 clean:
 	rm -rf build
 
-.PHONY: host render test clean
+.PHONY: host render test midi-doc check-midi-doc clean

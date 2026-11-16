@@ -15,13 +15,15 @@ This needs `arm-none-eabi-gcc` (tested with 13.3.rel1), `dfu-util`, `uv`, `g++`,
 ## Build, test, flash, log
 
 ```sh
-make test                        # host GoogleTest: build/host/tests (tests/*.cpp); also builds build/host/render
+make test                        # host GoogleTest: build/host/tests (tests/*.cpp); also builds build/host/render and fails when docs/MIDI.md is stale
+make midi-doc                    # regenerates docs/MIDI.md from daisy/src/link.h
 make -C daisy -j                 # daisy/build/hothouse/ducky.bin; the link prints the memory-usage table
 make -C daisy APP=bench -j       # daisy/build/hothouse-bench/ducky_bench.bin ("Bench" below)
 tools/flash_when_ready.sh [FILE.bin [ADDR]]   # sends DFU over USB-MIDI, waits for 0483:df11, flashes ADDR (default 0x90040000)
 bun tools/preset_bank.ts -o build/bank.bin --slot 1 MODEL.nam --ir IR.wav --slot 2 …   # preset bank ("Preset store")
 tools/flash_when_ready.sh build/bank.bin 0x90400000                                   # writes all 8 slots
 uv run tools/usb_log.py 10 --identity   # 10 s of log, preceded by the Identity Reply
+bun tools/pedal.ts list                 # slots over the link while the pedal plays: list, upload, erase, rename, swap, status ("Link protocol")
 make -C editor test check        # converter tests (bun:test), tsc, Biome
 bun tools/nam_convert.ts models/*.nam   # .nam -> .bin next to each input (docs/NAM_FORMAT.md)
 bun tools/ir_convert.ts IR.wav...       # .wav -> IR .bin next to each input (docs/FILTERS.md)
@@ -29,25 +31,26 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 ```
 
 - **Build options:** `daisy/Makefile` takes `BOARD=hothouse` (the only board) and `APP=ducky` (default) or `APP=bench`. The build directory is `daisy/build/<BOARD>`, or `daisy/build/<BOARD>-bench` for the bench.
-- **Presets** are not part of the build: they live in QSPI and are written with a bank image ("Preset store"). An empty bank plays dry. `MODEL=`/`IR=` (M4/M5) are gone.
+- **Presets** are not part of the build: they live in QSPI and are written with a bank image, or slot by slot over the link with `tools/pedal.ts` ("Preset store"). An empty bank plays dry. `MODEL=`/`IR=` (M4/M5) are gone.
 - **CMSIS-DSP:** `libdaisy.a` has no CMSIS-DSP, so both builds compile the FFT sources `daisy/cmsis_fft.mk` lists, with its table defines.
 - **Optimisation flags:** `-O3 -fno-schedule-insns -fno-schedule-insns2`. With GCC's instruction scheduling off, the order of the DSP's statements is the order of its instructions, which the engine relies on (`docs/M7_PERFORMANCE.md`).
 - **Build id:** the build writes `build_id.c` with the short commit hash, plus `+dirty` when tracked files differ. Untracked files do not make it dirty.
 - **Flashing:** `flash_when_ready.sh [FILE.bin [ADDR]]` needs no button presses while Ducky is running. `ADDR` is `0x90040000` (firmware, the default) or `0x90400000` (a preset bank); anything else is refused. Both end with `:leave`, so the pedal restarts into Ducky. If the Seed runs other firmware, either send that firmware's own DFU command or hold BOOT, tap RESET, release BOOT. Then run the script.
-- **Several Seeds attached:** every Seed enumerates as `0483:5740`. Pick Ducky's by its USB path (`BUS-PORT`, as in `/sys/bus/usb/devices` and `dfu-util -p`; the physical port, so it survives the DFU reset): `uv run tools/usb_log.py 10 --port 3-4` and `DK_USB_PORT=3-4 tools/flash_when_ready.sh`. Without it, `usb_log.py` prints `-- usb: N Seeds attached (…); pass --port` and exits 2, and the flasher refuses when more than one `0483:5740`/`0483:df11` is present. `--identity` shows which pedal a path holds (`device 64` is Ducky).
-- **Port conflicts:** `usb_log.py` and `flash_when_ready.sh` claim the USB-MIDI interface through libusb. They detach the kernel driver, which drops the ALSA port while they run. A program holding the ALSA port does not block them. It does block `amidi`, which then fails with "Device or resource busy"; a browser tab using Web MIDI is a common holder.
+- **Several Seeds attached:** every Seed enumerates as `0483:5740`. Pick Ducky's by its USB path (`BUS-PORT`, as in `/sys/bus/usb/devices` and `dfu-util -p`; the physical port, so it survives the DFU reset): `uv run tools/usb_log.py 10 --port 3-4`, `DK_USB_PORT=3-4 tools/flash_when_ready.sh` and `bun tools/pedal.ts --port 3-4 …` (or `DK_USB_PORT`). Without it, `usb_log.py` prints `-- usb: N Seeds attached (…); pass --port` and exits 2, `pedal.ts` prints `pedal: N Seeds attached (…); pass --port` and exits 2, and the flasher refuses when more than one `0483:5740`/`0483:df11` is present. `--identity` shows which pedal a path holds (`device 64` is Ducky); `pedal.ts` checks it before every command (`pedal: no Ducky on PATH`).
+- **Port conflicts:** `usb_log.py` and `flash_when_ready.sh` claim the USB-MIDI interface through libusb. They detach the kernel driver, which drops the ALSA port while they run (`pedal.ts` then finds `no Seed MIDI port`). A program holding the ALSA port does not block them. It does block `amidi` and `pedal.ts`, which open the ALSA rawmidi device exclusively (`Device or resource busy`, `pedal: /dev/snd/midiC1D0 busy: …`); a browser tab using Web MIDI is a common holder. So `pedal.ts status` and the other `pedal.ts` commands cannot run at the same time.
 - **Build warnings:** libDaisy's startup file, newlib's `_read`/`_write`/… stubs and the linker's "RWX segment" all warn on every build. Ducky's own sources build without warnings.
 
 ## Source layout
 
 | Path | Contents | Host-portable |
 |---|---|---|
-| `daisy/src/ducky.cpp` | The pedal: the boot slot scan, `AudioCallback`, the preset switch (`servePresets`), the state record (`writeState`), the main loop, the log lines. | no |
+| `daisy/src/ducky.cpp` | The pedal: the boot slot scan, `AudioCallback`, the preset switch (`servePresets`), the state record (`writeState`), the link's slot commands (`onCommand`, `writeSlot`) and replies (`serveReplies`), the main loop, the log lines. | no |
 | `daisy/src/bench.cpp` | `APP=bench`: the A2-Lite and IR device checks and the cycle timing of the engine, the IR, the EQ and the whole chain ("Bench"). | no |
 | `daisy/src/board.h` | `dkboard::Board`: the HotHouse pins, knobs, toggles, footswitches. `kBoardId` 1. | no |
 | `daisy/src/firmware.h` | `dkfw::Start` (flush-to-zero, board init, MPU) and `kBuildId`. | no |
-| `daisy/src/usb_link.h/.cpp` | `dkusb`: USB-MIDI transport, a non-blocking double-buffered send, `Serve` (Identity, HELLO, DFU), `EnterDfu`. | no |
-| `daisy/src/link.h` | `dklink`: the SysEx wire format, `TxBuffer`, `SysExAssembler`, `PedalCommand`. The protocol reference. | yes |
+| `daisy/src/usb_link.h/.cpp` | `dkusb`: USB-MIDI transport, a non-blocking double-buffered send, `Serve` (Identity, HELLO, DFU, then other commands to the caller's `onCommand`), `EnterDfu`. | no |
+| `daisy/src/link.h` | `dklink`: the SysEx wire format, the septet and Pack7 codecs, `TxBuffer` (LOG, SLOT, RESULT, STATUS, Identity), `SysExAssembler`, `PedalCommand`, and the protocol tables `kCommands`/`kResults` that `docs/MIDI.md` is generated from. The protocol reference. | yes |
+| `daisy/src/upload.h` | `dklink::Upload`: UPLOAD BEGIN/CHUNK staging (CRC per chunk, resends, gaps). | yes |
 | `daisy/src/controls.h` | `dkctl::ToggleFilter` (30 ms toggle hysteresis), `dkctl::Blinker` (LED2's N blinks). | yes |
 | `daisy/src/dsp/blocks.h` | `dkdsp::kSampleRate` (48 kHz), `kBlockSize` (48), `kIrTaps` (2048). | yes |
 | `daisy/src/dsp/mute.h` | `dkdsp::MuteRamp`: FS1's 5 ms linear mute, and the preset switch's fade. | yes |
@@ -64,6 +67,8 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `daisy/STM32H750IB_sram_ducky.lds` | libDaisy's BOOT_SRAM script plus the `.dtcm_data`, `.dtcm_bss`, `.itcm_text`, `.d2_bss`, `.sdram_bss` sections and the 16 KB stack reserve. | |
 | `tests/` | GoogleTest for the host-portable headers. Never include `board.h`, `firmware.h` or `usb_link.h` here. | |
 | `tools/usb_log.py`, `tools/flash_when_ready.sh` | Log reader with `--port`, `--identity` and `--dfu`, and the flasher (`DK_USB_PORT`). | |
+| `tools/gen_midi_doc.cpp` | `build/host/gen_midi_doc`: prints `docs/MIDI.md` from `link.h` (`make midi-doc`; `make test` diffs it). | |
+| `editor/src/link/`, `tools/pedal.ts`, `tools/rawmidi.ts`, `tools/slot_source.ts` | The link's TypeScript side (`protocol.ts`: builders, codecs, parsing; `session.ts`: `PedalSession`, the upload with its retries), the slot CLI, its ALSA rawmidi transport, and the model + IR → slot image loading it shares with `preset_bank.ts`. | |
 | `editor/src/nam/`, `tools/nam_convert.ts`, `tools/nam_reference.sh`, `tools/make_stimuli.py` | The `.nam` → model binary converter and its CLI, the NAM reference renders, and their stimulus (`docs/NAM_FORMAT.md`). | |
 | `editor/src/ir/`, `tools/ir_convert.ts`, `tools/make_ir_fixture.ts` | The `.wav` → IR binary converter and its CLI, and the generator of `tests/fixtures/ir/decay.wav` (`docs/FILTERS.md`). | |
 | `editor/src/preset/`, `tools/preset_bank.ts`, `tools/make_preset_fixture.ts` | The slot and bank builders (`buildSlot`, `buildBank`), the bank CLI, and the generator of `tests/fixtures/preset/A2_decay.bin`. | |
@@ -95,18 +100,18 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
   6. copies the left output to the right and measures the output peak;
   7. drives LED1 (on unless muted) and LED2 (`Blinker`);
   8. measures the load and the underruns (a callback longer than one block period).
-- **Dry:** with no valid slot at boot, the chain is the input trim, the EQ, the output gain and the mute, with the calibration and the level match at unity; FS2 does nothing.
+- **Dry:** with no valid slot, the chain is the input trim, the EQ, the output gain and the mute, with the calibration and the level match at unity; FS2 does nothing. The pedal goes dry at boot with no valid slot, or when the link erases the last one; it leaves dry when a slot is uploaded (`gModelOn` follows the loaded preset through the switch handshake).
 - **Input calibration:** NeuralAmpModelerPlugin's: the input gain at noon is `kInputLevelDbu − input_level_dbu`, so a guitar drives the model as hard as it drove the captured amp. `kInputLevelDbu` is +4.5 dBu, the level at the input jack that reaches 0 dBFS, derived from the datasheets and not measured: the PCM3060 full scale is 0.6 VCC Vpp (VCC 4.5 V), behind the Seed's 3.6 kΩ series resistor into the codec's 10 kΩ input (3.67 Vpp), and the HotHouse input is a unity-gain buffer. A model captured at +15 dBu gets −10.5 dB. A model without `input_level_dbu` is assumed captured at +12 dBu, the plugin's default calibration level (−7.5 dB). Without calibration, noon drove the models about 10 dB harder than at capture, and they sounded distorted.
 - **Level match:** `LevelMatchGain` brings the model's A2-Lite `loudness` to −18 dB (NeuralAmpModelerPlugin's normalisation target); a model without `loudness` plays at unity. `loudness` is measured at the capture level, before the input calibration, so a clean model plays a little quieter than a driven one at noon (SSS vs Fender: 1.8 dB, `docs/ROADMAP.md` M4). At boot the input gain starts at the calibration and the output gain at 0, so the output fades in over the knob time constant.
-- **Main loop** runs `dkusb::Serve(logBoot)`, `servePresets` and the once-a-second log lines. If the IR convolver's FFT does not initialise, audio never starts and the LEDs stay off; the main loop serves USB (DFU included) and logs `ir fft` once a second.
+- **Main loop** runs `serveReplies` (LIST's SLOTs, the pending RESULT, STATUS every 100 ms with WATCH on), `dkusb::Serve(logBoot, onCommand)`, `servePresets` and the once-a-second log lines. If the IR convolver's FFT does not initialise, audio never starts and the LEDs stay off; the main loop serves USB (DFU included) and logs `ir fft` once a second.
 - **Sharing:** the two threads share only `std::atomic`s, each with one writer:
   - callback → main loop, relaxed: `gKnob`, `gToggle`, `gFsHeld`, `gMutedPub`, `gUnderruns`, `gPeak`, `gOutPeak`, `gLoadAvg`, `gLoadMax`, `gFs2Presses`; release/acquire: `gSwapParked`;
-  - main loop → callback, relaxed: `gPeakReset`, `gLoadReset`, `gBlinkCount`; release/acquire: `gSwapReq`, `gSwapLoaded` (which publishes the plain `gNextLevel`, `gNextInCal`, `gNextIrOn`) and `gBlinkReq`.
+  - main loop → callback, relaxed: `gPeakReset`, `gLoadReset`, `gBlinkCount`; release/acquire: `gSwapReq`, `gSwapLoaded` (which publishes the plain `gNextLevel`, `gNextInCal`, `gNextIrOn`, `gNextModelOn`) and `gBlinkReq`.
 - **Preset switch:** the engine and the convolver have two owners in turn, and the handshake hands them over.
-  1. The main loop steps its target slot once per FS2 press (`NextFilled`), restarts LED2's blinks for it, and, when it differs from the loaded slot, raises `gSwapReq`.
+  1. The main loop steps its target slot once per FS2 press (`NextFilled`), restarts LED2's blinks for it, and, when it differs from the loaded slot or a slot change asked for a reload (`gReload`: an upload into the playing slot), raises `gSwapReq`. The target may be dry (-1).
   2. The callback fades out over 5 ms. Once the fade lands on 0 it parks: it writes silence, touches neither the engine nor the convolver nor the gains, and stores the request in `gSwapParked`.
   3. The main loop loads the target (`A2Lite::Load` and `IrConvolver::Load` both reset their state), computes its gains, and stores the request in `gSwapLoaded`.
-  4. The callback takes the gains and IR flag and fades in over 5 ms.
+  4. The callback takes the gains, the IR flag and the model flag (dry or not) and fades in over 5 ms.
   Presses during a switch move the target, and the next switch follows at once, so fast presses coalesce. 2 s after the last switch, the main loop writes the slot to the state record if it changed.
 
 ## Memory
@@ -115,13 +120,13 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 |---|---|---|---|
 | ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages, the convolver, the mid and the gains inlined), `A2Lite::RunLayer`, `CutFilter::Process` (8 KB in all) | |
 | DTCM `0x20000000` | 128 KB | The engine (99,124 bytes in `.dtcm_bss`: history 90,600, weights 7,480); callback state; the 16 KB stack reserve at the top | |
-| AXI SRAM `0x24000000` | 480 KB | Code (CMSIS-DSP's FFT included), `.data`, `.bss` with the IR convolver (68 KB): 219 KB in total | |
+| AXI SRAM `0x24000000` | 480 KB | Code (CMSIS-DSP's FFT included), `.data`, `.bss` with the IR convolver (68 KB): 226 KB in total | |
 | D2 SRAM `0x30008000` | 256 KB | — (the convolver measured slower here than in AXI SRAM, `docs/FILTERS.md`) | |
-| SDRAM `0xC0000000` | 64 MB | The 8 parsed presets (`gPresets`, 127,232 bytes in `.sdram_bss`) | |
+| SDRAM `0xC0000000` | 64 MB | The 8 parsed presets (`gPresets`, 127,232 bytes), the link's upload buffer (16,024), RENAME/SWAP scratch (2 × 16,024) and COMMIT's parse target (`gCheck`, 15,904): 191,208 bytes in `.sdram_bss` | |
 | QSPI `0x90000000` | 8 MB | Image at `0x90040000`; preset slots at `0x90400000`; state records at `0x90480000` ("Preset store") | |
 
 - **TCM copy:** `.itcm_text` and `.dtcm_data` are copied from their SRAM load image in `.preinit_array` (`memory.cpp`), before any constructor runs; `.dtcm_bss` is zeroed there.
-- **No-load sections:** `.dtcm_bss` (`DK_DTCM_BSS`) is `NOLOAD`, so a large all-zero object such as the engine adds nothing to the image; only objects with an all-zero static initialiser belong there. `.d2_bss` and `.sdram_bss` are `NOLOAD` too, but nothing zeroes them; their owner clears them (`gPresets` is valid only where its slot parsed).
+- **No-load sections:** `.dtcm_bss` (`DK_DTCM_BSS`) is `NOLOAD`, so a large all-zero object such as the engine adds nothing to the image; only objects with an all-zero static initialiser belong there. `.d2_bss` and `.sdram_bss` are `NOLOAD` too, but nothing zeroes them; their owner clears them (`gPresets` is valid only where its slot parsed; the upload buffer only up to `Upload::next()`).
 - **Template placement:** GCC 13 drops section attributes from template instantiations. A hot template reaches ITCM only when inlined into a `DK_ITCM` caller, so mark it `[[gnu::always_inline]]`. Check placement with `arm-none-eabi-nm -C daisy/build/hothouse/ducky.elf`.
 - **MPU** (`firmware.h`):
   - Region 0 is a no-access background over `0x60000000–0xDFFFFFFF`, which covers all of QSPI. This avoids the ES0392 2.7.5 stall on speculative reads of `0x907FFFFF`.
@@ -137,7 +142,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `0x90400000 + k × 0x10000` | 64 KB each (one erase block) | Slot k (0–7; slot k+1 on the pedal and in the logs) |
 | `0x90480000`, `0x90481000` | 4 KB each (one erase sector) | State records A and B |
 
-The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes the bank there. The pedal itself writes only the state sectors.
+The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes the bank there. The pedal itself writes the state sectors, and single slots on the link's commands ("Slot writes").
 
 **Slot (format 1),** little-endian; erased flash (0xFF) follows it:
 
@@ -165,18 +170,28 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 
 **Switching cost:** the load is `A2Lite::Load` (138 µs), plus `IrConvolver::Load` (about 860 µs) for a preset with an IR. The audible gap is the 5 ms fade out, the load, and the 5 ms fade in.
 
+**Slot writes (M7):** UPLOAD COMMIT, ERASE, RENAME and SWAP (`docs/MIDI.md`) go through `writeSlot` in the main loop: erase the slot's 64 KB block, write the image, invalidate the D-cache over the slot, and compare it through the memory-mapped QSPI (an erase checks for 0xFF throughout), then re-parse the slot (`rescan`). COMMIT parses the staged image before it touches flash, so an invalid upload never erases a slot. RENAME and SWAP copy the slot images into SDRAM scratch first; SWAP writes a, then b. The audio callback reads no QSPI, so audio runs through every write; the main loop blocks for it (137–216 ms per slot, "Measured (M7)").
+- **libDaisy quirk:** `QSPIHandle::Erase` over a whole 64 KB block uses the block-erase command and leaves the QSPI in indirect mode, where the next read of the mapped region stopped the pedal (the first ERASE on hardware never answered). `Write` and `EraseSector` return to memory-mapped mode, so an erase without data ends with an `EraseSector` of the slot's first 4 KB.
+- **Playback after a slot change:** an upload into the target slot sets `gReload`, so it is reloaded through the usual switch (one fade); an upload while dry plays the new slot; a target slot that stops parsing (erase, failed write) moves to the next filled slot, with LED2's blinks, or to dry. SWAP remaps the playing and target slot numbers without a switch, and the state record follows 2 s later. `docs/MIDI.md` "Slot changes and playback" is the host-facing summary.
+
 ## Link protocol
 
-`daisy/src/link.h` is the reference. Frames are `F0 7D 64 01 <cmd> … F7` (device byte `0x64`, version `0x01`).
+`daisy/src/link.h` is the reference: the command and result tables (`kCommands`, `kResults`) generate `docs/MIDI.md` (`make midi-doc`; `make test` fails when it is stale), which documents the framing, every command, the upload and the playback rules. Frames are `F0 7D 64 01 <cmd> … F7` (device byte `0x64`, version `0x01`). M0's HELLO, DFU, LOG and Identity are unchanged; M7 adds LIST, ERASE, RENAME, SWAP, WATCH, UPLOAD BEGIN/CHUNK/COMMIT, and the SLOT, RESULT and STATUS replies. Every request except HELLO and DFU gets exactly one RESULT, last.
 
-| Direction | Command | Meaning |
-|---|---|---|
-| host → pedal | `01` HELLO | The pedal answers with the boot line, the `slots` line and the current preset's `preset`, `model` and `ir` lines. |
-| host → pedal | `06` DFU | The pedal logs `dfu reset` and restarts into the Daisy bootloader with no timeout. |
-| host → pedal | Identity Request `F0 7E <id> 06 01 F7` | The pedal answers `F0 7E 7F 06 02 7D 64 00 01 00 00 00 00 00 <build id> F7`. |
-| pedal → host | `12` LOG | One printable-ASCII line of at most 120 characters. |
+**CLI:** `bun tools/pedal.ts [--port BUS-PORT] COMMAND`, slots 1–8:
 
-Other commands with this header log `link: unknown command CC`. Other devices' frames are ignored. M7 extends the protocol and generates `docs/MIDI.md` from it.
+```
+list                                     # one line per slot: N STATUS "NAME" model "M" ir "I"|none, * on the playing one
+upload N MODEL [--ir IR] [--name NAME]   # MODEL/IR as preset_bank.ts reads them; prints flash ms, retries, seconds
+erase N | rename N NAME | swap A B       # each prints the flash time
+status [SECONDS]                         # WATCH: a STATUS line every 100 ms and the LOG lines, for SECONDS (5) or until Ctrl-C
+```
+
+- Usage errors exit 2; a refused command (`pedal: RENAME: slot-state`), a rejected file or no reply exits 1.
+- The upload resends a CHUNK on no reply (1 s) or `crc` and gives up after 5 tries of one chunk; COMMIT is not resent (`UPLOAD COMMIT: no reply; check with list`).
+- Transport: the ALSA rawmidi device of the Seed's sound card (`/dev/snd/midiC<N>D0`, found through `/sys/class/sound/card*/device` with `0483:5740`), opened exclusively and nonblocking; input pending at open (stale replies) is dropped. The protocol code (`editor/src/link/`) is plain TypeScript, shared with the M8 editor.
+- `pedal.ts` and `usb_log.py` cannot run together ("Port conflicts").
+- Unknown commands with this header still log `link: unknown command CC`. Other devices' frames are ignored.
 
 ## Log lines
 
@@ -188,6 +203,10 @@ model loudness -15.9 dB level -2.1 dB input +15.0 dBu cal -10.5 dB "FNDR BFSR VB
 ir taps 2048 src 48000 Hz gain -15.1 dB "YA FDMN 412 BLND Mix 01"                             (boot / HELLO)
 preset 4 "A2" load 138 us                                                                     (after a switch, with model and ir)
 state slot 4 seq 12 85 ms                                                                     (2 s after a switch)
+upload slot 8 "A2" 167 ms                                                                     (link: UPLOAD COMMIT, then the slots line)
+erase slot 1 215 ms                                                                           (link: ERASE, then the slots line)
+rename slot 2 "Renamed" 156 ms                                                                (link: RENAME, then the slots line)
+swap slots 1 8 314 ms                                                                         (link: SWAP, then the slots line)
 ctl k 31 22 33 58 25 34 sw 2 0 1 fs 0 0                                                       (every second)
 load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS                   (every second)
 ```
@@ -197,6 +216,7 @@ load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS     
 - **`model` line:** the preset's model: `loudness` and `input_level_dbu` (`none` without them), the level-match and input-calibration gains, in tenths of a dB, then its name, last because log lines stop at 120 characters. `model none` when dry.
 - **`ir` line:** the preset's IR: tap count, source rate, the converter's normalisation gain (reference band at 0 dB, `docs/FILTERS.md` "Converter"), and its name. `ir none` without an IR or when dry. `ir fft` alone, every second, when the convolver's FFT does not initialise.
 - **`state` line:** the slot and seq written to the state record and the time the erase and write took; `state write failed` when the readback does not match.
+- **Slot change lines** (`upload slot`, `erase slot`, `rename slot`, `swap slots`): the slot(s), 1-based, the new name, and the time the flash erase, write and readback took; then the `slots` line. `slot write failed N` when a write or its readback failed (the command answers `flash`).
 - **`ctl` line:**
   - `k`: knobs 1–6, in percent.
   - `sw`: SW1–SW3 after the 30 ms filter, as 2 up, 1 middle, 0 down.
@@ -263,6 +283,30 @@ Bank: slot 1 the Fender with the FDMN IR, slot 2 the SSS, slot 4 `A2.nam`.
 - **Switching:** on the pedal, while playing, LED2 blinks the slot number, FS2 skips the empty slot 3 and wraps, and no switch clicks. The saved slot survives a power cycle.
 - **Corrupt slot:** a byte flipped in slot 2 logs `slots ok crc empty ok …`; the saved slot 2 falls back to slot 1, and FS2 goes 1 → 4 → 1.
 - **Power loss during a bank write:** power was pulled at 84 % of dfu-util's erase pass. The pedal booted with `slots empty …` and played dry, and the next bank flash restored all three slots.
+
+## Measured (M7, Seed 1.2 / PCM3060)
+
+Over the link with `bun tools/pedal.ts`, audio running throughout (input −16…−21 dBFS); bank as in M6 before and after.
+
+| | |
+|---|---|
+| Upload, wall time (identity check excluded) | 0.3 s with an IR (16,024 bytes, 63 chunks), 0.2 s without (7,732, 31), flash included |
+| Upload retries | 0 over 16 uploads |
+| Flash time: upload (64 KB erase, write, readback) | 137–173 ms |
+| Flash time: erase (64 KB erase, 4 KB sector erase, 0xFF check) | 188–215 ms |
+| Flash time: rename | 152–156 ms |
+| Flash time: swap (two slot writes) | 301–316 ms |
+| Load during the operations | avg 500, max 502–504 permille with an IR, 394/395 without, 42 dry: as in M6 |
+| Underruns | 0, across all of the above and a 10 s `status` run (100 STATUS lines, one per 100 ms) |
+| DTCM | 115,896 bytes of 128 KB |
+| ITCM | 8,664 bytes of 64 KB |
+| SRAM | 231,460 bytes of 480 KB |
+| SDRAM | 191,208 bytes |
+| Image | 132,984 bytes |
+
+- **Playback:** an upload into the playing slot logged one `preset` reload; an upload while dry started playing it; erasing the playing slot moved to the next filled one (1 → 2 → … → 8 as each was erased), and the last erase went dry (`preset none`, `status … slot dry`). SWAP 1 8 with slot 1 playing logged no `preset` line, `list` then marked slot 8 playing, the state record followed (`state slot 8`), and slot 8 played after a restart (a DFU reflash, not a power cycle).
+- **Refusals:** `rename` of an empty slot answers `slot-state`, `swap 2 2` `bad-request`, `upload 9` is a usage error (exit 2).
+- **Not checked by ear or eye in this run:** the reload's fade, LED2's blinks after an erase, and the STATUS knob/switch fields following moving controls (they matched the `ctl` line at rest).
 
 ## Bench
 

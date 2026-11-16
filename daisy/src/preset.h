@@ -137,6 +137,15 @@ inline void BuildState(uint8_t* out, uint32_t seq, int slot) {
     detail::PutLe32(out + 12, dkmodel::Crc32(out, 12));
 }
 
+// Sets the name of the preset image[0, size) (a parsed slot, size its size field): name[64] zero-filled, then len
+// (<= kNameSize - 1) bytes of name, and the CRC at size - 4 rewritten.
+inline void Rename(uint8_t* image, size_t size, const char* name, size_t len) {
+    if (len > kNameSize - 1) len = kNameSize - 1;
+    std::memset(image + detail::kOffName, 0, kNameSize);
+    std::memcpy(image + detail::kOffName, name, len);
+    detail::PutLe32(image + size - 4, dkmodel::Crc32(image, size - 4));
+}
+
 // The next filled slot after from, wrapping: from itself when it is the only filled slot; -1 when none is filled.
 inline int NextFilled(const bool filled[kSlots], int from) {
     for (int i = 1; i <= kSlots; ++i) {

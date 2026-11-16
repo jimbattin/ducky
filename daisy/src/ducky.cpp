@@ -1,19 +1,20 @@
-// Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). M6: the left input goes through Knob 1's input trim,
+// Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). M7: the left input goes through Knob 1's input trim,
 // the current preset's A2-Lite model (dsp/a2lite.h) and cab IR when it has one (dsp/convolver.h), the EQ
 // (dsp/filters.h: low-cut on Knobs 5-6 and SW1, the SW3 mid, high-cut on Knobs 4-3 and SW2), and Knob 2's output
 // volume times the model's level match (dsp/gain.h), then FS1's mute ramp and the preset switch's fade, and is copied
-// to both outputs (dual mono). Presets live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU) and
-// are parsed into SDRAM at boot; corrupt or empty slots are skipped. With no valid slot the pedal plays dry (trim, EQ,
-// volume, mute). If the IR convolver's FFT does not initialise, audio never starts: the pedal serves USB (DFU
-// included) and logs "ir fft" once a second.
+// to both outputs (dual mono). Presets live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU, or
+// slot by slot over the link: docs/MIDI.md) and are parsed into SDRAM at boot and after every slot change; corrupt or
+// empty slots are skipped. With no valid slot the pedal plays dry (trim, EQ, volume, mute). If the IR convolver's FFT
+// does not initialise, audio never starts: the pedal serves USB (DFU included) and logs "ir fft" once a second.
 //
 // Two threads of control:
 // - AudioCallback (the audio DMA interrupt, 48 kHz, 48-sample blocks): reads the controls (30 ms toggle hysteresis),
 //   toggles the mute on FS1, counts FS2 presses, smooths knobs 1-2, runs the trim, the engine, the IR, the EQ and the
 //   output gain, runs the mute ramp and the preset fade, drives LED1 and LED2's blinks and measures the input and
 //   output peaks, the load and the underruns.
-// - The main loop: USB (usb_link.h: Identity, HELLO, DFU), the preset switch (servePresets), the state record
-//   (writeState) and the once-a-second log lines.
+// - The main loop: USB (usb_link.h: Identity, HELLO, DFU; the slot commands in onCommand, their replies and the
+//   STATUS stream in serveReplies), the preset switch (servePresets), the state record (writeState), the slot writes
+//   (writeSlot) and the once-a-second log lines.
 // A preset switch: the main loop raises gSwapReq; the callback fades out (gSwapFade), then parks (writes silence,
 // touches neither the engine nor the IR) and acks with gSwapParked; the main loop loads the next preset into the engine
 // and the IR and publishes its gains with gSwapLoaded; the callback takes them and fades in.
@@ -21,7 +22,7 @@
 // - callback -> main loop (relaxed): gKnob, gToggle, gFsHeld, gMutedPub, gUnderruns, gPeak, gOutPeak, gLoadAvg,
 //   gLoadMax, gFs2Presses; gSwapParked (release/acquire);
 // - main loop -> callback (relaxed): gPeakReset, gLoadReset, gBlinkCount; gSwapReq, gSwapLoaded (publishing gNextLevel,
-//   gNextInCal, gNextIrOn) and gBlinkReq (release/acquire).
+//   gNextInCal, gNextIrOn, gNextModelOn) and gBlinkReq (release/acquire).
 // Memory (memory.h): AudioCallback runs from ITCM; the engine, the EQ and the callback's own state live in DTCM, the
 // IR convolver (66 KB of spectra, streamed through the D-cache every block) in AXI SRAM, which the bench measured 21%
 // faster for it than D2 SRAM (docs/FILTERS.md), the parsed presets in SDRAM. FPSCR.FZ is on (denormals flush to zero).
@@ -45,6 +46,7 @@
 #include "memory.h"
 #include "model.h"
 #include "preset.h"
+#include "upload.h"
 #include "usb_link.h"
 
 using namespace daisy;
@@ -76,7 +78,7 @@ DK_DTCM float gOutPeakAcc;     // output peak since the main loop last read gOut
 DK_DTCM bool gMuted = false;   // FS1's state; not persisted
 dkdsp::IrConvolver gIr;        // AXI SRAM; Init before StartAudio; the main loop loads it as it does gEngine
 DK_DTCM bool gIrOn = false;    // the current preset has an IR
-DK_DTCM bool gModelOn = false;  // a preset is loaded: false plays dry (set before StartAudio, never changed after)
+DK_DTCM bool gModelOn = false;  // a preset is loaded: false plays dry (taken from gNextModelOn when fading in)
 DK_DTCM dkdsp::Eq gEq;
 // The preset switch: kPlaying -> (gSwapReq) kFadingOut -> (gSwapFade silent) kParked -> (gSwapLoaded) kPlaying.
 enum class Swap : uint8_t { kPlaying, kFadingOut, kParked };
@@ -105,8 +107,8 @@ std::atomic<uint32_t> gSwapReq{0};     // a new value asks the callback to fade 
 std::atomic<uint32_t> gSwapLoaded{0};  // gSwapReq's value once the next preset is loaded (release): fade in
 std::atomic<uint32_t> gBlinkReq{0};    // a new value starts gBlinkCount blinks on LED2 (release)
 std::atomic<uint8_t> gBlinkCount{0};
-float gNextLevel = 1.0f, gNextInCal = 1.0f;  // the loaded preset's gains and IR, published by gSwapLoaded
-bool gNextIrOn = false;
+float gNextLevel = 1.0f, gNextInCal = 1.0f;  // the loaded preset's gains, IR and model, published by gSwapLoaded
+bool gNextIrOn = false, gNextModelOn = false;
 
 // Main loop only.
 DK_SDRAM ps::Preset gPresets[ps::kSlots];  // valid where gFilled
@@ -120,8 +122,24 @@ uint32_t gStateSeq = 0;
 bool gPersistPending = false;  // a switch not yet written to the state record
 uint32_t gSwitchedAt = 0;      // System::GetNow() at the last switch
 constexpr uint32_t kPersistDelayMs = 2000;  // the state record is written once switching has settled this long
+bool gReload = false;          // reload the target slot (its flash changed) even when it is already loaded
+
+// The link's slot commands (onCommand, serveReplies). Main loop only.
+DK_SDRAM uint8_t gUploadBuf[ps::kSizeWithIr];
+dklink::Upload gUpload(gUploadBuf);
+DK_SDRAM uint8_t gScratch[2][ps::kSizeWithIr];  // RENAME's and SWAP's copies of slot images
+DK_SDRAM ps::Preset gCheck;                     // COMMIT's validation target
+int gListNext = -1;                             // the next SLOT to send for LIST; 8: its RESULT; -1: none
+bool gResultDue = false;                        // a RESULT waiting for room in Tx()
+uint8_t gResultCmd = 0;
+dklink::Result gResultCode = dklink::Result::kOk;
+uint32_t gResultValue = 0;
+bool gWatch = false;  // STATUS every kWatchPeriodMs
+uint32_t gWatchAt = 0;
+uint16_t gLoadAvgPm = 0, gLoadMaxPm = 0;  // the last `load` line's values
 
 const uint8_t* mapped(uint32_t off) { return reinterpret_cast<const uint8_t*>(ps::kQspiBase + off); }
+uint32_t slotOff(int k) { return ps::kBankOffset + uint32_t(k) * ps::kSlotBytes; }
 
 float levelOf(const dkmodel::Model& m) {
     return dkdsp::LevelMatchGain((m.flags & dkmodel::kFlagHasLoudness) != 0, m.loudness);
@@ -130,12 +148,18 @@ float calOf(const dkmodel::Model& m) {
     return dkdsp::InputCalibrationGain((m.flags & dkmodel::kFlagHasInputLevel) != 0, m.input_level_dbu);
 }
 
-// The engine and the IR from gPresets[slot], its gains and IR state into gNext*. Only while the callback is parked or
-// before StartAudio.
+// The engine and the IR from gPresets[slot], its gains, IR and model state into gNext*; slot < 0 (dry) only sets
+// gNext* to no model, no IR, unity gains. Only while the callback is parked or before StartAudio.
 void loadPreset(int slot) {
+    if (slot < 0) {
+        gNextModelOn = gNextIrOn = false;
+        gNextLevel = gNextInCal = 1.0f;
+        return;
+    }
     const ps::Preset& p = gPresets[slot];
     gEngine.Load(p.model.weights, p.model.head_scale);
     if (p.has_ir) gIr.Load(p.ir.taps);
+    gNextModelOn = true;
     gNextIrOn = p.has_ir;
     gNextLevel = levelOf(p.model);
     gNextInCal = calOf(p.model);
@@ -223,12 +247,17 @@ void logBootLine() {
                unsigned(hw.seed.AudioBlockSize()), dkfw::kBuildId);
 }
 
-// At boot and on HELLO: the boot line, each slot's status (1 to 8), the current preset.
-void logBoot() {
-    logBootLine();
+// Each slot's status (1 to 8).
+void logSlots() {
     const char* s[ps::kSlots];
     for (int k = 0; k < ps::kSlots; ++k) s[k] = ps::StatusName(gSlotStatus[k]);
     dkusb::Log("slots %s %s %s %s %s %s %s %s", s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+}
+
+// At boot and on HELLO: the boot line, each slot's status, the current preset.
+void logBoot() {
+    logBootLine();
+    logSlots();
     logPreset(0);
 }
 
@@ -260,6 +289,7 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
         gLevel = gNextLevel;
         gInCal = gNextInCal;
         gIrOn = gNextIrOn;
+        gModelOn = gNextModelOn;
         gSwapFade.SetMuted(false);
         gSwap = Swap::kPlaying;
     }
@@ -345,6 +375,8 @@ void logStatus() {
     gPeakReset.store(true, std::memory_order_relaxed);
     const float avg = gLoadAvg.load(std::memory_order_relaxed), max = gLoadMax.load(std::memory_order_relaxed);
     gLoadReset.store(true, std::memory_order_relaxed);
+    gLoadAvgPm = uint16_t(std::clamp(int(avg * 1000), 0, 16383));
+    gLoadMaxPm = uint16_t(std::clamp(int(max * 1000), 0, 16383));
     dkusb::Log("load avg %d max %d permille underruns %lu mute %s in %d dBFS out %d dBFS", int(avg * 1000),
                int(max * 1000), (unsigned long)gUnderruns.load(std::memory_order_relaxed),
                gMutedPub.load(std::memory_order_relaxed) ? "on" : "off", dbfs(peak), dbfs(outPeak));
@@ -376,19 +408,28 @@ void writeState(int slot) {
     dkusb::Log("state slot %d seq %lu %lu ms", slot + 1, (unsigned long)seq, (unsigned long)(System::GetNow() - t0));
 }
 
+// Sets the wanted slot; a slot (not dry) starts LED2's blinks for it.
+void retarget(int s) {
+    gTarget = s;
+    if (s < 0) return;
+    gBlinkCount.store(uint8_t(s + 1), std::memory_order_relaxed);
+    gBlinkReq.store(++gBlinkSeq, std::memory_order_release);
+}
+
 // FS2 steps gTarget through the filled slots (presses while dry are dropped) and starts LED2's blinks; a target other
-// than the loaded slot runs a switch (the callback fades out and parks, this loads, the callback fades in); presses
-// during a switch coalesce into the next one. kPersistDelayMs after the last switch the slot goes to the state record.
+// than the loaded slot, or gReload, runs a switch (the callback fades out and parks, this loads, the callback fades
+// in); presses during a switch coalesce into the next one, and a reload asked for during a switch is served by its
+// load. kPersistDelayMs after the last switch the slot goes to the state record (dry is not recorded).
 void servePresets(uint32_t now) {
     const uint32_t presses = gFs2Presses.load(std::memory_order_relaxed);
     if (presses != gFs2Seen && gTarget >= 0) {
-        for (uint32_t n = presses - gFs2Seen; n > 0; --n) gTarget = ps::NextFilled(gFilled, gTarget);
-        gBlinkCount.store(uint8_t(gTarget + 1), std::memory_order_relaxed);
-        gBlinkReq.store(++gBlinkSeq, std::memory_order_release);
+        int t = gTarget;
+        for (uint32_t n = presses - gFs2Seen; n > 0; --n) t = ps::NextFilled(gFilled, t);
+        retarget(t);
     }
     gFs2Seen = presses;
 
-    if (!gSwapping && gTarget != gCur) {
+    if (!gSwapping && (gTarget != gCur || gReload)) {
         gSwapReq.store(++gReq, std::memory_order_release);
         gSwapping = true;
     }
@@ -396,6 +437,7 @@ void servePresets(uint32_t now) {
         const uint32_t t0 = System::GetUs();
         const int slot = gTarget;
         loadPreset(slot);
+        gReload = false;
         gSwapLoaded.store(gReq, std::memory_order_release);
         const uint32_t loadUs = System::GetUs() - t0;
         gSwapping = false;
@@ -406,7 +448,249 @@ void servePresets(uint32_t now) {
     }
     if (gPersistPending && !gSwapping && now - gSwitchedAt >= kPersistDelayMs) {
         gPersistPending = false;
-        if (gCur != gStateSlot) writeState(gCur);
+        if (gCur >= 0 && gCur != gStateSlot) writeState(gCur);
+    }
+}
+
+// Re-parses slot k from flash into gPresets[k], gSlotStatus[k] and gFilled[k].
+void rescan(int k) {
+    gSlotStatus[k] = ps::Parse(mapped(slotOff(k)), ps::kSlotBytes, &gPresets[k]);
+    gFilled[k] = gSlotStatus[k] == ps::Status::kOk;
+}
+
+// A target slot that is no longer filled moves on to the next filled one (dry when none is).
+void settleTarget() {
+    if (gTarget >= 0 && !gFilled[gTarget]) retarget(ps::NextFilled(gFilled, gTarget));
+}
+
+// A filled slot's image size.
+size_t imageSize(int k) { return gPresets[k].has_ir ? ps::kSizeWithIr : ps::kSizeNoIr; }
+
+// Erases slot k's 64 KB block, writes data[0, size) there unless data is nullptr, and verifies the result through the
+// memory-mapped QSPI (the image, or an all-0xFF block for an erase). As in writeState, the callback reads nothing from
+// QSPI, so the blocking erase and write do not stall audio. The caller rescans the slot.
+// libDaisy's 64 KB block erase leaves the QSPI in indirect mode, where reading the mapped region stops the pedal (M7
+// bench: an ERASE without this never answered); its Write and its 4 KB sector erase return to memory-mapped mode. So
+// an erase without data ends with a sector erase of the slot's (already erased) first 4 KB.
+bool writeSlot(int k, uint8_t* data, size_t size) {
+    const uint32_t off = slotOff(k);
+    bool ok = hw.seed.qspi.Erase(off, off + ps::kSlotBytes) == QSPIHandle::Result::OK;
+    if (ok)
+        ok = data != nullptr ? hw.seed.qspi.Write(off, uint32_t(size), data) == QSPIHandle::Result::OK
+                             : hw.seed.qspi.EraseSector(off) == QSPIHandle::Result::OK;
+    SCB_InvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(ps::kQspiBase + off), int32_t(ps::kSlotBytes));
+    if (!ok) return false;
+    if (data != nullptr) return std::memcmp(mapped(off), data, size) == 0;
+    const uint32_t* w = reinterpret_cast<const uint32_t*>(mapped(off));
+    for (size_t i = 0; i < ps::kSlotBytes / 4; ++i)
+        if (w[i] != 0xFFFFFFFFu) return false;
+    return true;
+}
+
+// The RESULT for cmd, sent by serveReplies.
+void result(uint8_t cmd, dklink::Result code, uint32_t value) {
+    gResultDue = true;
+    gResultCmd = cmd;
+    gResultCode = code;
+    gResultValue = value;
+}
+
+// After a slot write and its log line: the `slots` line and the RESULT (the flash time on success, `flash` else).
+void finishWrite(uint8_t cmd, bool ok, uint32_t ms) {
+    using dklink::Result;
+    result(cmd, ok ? Result::kOk : Result::kFlash, ok ? ms : 0);
+    logSlots();
+}
+
+// The link's slot commands (docs/MIDI.md); false for a command this does not know. Each sets the RESULT; slot changes
+// log their line and the `slots` line.
+bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
+    using dklink::Result;
+    switch (cmd) {
+        case dklink::kList:
+            if (n != 0) {
+                result(cmd, Result::kBadRequest, 0);
+            } else {
+                gListNext = 0;  // serveReplies sends the SLOTs, then the RESULT
+            }
+            return true;
+        case dklink::kWatch:
+            if (n != 1 || p[0] > 1) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            gWatch = p[0] == 1;
+            gWatchAt = System::GetNow() - dklink::kWatchPeriodMs;
+            result(cmd, Result::kOk, 0);
+            return true;
+        case dklink::kUploadBegin: {
+            const Result r = gUpload.Begin(p, n);
+            result(cmd, r, gUpload.next());
+            return true;
+        }
+        case dklink::kUploadChunk: {
+            const Result r = gUpload.Chunk(p, n);
+            result(cmd, r, gUpload.next());
+            return true;
+        }
+        case dklink::kUploadCommit: {
+            if (n != 0) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            const Result r = gUpload.Ready();
+            if (r != Result::kOk) {
+                result(cmd, r, 0);
+                return true;
+            }
+            const ps::Status st = ps::Parse(gUpload.data(), gUpload.size(), &gCheck);
+            if (st != ps::Status::kOk) {
+                gUpload.Clear();
+                result(cmd, Result::kInvalid, uint8_t(st));
+                return true;
+            }
+            const int s = gUpload.slot();
+            const uint32_t t0 = System::GetNow();
+            const bool ok = writeSlot(s, gUpload.data(), gUpload.size());
+            const uint32_t ms = System::GetNow() - t0;
+            gUpload.Clear();
+            rescan(s);
+            if (ok) {
+                if (gTarget == s)
+                    gReload = true;
+                else if (gTarget < 0)
+                    retarget(s);
+                dkusb::Log("upload slot %d \"%s\" %lu ms", s + 1, gPresets[s].name, (unsigned long)ms);
+            } else {
+                dkusb::Log("slot write failed %d", s + 1);
+            }
+            settleTarget();
+            finishWrite(cmd, ok, ms);
+            return true;
+        }
+        case dklink::kErase: {
+            if (n != 1 || p[0] >= ps::kSlots) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            const int k = p[0];
+            const uint32_t t0 = System::GetNow();
+            const bool ok = writeSlot(k, nullptr, 0);
+            const uint32_t ms = System::GetNow() - t0;
+            rescan(k);
+            settleTarget();
+            if (ok)
+                dkusb::Log("erase slot %d %lu ms", k + 1, (unsigned long)ms);
+            else
+                dkusb::Log("slot write failed %d", k + 1);
+            finishWrite(cmd, ok, ms);
+            return true;
+        }
+        case dklink::kRename: {
+            bool valid = n >= 2 && n <= 1 + dklink::kMaxName && p[0] < ps::kSlots;
+            for (size_t i = 1; valid && i < n; ++i) valid = p[i] >= 0x20 && p[i] <= 0x7E;
+            if (!valid) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            const int k = p[0];
+            if (!gFilled[k]) {
+                result(cmd, Result::kSlotState, 0);
+                return true;
+            }
+            const size_t size = imageSize(k);
+            std::memcpy(gScratch[0], mapped(slotOff(k)), size);
+            ps::Rename(gScratch[0], size, reinterpret_cast<const char*>(p + 1), n - 1);
+            const uint32_t t0 = System::GetNow();
+            const bool ok = writeSlot(k, gScratch[0], size);
+            const uint32_t ms = System::GetNow() - t0;
+            rescan(k);
+            settleTarget();
+            if (ok)
+                dkusb::Log("rename slot %d \"%s\" %lu ms", k + 1, gPresets[k].name, (unsigned long)ms);
+            else
+                dkusb::Log("slot write failed %d", k + 1);
+            finishWrite(cmd, ok, ms);
+            return true;
+        }
+        case dklink::kSwap: {
+            if (n != 2 || p[0] >= ps::kSlots || p[1] >= ps::kSlots || p[0] == p[1]) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            const int a = p[0], b = p[1];
+            const auto movable = [](int k) {
+                return gSlotStatus[k] == ps::Status::kOk || gSlotStatus[k] == ps::Status::kEmpty;
+            };
+            if (!movable(a) || !movable(b)) {
+                result(cmd, Result::kSlotState, 0);
+                return true;
+            }
+            const size_t sizeA = gFilled[a] ? imageSize(a) : 0, sizeB = gFilled[b] ? imageSize(b) : 0;
+            if (sizeA > 0) std::memcpy(gScratch[0], mapped(slotOff(a)), sizeA);
+            if (sizeB > 0) std::memcpy(gScratch[1], mapped(slotOff(b)), sizeB);
+            const uint32_t t0 = System::GetNow();
+            int failed = -1;
+            if (!writeSlot(a, sizeB > 0 ? gScratch[1] : nullptr, sizeB))
+                failed = a;
+            else if (!writeSlot(b, sizeA > 0 ? gScratch[0] : nullptr, sizeA))
+                failed = b;
+            const uint32_t now = System::GetNow(), ms = now - t0;
+            rescan(a);
+            rescan(b);
+            if (failed < 0) {
+                // Playback follows the presets: the playing one keeps playing under its new number.
+                const int cur = gCur;
+                for (int* v : {&gCur, &gTarget}) *v = *v == a ? b : *v == b ? a : *v;
+                if (gCur != cur) {
+                    gPersistPending = true;
+                    gSwitchedAt = now;
+                }
+                settleTarget();
+                dkusb::Log("swap slots %d %d %lu ms", a + 1, b + 1, (unsigned long)ms);
+            } else {
+                settleTarget();
+                if (gTarget >= 0) gReload = true;  // the target's flash may no longer hold what plays
+                dkusb::Log("slot write failed %d", failed + 1);
+            }
+            finishWrite(cmd, failed < 0, ms);
+            return true;
+        }
+        default: return false;
+    }
+}
+
+// Once per main-loop pass, before dkusb::Serve: LIST's SLOTs then its RESULT, the pending RESULT, and the STATUS when
+// WATCH is on and kWatchPeriodMs has passed. Whatever does not fit in Tx() waits for a later pass, in order.
+void serveReplies(uint32_t now) {
+    dklink::TxBuffer& tx = dkusb::Tx();
+    while (gListNext >= 0 && gListNext < ps::kSlots) {
+        const int k = gListNext;
+        const bool ok = gFilled[k];
+        const ps::Preset& pr = gPresets[k];
+        const uint8_t flags = uint8_t((ok && pr.has_ir ? 1 : 0) | (k == gCur ? 2 : 0));
+        if (!tx.AppendSlot(uint8_t(k), uint8_t(gSlotStatus[k]), flags, ok ? pr.name : nullptr,
+                           ok ? pr.model.name : nullptr, ok && pr.has_ir ? pr.ir.name : nullptr))
+            break;
+        ++gListNext;
+    }
+    if (gListNext == ps::kSlots && !gResultDue) {
+        result(dklink::kList, dklink::Result::kOk, ps::kSlots);
+        gListNext = -1;
+    }
+    if (gResultDue && tx.AppendResult(gResultCmd, gResultCode, gResultValue)) gResultDue = false;
+    if (gWatch && now - gWatchAt >= dklink::kWatchPeriodMs) {
+        dklink::StatusFrame s;
+        s.load_avg = gLoadAvgPm;
+        s.load_max = gLoadMaxPm;
+        s.underruns = gUnderruns.load(std::memory_order_relaxed);
+        s.slot = gCur < 0 ? 0x7F : uint8_t(gCur);
+        s.muted = gMutedPub.load(std::memory_order_relaxed);
+        for (int k = 0; k < 6; ++k)
+            s.knob[k] = uint16_t(std::clamp(lroundf(gKnob[k].load(std::memory_order_relaxed) * 1000.0f), 0L, 1000L));
+        for (int t = 0; t < 3; ++t) s.toggle[t] = gToggle[t].load(std::memory_order_relaxed);
+        s.footswitches = gFsHeld.load(std::memory_order_relaxed);
+        if (tx.AppendStatus(s)) gWatchAt = now;
     }
 }
 
@@ -439,18 +723,14 @@ int main() {
     gStateIndex = ps::NewestState(mapped(ps::kStateOffset[0]), mapped(ps::kStateOffset[1]), gStateSeq, gStateSlot);
     if (gStateIndex < 0) gStateSlot = -1;
     gCur = gTarget = ps::BootSlot(gFilled, gStateSlot);
+    loadPreset(gCur);
+    gLevel = gNextLevel;
+    gInCal = gNextInCal;
+    gIrOn = gNextIrOn;
+    gModelOn = gNextModelOn;
     if (gCur >= 0) {
-        loadPreset(gCur);
-        gLevel = gNextLevel;
-        gInCal = gNextInCal;
-        gIrOn = gNextIrOn;
-        gModelOn = true;
         gBlinkCount.store(uint8_t(gCur + 1), std::memory_order_relaxed);
         gBlinkReq.store(++gBlinkSeq, std::memory_order_relaxed);
-    } else {
-        gModelOn = false;  // dry: no model, no IR, unity calibration and level
-        gIrOn = false;
-        gLevel = gInCal = 1.0f;
     }
     logBoot();
 
@@ -471,7 +751,9 @@ int main() {
 
     uint32_t lastLog = System::GetNow();
     for (;;) {
-        dkusb::Serve(logBoot);
+        serveReplies(System::GetNow());
+        // Slot commands block for their flash writes: the time is read after them.
+        dkusb::Serve(logBoot, onCommand);
         const uint32_t now = System::GetNow();
         servePresets(now);
         if (now - lastLog >= 1000) {

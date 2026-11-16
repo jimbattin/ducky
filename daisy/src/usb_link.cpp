@@ -20,8 +20,10 @@ UsbHandle* gUsb = nullptr;
 dklink::TxBuffer gTx[2];  // gTx[gFill] fills while the other may be in flight
 int gFill = 0;
 SpscRing<uint8_t, 512> gRx;  // USB IRQ -> main loop: incoming MIDI bytes (dropped when full)
-dklink::SysExAssembler<64> gHostIn;  // Serve's host messages
-bool gSendIdentity = false;          // an Identity Request is waiting for room in Tx()
+// One host frame is in flight at a time (the host waits for each RESULT), so the ring holds the largest.
+static_assert(512 >= dklink::kMaxHostFrame, "gRx holds an UPLOAD CHUNK frame");
+dklink::SysExAssembler<dklink::kMaxHostFrame> gHostIn;  // Serve's host messages
+bool gSendIdentity = false;                             // an Identity Request is waiting for room in Tx()
 
 // USB IRQ: every incoming MIDI byte goes to the main loop.
 void onMidiRx(uint8_t* data, size_t size, void*) {
@@ -82,7 +84,7 @@ void EnterDfu() {
     }
 }
 
-void Serve(void (*onHello)()) {
+void Serve(void (*onHello)(), bool (*onCommand)(uint8_t cmd, const uint8_t* payload, size_t n)) {
     Poll();
     uint8_t b;
     while (ReadByte(b)) {
@@ -99,7 +101,7 @@ void Serve(void (*onHello)()) {
             onHello();
         else if (cmd == dklink::kDfu && n == 6)
             EnterDfu();
-        else
+        else if (onCommand == nullptr || !onCommand(uint8_t(cmd), m + 5, n - 6))
             Log("link: unknown command %02X", cmd);
     }
     if (gSendIdentity && Tx().AppendIdentity(dkboard::kBoardId, dkfw::kBuildId)) gSendIdentity = false;

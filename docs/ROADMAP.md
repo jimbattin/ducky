@@ -129,11 +129,15 @@ graph LR
 - **Gap:** about 11 ms by construction (5 ms out, the load, 5 ms in), shorter than the 20–30 ms planned; not measured on the output, no click by ear.
 - **Docs:** `docs/FIRMWARE.md` "Preset store", "Threads" (the switch handshake), "Memory" (SDRAM, QSPI, MPU region 4), "Log lines" (`slots`, `preset`, `state`), "Measured (M6)"; `docs/FILTERS.md` "Getting an IR onto the pedal".
 
-### M7: Link protocol
+### M7: Link protocol (done)
 - Preset upload in chunks, with an acknowledgement and CRC per chunk. List, erase, rename, and reorder slots.
 - Status stream: CPU load (average and maximum), underruns, current slot, knob and switch states, and log lines.
 - `docs/MIDI.md` is generated from the protocol header. A command-line tool uploads presets and dumps status.
 - **Done when:** all 8 slots can be managed from the command line while audio runs, with no underruns.
+- **Decided:** additive commands on the M0 header (`F0 7D 64 01`): LIST, ERASE, RENAME, SWAP (reorder is a swap of two slots), WATCH, UPLOAD BEGIN/CHUNK/COMMIT; replies SLOT, RESULT, STATUS. Integers as 7-bit septets, binary data as Pack7, 256-byte chunks (a 307-byte frame) each with its CRC-32 and offset; the RESULT carries the next expected offset, so a resent chunk is idempotent and a gap answers `offset`. Every request except HELLO and DFU gets exactly one RESULT, last. COMMIT parses the image before touching flash; every write is read back. An upload into the playing slot reloads it with the usual fade; an upload while dry plays it; erasing the playing slot moves to the next filled one; SWAP keeps the playing preset playing under its new number. STATUS carries the last once-a-second load values, not a live window. No slot read-back command. The CLI is Bun/TypeScript (`tools/pedal.ts` over ALSA rawmidi), converts `.nam`/`.wav` itself (`tools/slot_source.ts`, shared with `preset_bank.ts`), and its protocol code (`editor/src/link/`) is shared with M8. `docs/MIDI.md` is printed by `tools/gen_midi_doc.cpp` from `link.h`'s `kCommands`/`kResults`; `make test` fails when it is stale, and the editor tests check its tables against the TypeScript constants.
+- **Found on hardware:** libDaisy's 64 KB block erase leaves the QSPI in indirect mode; the first ERASE (no write after it) then read the mapped region and the pedal stopped answering until it was put into DFU by hand. An erase without data now ends with a 4 KB sector erase, which returns to memory-mapped mode (`docs/FIRMWARE.md` "Slot writes").
+- **Measured (Seed 1.2):** all 8 slots uploaded, listed, renamed, swapped and erased from the command line while audio ran, with 0 underruns in every `load` and STATUS line; upload 0.3 s with an IR (0 retries over 16 uploads), flash 137–173 ms per upload, 188–215 ms per erase, 301–316 ms per swap; load unchanged (500/394/42 permille with an IR, without, dry). Details: `docs/FIRMWARE.md` "Measured (M7)".
+- **Docs:** `docs/MIDI.md` (generated); `docs/FIRMWARE.md` "Link protocol" (the CLI), "Preset store" ("Slot writes"), "Threads", "Memory", "Log lines", "Measured (M7)"; `docs/FILTERS.md` "Getting an IR onto the pedal".
 
 ### M8: Editor
 - Bun + TypeScript + Preact, built to a single HTML file (`editor/dist/editor.html`).

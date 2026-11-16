@@ -118,9 +118,12 @@ A bell at 515 Hz, Q 1.0, constant-Q form: `A = 10^(dB/40)`, `k = 1/(Q·A)`, `m1 
 
 ## Getting an IR onto the pedal
 
-An IR is part of a preset. `tools/preset_bank.ts` converts a `.wav` itself, and takes an IR binary as well:
+An IR is part of a preset. `tools/pedal.ts` (one slot over the link, while the pedal plays) and `tools/preset_bank.ts` (all 8 slots as a bank image over DFU) convert a `.wav` themselves, and take an IR binary as well:
 
 ```sh
+bun tools/pedal.ts upload 1 models/fender_super_eob_with_cab.nam \
+  --ir "irs/<pack>/48k (…)/Mixes/BLND/YA FDMN 412 BLND Mix 01.wav"
+# or the whole bank:
 bun tools/preset_bank.ts -o build/bank.bin --slot 1 models/fender_super_eob_with_cab.nam \
   --ir "irs/<pack>/48k (…)/Mixes/BLND/YA FDMN 412 BLND Mix 01.wav"
 tools/flash_when_ready.sh build/bank.bin 0x90400000

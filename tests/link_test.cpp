@@ -1,5 +1,5 @@
-// daisy/src/link.h: the wire contract host tools parse (Identity Reply, LOG, PedalCommand) and the host-message
-// reassembly.
+// daisy/src/link.h: the wire contract host tools parse (Identity Reply, LOG, SLOT, RESULT, STATUS, PedalCommand), the
+// septet and Pack7 codecs, and the host-message reassembly.
 #include "link.h"
 
 #include <gtest/gtest.h>
@@ -27,7 +27,7 @@ std::vector<uint8_t> IdentityPrefix(uint8_t board) {
 }
 
 // The complete message, or empty if the bytes end without one.
-std::vector<uint8_t> Assemble(SysExAssembler<64>& a, const std::vector<uint8_t>& in) {
+template <size_t N> std::vector<uint8_t> Assemble(SysExAssembler<N>& a, const std::vector<uint8_t>& in) {
     for (uint8_t b : in)
         if (a.Feed(b)) return std::vector<uint8_t>(a.data(), a.data() + a.size());
     return {};
@@ -113,4 +113,80 @@ TEST(SysExAssembler, OverlongMessageDropped) {
     EXPECT_TRUE(Assemble(a, in).empty());
     // The next message still assembles.
     EXPECT_EQ(Assemble(a, {0xF0, 0x7D, 0x64, 0x01, 0x06, 0xF7}).size(), 6u);
+}
+
+TEST(SysExAssembler, MaxHostFrameAssembles) {
+    SysExAssembler<kMaxHostFrame> a;
+    std::vector<uint8_t> in = {0xF0, 0x7D, 0x64, 0x01, kUploadChunk};
+    in.insert(in.end(), kMaxHostFrame - 6, 0x11);
+    in.push_back(0xF7);
+    ASSERT_EQ(in.size(), 307u);
+    EXPECT_EQ(Assemble(a, in), in);
+}
+
+TEST(Pack7, Vector) {
+    const uint8_t in[] = {0x80, 0x01, 0xFF, 0x7F, 0x00, 0x81, 0x42, 0xC3};
+    uint8_t out[16];
+    const size_t m = Pack7(in, sizeof in, out);
+    EXPECT_EQ(std::vector<uint8_t>(out, out + m),
+              (std::vector<uint8_t>{0x25, 0x00, 0x01, 0x7F, 0x7F, 0x00, 0x01, 0x42, 0x01, 0x43}));
+}
+
+TEST(Pack7, RoundTrip) {
+    for (size_t n = 0; n <= 20; ++n) {
+        std::vector<uint8_t> in(n);
+        for (size_t i = 0; i < n; ++i) in[i] = uint8_t(i * 37 + 0x80 * (i & 1));
+        std::vector<uint8_t> packed(Packed7Size(n)), back(n + 1);
+        ASSERT_EQ(Pack7(in.data(), n, packed.data()), Packed7Size(n));
+        size_t got = 99;
+        ASSERT_TRUE(Unpack7(packed.data(), packed.size(), back.data(), got)) << n;
+        ASSERT_EQ(got, n);
+        back.resize(n);
+        EXPECT_EQ(back, in) << n;
+    }
+}
+
+TEST(Pack7, UnpackRejects) {
+    uint8_t out[16];
+    size_t n = 0;
+    const uint8_t lone[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x00};  // 9 bytes: header without data
+    EXPECT_FALSE(Unpack7(lone, sizeof lone, out, n));
+    const uint8_t high[] = {0x00, 0x80};
+    EXPECT_FALSE(Unpack7(high, sizeof high, out, n));
+}
+
+TEST(Septets, Vectors) {
+    uint8_t b[5];
+    PutSeptets(b, 0xDEADBEEF, 5);
+    EXPECT_EQ(std::vector<uint8_t>(b, b + 5), (std::vector<uint8_t>{0x0D, 0x75, 0x36, 0x7D, 0x6F}));
+    EXPECT_EQ(GetSeptets(b, 5), 0xDEADBEEFu);
+    PutSeptets(b, 16024, 3);
+    EXPECT_EQ(std::vector<uint8_t>(b, b + 3), (std::vector<uint8_t>{0x00, 0x7D, 0x18}));
+    EXPECT_EQ(GetSeptets(b, 3), 16024u);
+}
+
+TEST(Result, Bytes) {
+    TxBuffer t;
+    ASSERT_TRUE(t.AppendResult(kUploadChunk, Result::kOk, 512));
+    EXPECT_EQ(Unpack(t),
+              (std::vector<uint8_t>{0xF0, 0x7D, 0x64, 0x01, 0x14, 0x09, 0x00, 0x00, 0x04, 0x00, 0xF7}));
+}
+
+TEST(Status, Bytes) {
+    TxBuffer t;
+    StatusFrame s{500, 503, 3, 3, false, {0, 250, 500, 750, 1000, 123}, {2, 1, 0}, 0b10};
+    ASSERT_TRUE(t.AppendStatus(s));
+    EXPECT_EQ(Unpack(t), (std::vector<uint8_t>{0xF0, 0x7D, 0x64, 0x01, 0x15, 0x03, 0x74, 0x03, 0x77, 0x00, 0x00,
+                                               0x00, 0x03, 0x03, 0x00, 0x00, 0x00, 0x01, 0x7A, 0x03, 0x74, 0x05,
+                                               0x6E, 0x07, 0x68, 0x00, 0x7B, 0x02, 0x01, 0x00, 0x02, 0xF7}));
+}
+
+TEST(Slot, NamesSeparatedCutAndPrintable) {
+    TxBuffer t;
+    const std::string longName(70, 'n');
+    ASSERT_TRUE(t.AppendSlot(2, 0, 3, longName.c_str(), "a\tb", nullptr));
+    std::vector<uint8_t> want = {0xF0, 0x7D, 0x64, 0x01, kSlot, 2, 0, 3};
+    want.insert(want.end(), kMaxName, 'n');
+    want.insert(want.end(), {0x00, 'a', '?', 'b', 0x00, 0xF7});
+    EXPECT_EQ(Unpack(t), want);
 }

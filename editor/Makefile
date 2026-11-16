@@ -10,9 +10,9 @@ test: $(STAMP)
 
 check: $(STAMP)
 	$(BUN) x tsc --noEmit
-	$(BUN) x biome check . ../tools/nam_convert.ts ../tools/ir_convert.ts ../tools/make_ir_fixture.ts ../tools/preset_bank.ts ../tools/make_preset_fixture.ts
+	$(BUN) x biome check . ../tools/nam_convert.ts ../tools/ir_convert.ts ../tools/make_ir_fixture.ts ../tools/preset_bank.ts ../tools/make_preset_fixture.ts ../tools/pedal.ts ../tools/rawmidi.ts ../tools/slot_source.ts
 
 fmt: $(STAMP)
-	$(BUN) x biome check --write . ../tools/nam_convert.ts ../tools/ir_convert.ts ../tools/make_ir_fixture.ts ../tools/preset_bank.ts ../tools/make_preset_fixture.ts
+	$(BUN) x biome check --write . ../tools/nam_convert.ts ../tools/ir_convert.ts ../tools/make_ir_fixture.ts ../tools/preset_bank.ts ../tools/make_preset_fixture.ts ../tools/pedal.ts ../tools/rawmidi.ts ../tools/slot_source.ts
 
 .PHONY: test check fmt

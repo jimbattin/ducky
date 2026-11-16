@@ -53,6 +53,16 @@ TEST(PresetParse, Fixture) {
     EXPECT_GT(p->ir.tap_count, 0u);
 }
 
+TEST(PresetRename, FixtureParsesWithNewName) {
+    std::vector<uint8_t> b = Fixture();
+    const char name[] = "Renamed";
+    dkpreset::Rename(b.data(), b.size(), name, sizeof name - 1);
+    auto p = std::make_unique<Preset>();
+    ASSERT_EQ(Parse(b.data(), b.size(), p.get()), Status::kOk);
+    EXPECT_STREQ(p->name, "Renamed");
+    EXPECT_STREQ(p->model.name, "A2");
+}
+
 TEST(PresetParse, ErasedTailIsIgnored) {
     std::vector<uint8_t> b = Fixture();
     b.resize(dkpreset::kSlotBytes, 0xFF);
