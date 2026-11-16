@@ -9,7 +9,9 @@
 // region is never read speculatively; a real access raises MemManage. Region 0 is that background region (it replaces
 // libDaisy's region 0); libDaisy's three regions (System::ConfigureMpu) are rewritten here as regions 1-3 with the
 // same attributes. Higher region numbers win where regions overlap.
-// The image runs from SRAM (BOOT_SRAM) and reads nothing from QSPI, so the whole QSPI window stays no-access.
+// The image runs from SRAM (BOOT_SRAM). Region 4 makes the preset store (preset.h, the 1 MB at 0x90400000) readable,
+// privileged read-only, write-through cached and execute-never; the rest of the QSPI window, 0x907FFFFF included,
+// stays no-access.
 // libDaisy's System::Init enables the caches before this runs, and memory attributes must not change under cached
 // lines: the caches are cleaned, invalidated and disabled around the change, then re-enabled as they were.
 #pragma once
@@ -81,6 +83,18 @@ inline void ConfigureMpu() {
     r.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;
     r.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
     r.IsShareable = MPU_ACCESS_SHAREABLE;
+    HAL_MPU_ConfigRegion(&r);
+
+    // Region 4: the preset store, 0x90400000-0x904FFFFF of the memory-mapped flash (preset.h kMpuBytes).
+    r.Number = MPU_REGION_NUMBER4;
+    r.BaseAddress = 0x90400000;
+    r.Size = MPU_REGION_SIZE_1MB;
+    r.AccessPermission = MPU_REGION_PRIV_RO;
+    r.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;
+    r.TypeExtField = MPU_TEX_LEVEL0;
+    r.IsCacheable = MPU_ACCESS_CACHEABLE;
+    r.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
+    r.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
     HAL_MPU_ConfigRegion(&r);
 
     HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);

@@ -3,8 +3,9 @@
 // host tests (tests/link_test.cpp) cover it. Read the log with tools/usb_log.py; flash with tools/flash_when_ready.sh.
 //
 // Host -> pedal:
-//   01 HELLO                          (no payload) the pedal answers one LOG line, the boot line
-//                                     `ducky <board> seed <version> sysclk N MHz audio N Hz N bit block N <build id>`.
+//   01 HELLO                          (no payload) the pedal answers with LOG lines: the boot line
+//                                     `ducky <board> seed <version> sysclk N MHz audio N Hz N bit block N <build id>`,
+//                                     then the `slots`, `preset`, `model` and `ir` lines (docs/FIRMWARE.md "Log lines").
 //   06 DFU                            (no payload) the pedal logs `dfu reset` and restarts into the Daisy bootloader's
 //                                     DFU mode (no timeout), ready for tools/flash_when_ready.sh.
 //   Any other command with this header logs `link: unknown command CC`. SysEx for other devices (e.g. a flasher

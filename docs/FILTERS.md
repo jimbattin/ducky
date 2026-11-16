@@ -11,7 +11,7 @@ graph LR
   IN[in gain] --> NAM[A2Lite] --> IR[IR convolver] --> LC[low-cut] --> MID[mid] --> HC[high-cut] --> OUT[out gain × level match] --> M[mute] --> R[copy to R]
 ```
 
-The IR stage exists only when an IR is compiled in (`IR=`, below). Every EQ section runs every block, whatever the knobs and switches, so the load does not depend on the controls.
+The IR stage runs only when the current preset has an IR (`docs/FIRMWARE.md` "Preset store"). Every EQ section runs every block, whatever the knobs and switches, so the load does not depend on the controls.
 
 ## IR convolver
 
@@ -116,15 +116,17 @@ A bell at 515 Hz, Q 1.0, constant-Q form: `A = 10^(dB/40)`, `k = 1/(Q·A)`, `m1 
 
 `tests/filters_test.cpp`: the maps and the hysteresis; every slope at Q 0.707 and 2 for a 100 Hz low-cut and a 5 kHz high-cut at 4 frequencies each, and the mid bell, against the bilinear-exact prototypes (±0.05 dB above −40 dB); neutral settings bit-exact; 4 s of noise with both cutoffs and resonances swept and SW3 flipping every 100 ms stays finite and below 8; slope switches and the bypass engage add no step larger than 1.25× the steady signal's (a hard switch measures 32×).
 
-## Build: `IR=`
+## Getting an IR onto the pedal
+
+An IR is part of a preset. `tools/preset_bank.ts` converts a `.wav` itself, and takes an IR binary as well:
 
 ```sh
-bun tools/ir_convert.ts "irs/<pack>/48k (…)/Mixes/BLND/YA FDMN 412 BLND Mix 01.wav"
-cp "irs/<pack>/48k (…)/Mixes/BLND/YA FDMN 412 BLND Mix 01.bin" irs/fdmn_blnd_mix01.bin
-make -C daisy -j IR=irs/fdmn_blnd_mix01.bin
+bun tools/preset_bank.ts -o build/bank.bin --slot 1 models/fender_super_eob_with_cab.nam \
+  --ir "irs/<pack>/48k (…)/Mixes/BLND/YA FDMN 412 BLND Mix 01.wav"
+tools/flash_when_ready.sh build/bank.bin 0x90400000
 ```
 
-`IR=FILE.bin` (relative to the repo root or absolute; default none, no IR stage) is `.incbin`ed through `DK_IR_PATH`. The path must not contain spaces (make and `.incbin` both split on them), so copy a converted pack file to a plain name first. `build/<BOARD>/ir_path` records the path (`none` without one), so switching `IR` rebuilds `ducky.o`. A compiled-in IR that does not parse, or a failed FFT init, stops audio like a bad model: the pedal serves USB (DFU included) and logs `ir <status>` (or `ir fft`) every second. M6 replaces the compiled-in IR with the preset store.
+The slot's CRC covers the IR, and the IR binary is also checked with `dkir::Parse`. A slot whose IR does not parse logs `ir` in the `slots` line and is skipped. A failed FFT init stops audio: the pedal serves USB (DFU included) and logs `ir fft` every second. Until M6 the IR was compiled in with `daisy/Makefile` `IR=`; the M5 measurements below used that build.
 
 ## Measured (Seed 1.2)
 

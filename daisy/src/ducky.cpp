@@ -1,26 +1,36 @@
-// Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). M5: the left input goes through Knob 1's input trim,
-// the A2-Lite model compiled in by daisy/Makefile MODEL= (dsp/a2lite.h), the cab IR compiled in by IR= when there is
-// one (dsp/convolver.h), the EQ (dsp/filters.h: low-cut on Knobs 5-6 and SW1, the SW3 mid, high-cut on Knobs 4-3 and
-// SW2), and Knob 2's output volume times the model's level match (dsp/gain.h), then FS1's mute ramp, and is copied to
-// both outputs (dual mono). If the model or the IR does not parse, audio never starts: the pedal serves USB (DFU
-// included) and logs "model ..." and "ir <status>" once a second.
+// Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). M6: the left input goes through Knob 1's input trim,
+// the current preset's A2-Lite model (dsp/a2lite.h) and cab IR when it has one (dsp/convolver.h), the EQ
+// (dsp/filters.h: low-cut on Knobs 5-6 and SW1, the SW3 mid, high-cut on Knobs 4-3 and SW2), and Knob 2's output
+// volume times the model's level match (dsp/gain.h), then FS1's mute ramp and the preset switch's fade, and is copied
+// to both outputs (dual mono). Presets live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU) and
+// are parsed into SDRAM at boot; corrupt or empty slots are skipped. With no valid slot the pedal plays dry (trim, EQ,
+// volume, mute). If the IR convolver's FFT does not initialise, audio never starts: the pedal serves USB (DFU
+// included) and logs "ir fft" once a second.
 //
 // Two threads of control:
 // - AudioCallback (the audio DMA interrupt, 48 kHz, 48-sample blocks): reads the controls (30 ms toggle hysteresis),
-//   toggles the mute on FS1, smooths knobs 1-2, runs the trim, the engine, the IR, the EQ and the output gain, runs
-//   the mute ramp, drives LED1 and measures the input and output peaks, the load and the underruns.
-// - The main loop: USB (usb_link.h: Identity, HELLO, DFU) and the once-a-second log lines.
-// They share only relaxed atomics, each with one writer:
-// - callback -> main loop: gKnob, gToggle, gFsHeld, gMutedPub, gUnderruns, gPeak, gOutPeak, gLoadAvg, gLoadMax;
-// - main loop -> callback: gPeakReset, gLoadReset.
+//   toggles the mute on FS1, counts FS2 presses, smooths knobs 1-2, runs the trim, the engine, the IR, the EQ and the
+//   output gain, runs the mute ramp and the preset fade, drives LED1 and LED2's blinks and measures the input and
+//   output peaks, the load and the underruns.
+// - The main loop: USB (usb_link.h: Identity, HELLO, DFU), the preset switch (servePresets), the state record
+//   (writeState) and the once-a-second log lines.
+// A preset switch: the main loop raises gSwapReq; the callback fades out (gSwapFade), then parks (writes silence,
+// touches neither the engine nor the IR) and acks with gSwapParked; the main loop loads the next preset into the engine
+// and the IR and publishes its gains with gSwapLoaded; the callback takes them and fades in.
+// They share only atomics, each with one writer:
+// - callback -> main loop (relaxed): gKnob, gToggle, gFsHeld, gMutedPub, gUnderruns, gPeak, gOutPeak, gLoadAvg,
+//   gLoadMax, gFs2Presses; gSwapParked (release/acquire);
+// - main loop -> callback (relaxed): gPeakReset, gLoadReset, gBlinkCount; gSwapReq, gSwapLoaded (publishing gNextLevel,
+//   gNextInCal, gNextIrOn) and gBlinkReq (release/acquire).
 // Memory (memory.h): AudioCallback runs from ITCM; the engine, the EQ and the callback's own state live in DTCM, the
 // IR convolver (66 KB of spectra, streamed through the D-cache every block) in AXI SRAM, which the bench measured 21%
-// faster for it than D2 SRAM (docs/FILTERS.md). FPSCR.FZ is on (denormals flush to zero).
+// faster for it than D2 SRAM (docs/FILTERS.md), the parsed presets in SDRAM. FPSCR.FZ is on (denormals flush to zero).
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include "board.h"
 #include "controls.h"
@@ -34,45 +44,19 @@
 #include "ir.h"
 #include "memory.h"
 #include "model.h"
+#include "preset.h"
 #include "usb_link.h"
 
 using namespace daisy;
 
-#ifndef DK_MODEL_PATH
-#error "DK_MODEL_PATH (the compiled-in model binary, absolute) comes from daisy/Makefile"
-#endif
-
-// The compiled-in model. %progbits: '@' starts a comment on ARM.
-asm(".section .rodata.dk_model,\"a\",%progbits\n"
-    ".balign 4\n"
-    ".global dk_model\n"
-    "dk_model:\n"
-    ".incbin \"" DK_MODEL_PATH "\"\n"
-    ".global dk_model_end\n"
-    "dk_model_end:\n"
-    ".previous\n");
-extern "C" const uint8_t dk_model[], dk_model_end[];
-
-// The compiled-in IR, when daisy/Makefile IR= names one.
-#ifdef DK_IR_PATH
-asm(".section .rodata.dk_ir,\"a\",%progbits\n"
-    ".balign 4\n"
-    ".global dk_ir\n"
-    "dk_ir:\n"
-    ".incbin \"" DK_IR_PATH "\"\n"
-    ".global dk_ir_end\n"
-    "dk_ir_end:\n"
-    ".previous\n");
-extern "C" const uint8_t dk_ir[], dk_ir_end[];
-constexpr bool kHaveIr = true;
-#else
-constexpr bool kHaveIr = false;
-#endif
-
 namespace {
+
+namespace ps = dkpreset;
 
 static_assert(dkctl::kToggleStableBlocks * dkdsp::kBlockSize * 1000 == 30 * size_t(dkdsp::kSampleRate),
               "the toggle filter holds 30 ms");
+static_assert(dkctl::kBlinkOnBlocks * dkdsp::kBlockSize * 1000 == 150 * size_t(dkdsp::kSampleRate),
+              "a blink is on for 150 ms");
 
 dkboard::Board hw;
 
@@ -82,26 +66,27 @@ DK_DTCM CpuLoadMeter gLoad;
 DK_DTCM uint32_t gBlockTicks;  // System::GetTick() ticks in one block period (set before StartAudio)
 DK_DTCM dkctl::ToggleFilter gToggleFilter[3];
 DK_DTCM dkdsp::MuteRamp gMute;
-DK_DTCM_BSS dkdsp::A2Lite gEngine;
-DK_DTCM float gLevel = 1.0f;  // the model's level match (set before StartAudio)
-DK_DTCM float gInCal = 1.0f;  // the model's input calibration (set before StartAudio)
+DK_DTCM_BSS dkdsp::A2Lite gEngine;  // the main loop loads it while the callback is parked (and before StartAudio)
+DK_DTCM float gLevel = 1.0f;  // the current model's level match
+DK_DTCM float gInCal = 1.0f;  // the current model's input calibration
 DK_DTCM dkdsp::Smoother gInKnob, gOutKnob;  // knobs 1 and 2
 DK_DTCM dkdsp::GainRamp gInGain, gOutGain;  // Knob 1's trim times gInCal; Knob 2's volume times gLevel
 DK_DTCM float gPeakAcc;        // input peak since the main loop last read gPeak
 DK_DTCM float gOutPeakAcc;     // output peak since the main loop last read gOutPeak
 DK_DTCM bool gMuted = false;   // FS1's state; not persisted
-dkdsp::IrConvolver gIr;        // AXI SRAM; Init and Load before StartAudio
-DK_DTCM bool gIrOn = false;    // an IR is loaded (set before StartAudio)
+dkdsp::IrConvolver gIr;        // AXI SRAM; Init before StartAudio; the main loop loads it as it does gEngine
+DK_DTCM bool gIrOn = false;    // the current preset has an IR
+DK_DTCM bool gModelOn = false;  // a preset is loaded: false plays dry (set before StartAudio, never changed after)
 DK_DTCM dkdsp::Eq gEq;
+// The preset switch: kPlaying -> (gSwapReq) kFadingOut -> (gSwapFade silent) kParked -> (gSwapLoaded) kPlaying.
+enum class Swap : uint8_t { kPlaying, kFadingOut, kParked };
+DK_DTCM Swap gSwap = Swap::kPlaying;
+DK_DTCM dkdsp::MuteRamp gSwapFade;
+DK_DTCM uint32_t gSwapSeen = 0;   // the last gSwapReq taken
+DK_DTCM uint32_t gBlinkSeen = 0;  // the last gBlinkReq taken
+DK_DTCM dkctl::Blinker gBlinker;
 
-// Main loop only: written once in main before USB serves anything or audio starts.
-dkmodel::Model gModel;
-dkmodel::Status gModelStatus = dkmodel::Status::kOk;
-dkir::Ir gIrData;
-dkir::Status gIrStatus = dkir::Status::kOk;
-bool gIrFft = true;  // the convolver's FFT initialised
-
-// Shared with the main loop: in SRAM (AXI), relaxed.
+// Shared with the main loop: in SRAM (AXI).
 // Callback -> main loop.
 std::atomic<float> gKnob[6];               // knobs 1-6, 0..1
 std::atomic<uint8_t> gToggle[3]{1, 1, 1};  // SW1-SW3 filtered: 0 down, 1 middle, 2 up
@@ -111,9 +96,50 @@ std::atomic<uint32_t> gUnderruns{0};       // blocks since boot whose callback r
 std::atomic<float> gPeak{0.0f};            // gPeakAcc, published every block
 std::atomic<float> gOutPeak{0.0f};         // gOutPeakAcc, published every block
 std::atomic<float> gLoadAvg{0.0f}, gLoadMax{0.0f};  // gLoad's, published every block
+std::atomic<uint32_t> gFs2Presses{0};      // FS2 presses since boot
+std::atomic<uint32_t> gSwapParked{0};      // the gSwapReq the callback has parked for (release)
 // Main loop -> callback.
 std::atomic<bool> gPeakReset{false};  // restart gPeakAcc and gOutPeakAcc
 std::atomic<bool> gLoadReset{false};  // restart gLoad
+std::atomic<uint32_t> gSwapReq{0};     // a new value asks the callback to fade out and park (release)
+std::atomic<uint32_t> gSwapLoaded{0};  // gSwapReq's value once the next preset is loaded (release): fade in
+std::atomic<uint32_t> gBlinkReq{0};    // a new value starts gBlinkCount blinks on LED2 (release)
+std::atomic<uint8_t> gBlinkCount{0};
+float gNextLevel = 1.0f, gNextInCal = 1.0f;  // the loaded preset's gains and IR, published by gSwapLoaded
+bool gNextIrOn = false;
+
+// Main loop only.
+DK_SDRAM ps::Preset gPresets[ps::kSlots];  // valid where gFilled
+ps::Status gSlotStatus[ps::kSlots];
+bool gFilled[ps::kSlots];
+int gCur = -1, gTarget = -1;  // the loaded and the wanted slot; -1 = dry
+bool gSwapping = false;       // gSwapReq raised, the load not yet done
+uint32_t gReq = 0, gFs2Seen = 0, gBlinkSeq = 0;
+int gStateIndex = -1, gStateSlot = -1;  // the state sector holding the newest record and its slot; -1 = none
+uint32_t gStateSeq = 0;
+bool gPersistPending = false;  // a switch not yet written to the state record
+uint32_t gSwitchedAt = 0;      // System::GetNow() at the last switch
+constexpr uint32_t kPersistDelayMs = 2000;  // the state record is written once switching has settled this long
+
+const uint8_t* mapped(uint32_t off) { return reinterpret_cast<const uint8_t*>(ps::kQspiBase + off); }
+
+float levelOf(const dkmodel::Model& m) {
+    return dkdsp::LevelMatchGain((m.flags & dkmodel::kFlagHasLoudness) != 0, m.loudness);
+}
+float calOf(const dkmodel::Model& m) {
+    return dkdsp::InputCalibrationGain((m.flags & dkmodel::kFlagHasInputLevel) != 0, m.input_level_dbu);
+}
+
+// The engine and the IR from gPresets[slot], its gains and IR state into gNext*. Only while the callback is parked or
+// before StartAudio.
+void loadPreset(int slot) {
+    const ps::Preset& p = gPresets[slot];
+    gEngine.Load(p.model.weights, p.model.head_scale);
+    if (p.has_ir) gIr.Load(p.ir.taps);
+    gNextIrOn = p.has_ir;
+    gNextLevel = levelOf(p.model);
+    gNextInCal = calOf(p.model);
+}
 
 // The codec's sample word in bits.
 unsigned bitDepth(SaiHandle::Config::BitDepth d) {
@@ -143,52 +169,73 @@ void tenthsDb(char (&buf)[12], float db) {
     snprintf(buf, sizeof buf, "%c%u.%u", t < 0 ? '-' : '+', a / 10, a % 10);
 }
 
-// The compiled-in model's loudness, level match, input level, input calibration and name, or its parse status. The
-// name is last: Log truncates at 120 characters and a name can take 63.
-void logModel() {
-    if (gModelStatus != dkmodel::Status::kOk) {
-        dkusb::Log("model %s", dkmodel::StatusName(gModelStatus));
+// A model's loudness, level match, input level, input calibration and name; "model none" for nullptr. The name is
+// last: Log truncates at 120 characters and a name can take 63.
+void logModel(const dkmodel::Model* m) {
+    if (m == nullptr) {
+        dkusb::Log("model none");
         return;
     }
-    const bool hasLoudness = (gModel.flags & dkmodel::kFlagHasLoudness) != 0;
-    const bool hasInput = (gModel.flags & dkmodel::kFlagHasInputLevel) != 0;
+    const bool hasLoudness = (m->flags & dkmodel::kFlagHasLoudness) != 0;
+    const bool hasInput = (m->flags & dkmodel::kFlagHasInputLevel) != 0;
     char loudness[12] = "none", level[12], input[12] = "none", cal[12];
-    if (hasLoudness) tenthsDb(loudness, gModel.loudness);
-    if (hasInput) tenthsDb(input, gModel.input_level_dbu);
-    tenthsDb(level, 20.0f * log10f(gLevel));
-    tenthsDb(cal, 20.0f * log10f(gInCal));
+    if (hasLoudness) tenthsDb(loudness, m->loudness);
+    if (hasInput) tenthsDb(input, m->input_level_dbu);
+    tenthsDb(level, 20.0f * log10f(levelOf(*m)));
+    tenthsDb(cal, 20.0f * log10f(calOf(*m)));
     dkusb::Log("model loudness %s%s level %s dB input %s%s cal %s dB \"%s\"", loudness, hasLoudness ? " dB" : "",
-               level, input, hasInput ? " dBu" : "", cal, gModel.name);
+               level, input, hasInput ? " dBu" : "", cal, m->name);
 }
 
-// The compiled-in IR's tap count, source rate, normalisation gain and name; "none" without one; "fft" if the
-// convolver's FFT did not initialise; otherwise its parse status. The name is last, as in logModel.
-void logIr() {
-    if (!kHaveIr) {
+// An IR's tap count, source rate, normalisation gain and name; "ir none" for nullptr. The name is last, as in logModel.
+void logIr(const dkir::Ir* ir) {
+    if (ir == nullptr) {
         dkusb::Log("ir none");
         return;
     }
-    if (!gIrFft) {
-        dkusb::Log("ir fft");
-        return;
-    }
-    if (gIrStatus != dkir::Status::kOk) {
-        dkusb::Log("ir %s", dkir::StatusName(gIrStatus));
-        return;
-    }
     char gain[12];
-    tenthsDb(gain, 20.0f * log10f(gIrData.gain));
-    dkusb::Log("ir taps %u src %u Hz gain %s dB \"%s\"", unsigned(gIrData.tap_count), unsigned(gIrData.source_rate),
-               gain, gIrData.name);
+    tenthsDb(gain, 20.0f * log10f(ir->gain));
+    dkusb::Log("ir taps %u src %u Hz gain %s dB \"%s\"", unsigned(ir->tap_count), unsigned(ir->source_rate), gain,
+               ir->name);
 }
 
-void logBoot() {
+// The current preset (1-based), with its load time when loadUs > 0, then its model and IR; "preset none" when dry.
+void logPreset(uint32_t loadUs) {
+    if (gCur < 0) {
+        dkusb::Log("preset none");
+        logModel(nullptr);
+        logIr(nullptr);
+        return;
+    }
+    const ps::Preset& p = gPresets[gCur];
+    if (loadUs > 0)
+        dkusb::Log("preset %d \"%s\" load %lu us", gCur + 1, p.name, (unsigned long)loadUs);
+    else
+        dkusb::Log("preset %d \"%s\"", gCur + 1, p.name);
+    logModel(&p.model);
+    logIr(p.has_ir ? &p.ir : nullptr);
+}
+
+void logBootLine() {
     dkusb::Log("ducky %s seed %s sysclk %u MHz audio %u Hz %u bit block %u %s", dkboard::kName,
                SeedName(hw.seed.CheckBoardVersion()), unsigned(System::GetSysClkFreq() / 1000000),
                unsigned(hw.seed.AudioSampleRate()), bitDepth(hw.seed.AudioSaiHandle().GetConfig().bit_depth),
                unsigned(hw.seed.AudioBlockSize()), dkfw::kBuildId);
-    logModel();
-    logIr();
+}
+
+// At boot and on HELLO: the boot line, each slot's status (1 to 8), the current preset.
+void logBoot() {
+    logBootLine();
+    const char* s[ps::kSlots];
+    for (int k = 0; k < ps::kSlots; ++k) s[k] = ps::StatusName(gSlotStatus[k]);
+    dkusb::Log("slots %s %s %s %s %s %s %s %s", s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+    logPreset(0);
+}
+
+// The no-audio loop's boot and HELLO lines.
+void logFatal() {
+    logBootLine();
+    dkusb::Log("ir fft");
 }
 
 DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
@@ -198,6 +245,23 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     if (hw.FootswitchRising(0)) {
         gMuted = !gMuted;
         gMute.SetMuted(gMuted);
+    }
+    if (hw.FootswitchRising(1)) gFs2Presses.fetch_add(1, std::memory_order_relaxed);
+
+    // The preset switch's handshake (servePresets).
+    if (gSwap == Swap::kPlaying) {
+        const uint32_t req = gSwapReq.load(std::memory_order_acquire);
+        if (req != gSwapSeen) {
+            gSwapSeen = req;
+            gSwapFade.SetMuted(true);
+            gSwap = Swap::kFadingOut;
+        }
+    } else if (gSwap == Swap::kParked && gSwapLoaded.load(std::memory_order_acquire) == gSwapSeen) {
+        gLevel = gNextLevel;
+        gInCal = gNextInCal;
+        gIrOn = gNextIrOn;
+        gSwapFade.SetMuted(false);
+        gSwap = Swap::kPlaying;
     }
 
     for (int k = 0; k < 6; ++k) gKnob[k].store(hw.Knob(k), std::memory_order_relaxed);
@@ -214,20 +278,34 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     // out[0] is the working buffer; the engine accepts in == out.
     const float inTarget = gInCal * dkdsp::InputGain(gInKnob.Process(hw.Knob(0)));
     gInGain.Process(in[0], out[0], size, inTarget);
-    gEngine.Process(out[0], out[0], size);
-    if (gIrOn) gIr.Process(out[0], out[0]);  // size is kBlockSize: dkfw::Start sets the block size
+    if (gSwap == Swap::kParked) {
+        std::fill(out[0], out[0] + size, 0.0f);  // the main loop owns the engine and the IR
+    } else if (gModelOn) {
+        gEngine.Process(out[0], out[0], size);
+        if (gIrOn) gIr.Process(out[0], out[0]);  // size is kBlockSize: dkfw::Start sets the block size
+    }
     // Knob 5 low-cut, Knob 6 its resonance, Knob 4 high-cut, Knob 3 its resonance.
     gEq.Process(out[0], size, {hw.Knob(4), hw.Knob(5), hw.Knob(3), hw.Knob(2), tog[0], tog[1], tog[2]});
     const float outTarget = gLevel * dkdsp::OutputGain(gOutKnob.Process(hw.Knob(1)));
     gOutGain.Process(out[0], out[0], size, outTarget);
     gMute.Process(out[0], out[0], size);
+    gSwapFade.Process(out[0], out[0], size);
+    if (gSwap == Swap::kFadingOut && gSwapFade.Silent()) {
+        gSwap = Swap::kParked;
+        gSwapParked.store(gSwapSeen, std::memory_order_release);
+    }
     std::copy(out[0], out[0] + size, out[1]);
     float outPeak = 0.0f;
     for (size_t i = 0; i < size; i++) outPeak = std::fmax(outPeak, std::fabs(out[0][i]));
 
     gLed1.Set(gMuted ? 0.0f : 1.0f);
     gLed1.Update();
-    gLed2.Set(0.0f);  // unused until presets (M6)
+    const uint32_t blink = gBlinkReq.load(std::memory_order_acquire);
+    if (blink != gBlinkSeen) {
+        gBlinkSeen = blink;
+        gBlinker.Start(gBlinkCount.load(std::memory_order_relaxed));
+    }
+    gLed2.Set(gBlinker.Tick() ? 1.0f : 0.0f);
     gLed2.Update();
 
     gMutedPub.store(gMuted, std::memory_order_relaxed);
@@ -272,6 +350,66 @@ void logStatus() {
                gMutedPub.load(std::memory_order_relaxed) ? "on" : "off", dbfs(peak), dbfs(outPeak));
 }
 
+// Writes slot as the newest state record, into the state sector not holding the newest one, and verifies it through
+// the memory-mapped QSPI. On a failure the previous record stays the newest; the next switch tries again. The callback
+// reads nothing from QSPI, so the blocking erase and write do not stall audio.
+void writeState(int slot) {
+    const uint32_t t0 = System::GetNow();
+    const int idx = gStateIndex == 0 ? 1 : 0;
+    const uint32_t off = ps::kStateOffset[idx];
+    uint8_t buf[ps::kStateBytes];
+    ps::BuildState(buf, gStateSeq + 1, slot);
+    bool ok = hw.seed.qspi.Erase(off, off + ps::kStateSectorBytes) == QSPIHandle::Result::OK &&
+              hw.seed.qspi.Write(off, ps::kStateBytes, buf) == QSPIHandle::Result::OK;
+    SCB_InvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(ps::kQspiBase + off), int32_t(ps::kStateSectorBytes));
+    uint32_t seq = 0;
+    int written = -1;
+    ok = ok && ps::StateValid(mapped(off), seq, written) && seq == gStateSeq + 1 && written == slot &&
+         std::memcmp(mapped(off), buf, ps::kStateBytes) == 0;
+    if (!ok) {
+        dkusb::Log("state write failed");
+        return;
+    }
+    gStateIndex = idx;
+    gStateSeq = seq;
+    gStateSlot = slot;
+    dkusb::Log("state slot %d seq %lu %lu ms", slot + 1, (unsigned long)seq, (unsigned long)(System::GetNow() - t0));
+}
+
+// FS2 steps gTarget through the filled slots (presses while dry are dropped) and starts LED2's blinks; a target other
+// than the loaded slot runs a switch (the callback fades out and parks, this loads, the callback fades in); presses
+// during a switch coalesce into the next one. kPersistDelayMs after the last switch the slot goes to the state record.
+void servePresets(uint32_t now) {
+    const uint32_t presses = gFs2Presses.load(std::memory_order_relaxed);
+    if (presses != gFs2Seen && gTarget >= 0) {
+        for (uint32_t n = presses - gFs2Seen; n > 0; --n) gTarget = ps::NextFilled(gFilled, gTarget);
+        gBlinkCount.store(uint8_t(gTarget + 1), std::memory_order_relaxed);
+        gBlinkReq.store(++gBlinkSeq, std::memory_order_release);
+    }
+    gFs2Seen = presses;
+
+    if (!gSwapping && gTarget != gCur) {
+        gSwapReq.store(++gReq, std::memory_order_release);
+        gSwapping = true;
+    }
+    if (gSwapping && gSwapParked.load(std::memory_order_acquire) == gReq) {
+        const uint32_t t0 = System::GetUs();
+        const int slot = gTarget;
+        loadPreset(slot);
+        gSwapLoaded.store(gReq, std::memory_order_release);
+        const uint32_t loadUs = System::GetUs() - t0;
+        gSwapping = false;
+        gCur = slot;
+        logPreset(loadUs > 0 ? loadUs : 1);
+        gPersistPending = true;
+        gSwitchedAt = now;
+    }
+    if (gPersistPending && !gSwapping && now - gSwitchedAt >= kPersistDelayMs) {
+        gPersistPending = false;
+        if (gCur != gStateSlot) writeState(gCur);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -280,37 +418,43 @@ int main() {
     gLed2.Init(dkboard::Board::kLed2, false, dkdsp::kSampleRate / dkdsp::kBlockSize);
 
     dkusb::Init(hw.seed);
-    gModelStatus = dkmodel::Parse(dk_model, size_t(dk_model_end - dk_model), &gModel);
-    if (gModelStatus == dkmodel::Status::kOk) {
-        gLevel = dkdsp::LevelMatchGain((gModel.flags & dkmodel::kFlagHasLoudness) != 0, gModel.loudness);
-        gInCal = dkdsp::InputCalibrationGain((gModel.flags & dkmodel::kFlagHasInputLevel) != 0,
-                                             gModel.input_level_dbu);
-    }
-#ifdef DK_IR_PATH
-    gIrStatus = dkir::Parse(dk_ir, size_t(dk_ir_end - dk_ir), &gIrData);
-    gIrFft = gIr.Init();
-#endif
-    if (gModelStatus != dkmodel::Status::kOk || !gIrFft || gIrStatus != dkir::Status::kOk) {
-        // No audio, LEDs off; USB (DFU included) keeps serving so a good model and IR can be flashed.
-        logBoot();
+    if (!gIr.Init()) {
+        // No audio, LEDs off; USB (DFU included) keeps serving so working firmware can be flashed.
+        logFatal();
         uint32_t lastLog = System::GetNow();
         for (;;) {
-            dkusb::Serve(logBoot);
+            dkusb::Serve(logFatal);
             const uint32_t now = System::GetNow();
             if (now - lastLog >= 1000) {
                 lastLog = now;
-                logModel();
-                logIr();
+                dkusb::Log("ir fft");
             }
         }
     }
-    gEngine.Load(gModel.weights, gModel.head_scale);
-    if (kHaveIr) {
-        gIr.Load(gIrData.taps);
-        gIrOn = true;
+
+    for (int k = 0; k < ps::kSlots; ++k) {
+        gSlotStatus[k] = ps::Parse(mapped(ps::kBankOffset + k * ps::kSlotBytes), ps::kSlotBytes, &gPresets[k]);
+        gFilled[k] = gSlotStatus[k] == ps::Status::kOk;
+    }
+    gStateIndex = ps::NewestState(mapped(ps::kStateOffset[0]), mapped(ps::kStateOffset[1]), gStateSeq, gStateSlot);
+    if (gStateIndex < 0) gStateSlot = -1;
+    gCur = gTarget = ps::BootSlot(gFilled, gStateSlot);
+    if (gCur >= 0) {
+        loadPreset(gCur);
+        gLevel = gNextLevel;
+        gInCal = gNextInCal;
+        gIrOn = gNextIrOn;
+        gModelOn = true;
+        gBlinkCount.store(uint8_t(gCur + 1), std::memory_order_relaxed);
+        gBlinkReq.store(++gBlinkSeq, std::memory_order_relaxed);
+    } else {
+        gModelOn = false;  // dry: no model, no IR, unity calibration and level
+        gIrOn = false;
+        gLevel = gInCal = 1.0f;
     }
     logBoot();
 
+    gSwapFade.Init(false);
     gMute.Init(false);
     gInKnob.Init(dkdsp::kSampleRate / dkdsp::kBlockSize, dkdsp::kKnobSmoothS, 0.5f);
     gInGain.Init(gInCal);
@@ -329,6 +473,7 @@ int main() {
     for (;;) {
         dkusb::Serve(logBoot);
         const uint32_t now = System::GetNow();
+        servePresets(now);
         if (now - lastLog >= 1000) {
             lastLog = now;
             logControls();

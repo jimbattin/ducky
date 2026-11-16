@@ -1,7 +1,9 @@
-// daisy/src/controls.h: the toggle hysteresis.
+// daisy/src/controls.h: the toggle hysteresis and LED2's blink pattern.
 #include "controls.h"
 
 #include <gtest/gtest.h>
+
+#include <vector>
 
 using namespace dkctl;
 
@@ -27,4 +29,47 @@ TEST(ToggleFilter, BounceRestartsCount) {
     EXPECT_EQ(f.Process(2), 2);
     for (int i = 0; i < kToggleStableBlocks - 1; ++i) EXPECT_EQ(f.Process(0), 2);
     EXPECT_EQ(f.Process(0), 0);
+}
+
+namespace {
+
+// The lengths of the alternating runs of Tick() over ticks blocks, starting with an on run (0 if it starts off).
+std::vector<int> Runs(Blinker& b, int ticks) {
+    std::vector<int> runs{0};
+    bool on = true;
+    for (int i = 0; i < ticks; ++i) {
+        if (b.Tick() != on) {
+            on = !on;
+            runs.push_back(0);
+        }
+        ++runs.back();
+    }
+    return runs;
+}
+
+}  // namespace
+
+TEST(Blinker, ThreeBlinksThenOff) {
+    Blinker b;
+    b.Start(3);
+    const int period = kBlinkOnBlocks + kBlinkOffBlocks;
+    const std::vector<int> want{kBlinkOnBlocks, kBlinkOffBlocks, kBlinkOnBlocks, kBlinkOffBlocks, kBlinkOnBlocks,
+                                kBlinkOffBlocks + 1000};
+    EXPECT_EQ(Runs(b, 3 * period + 1000), want);
+}
+
+TEST(Blinker, StartRestartsMidPattern) {
+    Blinker b;
+    b.Start(3);
+    for (int i = 0; i < kBlinkOnBlocks + kBlinkOffBlocks + 40; ++i) b.Tick();  // into the second blink
+    b.Start(2);
+    const std::vector<int> want{kBlinkOnBlocks, kBlinkOffBlocks, kBlinkOnBlocks, kBlinkOffBlocks + 500};
+    EXPECT_EQ(Runs(b, 2 * (kBlinkOnBlocks + kBlinkOffBlocks) + 500), want);
+}
+
+TEST(Blinker, IdleAndZeroAreOff) {
+    Blinker b;
+    EXPECT_FALSE(b.Tick());
+    b.Start(0);
+    EXPECT_FALSE(b.Tick());
 }

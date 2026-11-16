@@ -1,6 +1,6 @@
 # ducky: the Ducky NAM player pedal on the Daisy Seed in a Cleveland Music Co. HotHouse (src/board.h).
-# APP=ducky (default): the pedal firmware, build/<BOARD>/ducky.bin; MODEL=FILE.bin picks the compiled-in model (default
-# tests/fixtures/nam/A2.bin); IR=FILE.bin picks the compiled-in IR (default none).
+# APP=ducky (default): the pedal firmware, build/<BOARD>/ducky.bin. Presets (models and IRs) live in QSPI, written by
+# tools/preset_bank.ts and tools/flash_when_ready.sh (docs/FIRMWARE.md "Preset store").
 # APP=bench: the A2-Lite, IR and EQ benchmark and device check (src/bench.cpp, no audio),
 # build/<BOARD>-bench/ducky_bench.bin.
 
@@ -51,7 +51,7 @@ include cmsis_fft.mk
 OPT = -O3 -fno-schedule-insns -fno-schedule-insns2
 CPP_STANDARD = -std=gnu++17
 # libDaisy's BOOT_SRAM script with .data/.bss in AXI SRAM, plus .dtcm_data/.itcm_text (copied at boot, src/memory.cpp),
-# .dtcm_bss (zeroed at boot), and .d2_bss and .sdram_bss (reserved for later milestones).
+# .dtcm_bss (zeroed at boot), .sdram_bss (the parsed presets) and .d2_bss (reserved for later milestones).
 LDSCRIPT = STM32H750IB_sram_ducky.lds
 
 # The build id the Identity Reply carries (src/link.h): the repo's short commit, with +dirty when tracked
@@ -78,41 +78,6 @@ ifeq ($(APP),bench)
 C_DEFS += -DDK_REPO_ROOT='"$(abspath $(CURDIR)/..)"'
 $(BUILD_DIR)/bench.o: ../tests/fixtures/nam/A2.bin ../tests/fixtures/nam/input.wav ../tests/fixtures/nam/A2.input.ref.wav \
   ../tests/fixtures/ir/decay.bin
-endif
-
-ifeq ($(APP),ducky)
-# The compiled-in model: MODEL=FILE.bin (a format-1 model binary, docs/NAM_FORMAT.md), relative to the repo root or
-# absolute; default the committed fixture. src/ducky.cpp .incbins it by absolute path. $(BUILD_DIR)/model_path records
-# the path and is rewritten only when it changes, so switching MODEL rebuilds ducky.o even when the new file is older.
-MODEL ?= tests/fixtures/nam/A2.bin
-MODEL_PATH := $(if $(filter /%,$(MODEL)),$(MODEL),$(abspath $(CURDIR)/../$(MODEL)))
-ifeq ($(wildcard $(MODEL_PATH)),)
-$(error MODEL not found: $(MODEL_PATH))
-endif
-MODEL_STAMP := $(BUILD_DIR)/model_path
-ifneq ($(MODEL_PATH),$(shell cat $(MODEL_STAMP) 2>/dev/null))
-$(shell printf '%s\n' '$(MODEL_PATH)' > $(MODEL_STAMP))
-endif
-C_DEFS += -DDK_MODEL_PATH='"$(MODEL_PATH)"'
-$(BUILD_DIR)/ducky.o: $(MODEL_PATH) $(MODEL_STAMP)
-
-# The compiled-in IR: IR=FILE.bin (a format-1 IR binary, docs/FILTERS.md; bun tools/ir_convert.ts makes one from a
-# .wav), relative to the repo root or absolute; default none (no IR stage). The path must not contain spaces (.incbin
-# and make both split on them). $(BUILD_DIR)/ir_path records it as MODEL's stamp does, "none" without one.
-IR ?=
-$(if $(word 2,$(IR)),$(error IR path must not contain spaces: $(IR)))
-IR_PATH := $(if $(IR),$(if $(filter /%,$(IR)),$(IR),$(abspath $(CURDIR)/../$(IR))))
-ifneq ($(IR),)
-ifeq ($(wildcard $(IR_PATH)),)
-$(error IR not found: $(IR_PATH))
-endif
-C_DEFS += -DDK_IR_PATH='"$(IR_PATH)"'
-endif
-IR_STAMP := $(BUILD_DIR)/ir_path
-ifneq ($(or $(IR_PATH),none),$(shell cat $(IR_STAMP) 2>/dev/null))
-$(shell printf '%s\n' '$(or $(IR_PATH),none)' > $(IR_STAMP))
-endif
-$(BUILD_DIR)/ducky.o: $(IR_STAMP) $(IR_PATH)
 endif
 
 # Relink when the linker script changes: the core link rule lists only $(OBJECTS) and Makefile as prerequisites.

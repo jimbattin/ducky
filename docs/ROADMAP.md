@@ -14,12 +14,12 @@ A living plan. Milestones are done in order; any of them may be revised, split, 
 | Cut filters | Knob 5 sets the low-cut (high-pass) cutoff, 20–500 Hz. Knob 4 sets the high-cut (low-pass) cutoff, 1.5–20 kHz. Both use a log taper. Turning the low-cut fully counter-clockwise or the high-cut fully clockwise bypasses that filter. Knob 6 sets the low-cut resonance and Knob 3 the high-cut resonance (Q 0.5 to about 2, only on the 12 and 24 dB slopes). SW1 sets the low-cut slope and SW2 the high-cut slope: up 6, middle 12, down 24 dB/oct. |
 | Mid (SW3) | Peaking filter at 515 Hz, Q 1: up +5 dB, middle bypass, down −7 dB. |
 | IR | Optional, up to 2048 taps (about 43 ms). The converter (`editor/src/ir/`, shared by the editor and `tools/ir_convert.ts`) resamples to 48 kHz, trims with a 64-tap fade, and normalises the 80 Hz–5 kHz band to 0 dB (pink-weighted), so a cab leaves an amp model's level about where it was. The editor warns when the model's `gear_type` already includes a cab. |
-| Preset switching | FS2 steps forward through filled slots only and wraps. Audio fades out, the model is swapped and reset, then audio fades back in (a gap of about 20–30 ms, no crossfade). LED2 blinks N times for slot N. The last slot is remembered across power cycles. |
+| Preset switching | FS2 steps forward through filled slots only and wraps. Audio fades out, the model is swapped and reset, then audio fades back in (5 ms each way, a gap of about 11 ms, no crossfade). LED2 blinks N times for slot N. The last slot is remembered across power cycles. |
 | Preset persistence | Presets survive switching to another firmware and back. They live in the upper 4 MB of the QSPI flash, outside any firmware image and outside bad_tape's saved values at `0x903FE000`. |
 | Hardware | Daisy Seed with 64 MB or more of SDRAM (development unit: Seed 1.2, 64 MB). HotHouse. |
 | SysEx | `F0 7D 64 <version> <cmd> … F7`. Device byte `0x64` is unused by sibling projects. Identity Reply and DFU command follow the bad_tape conventions. |
 | Editor | Preset manager plus live status: log, CPU load meter, knob/switch states. It does not control the knobs remotely, because the pedal is "what you see is what you get". |
-| Model and IR files | `models/*.nam`, converted `*.bin` and `irs/` are git-ignored. Only upstream MIT fixtures (`tests/fixtures/nam/`) are committed, plus `A2.bin` converted from upstream `A2.nam` and the generated IR fixture `tests/fixtures/ir/decay.{wav,bin}`. |
+| Model and IR files | `models/*.nam`, converted `*.bin` and `irs/` are git-ignored. Only upstream MIT fixtures (`tests/fixtures/nam/`) are committed, plus `A2.bin` converted from upstream `A2.nam`, the generated IR fixture `tests/fixtures/ir/decay.{wav,bin}`, and the preset fixture `tests/fixtures/preset/A2_decay.bin` built from those two. |
 
 ## Feasibility
 
@@ -118,12 +118,16 @@ graph LR
 - **IR level (revised after the first build):** unit energy (Σh² = 1) is level-neutral only for white noise; a cab cuts everything above 5 kHz, so unit energy boosted its passband and the FDMN IR made `A2.bin` 10.7 dB louder, reaching 0 dBFS at noon. Normalising the 80 Hz–5 kHz band instead brings that to +2.8 dB, and across the 1,160 48 kHz York IRs to +0.8…+3.4 dB (5th–95th percentile) on `A2.bin`'s output.
 - **Docs:** `docs/FILTERS.md`; `docs/FIRMWARE.md` "Threads", "Log lines" (`ir`), "Measured (M5)", "Bench" and the `IR=` build option.
 
-### M6: Preset store and switching
+### M6: Preset store and switching (done)
 - Flash region in the upper 4 MB, clear of the last flash addresses (chip erratum `ES0392 2.7.5`). 8 slots, each holding a header, model, optional IR, and CRC. A small two-copy state record holds the last slot.
 - Presets load into RAM. FS2 skips empty slots and wraps; audio fades out, the model is reset, and audio fades back in. LED2 blinks N times.
 - The audio callback never reads QSPI, so flash writes cannot stall audio.
 - Test data: the development models are written to flash by a command-line tool.
 - **Done when:** switching while playing is clean, corrupt slots are skipped, and the pedal recovers if power is pulled during a write.
+- **Decided:** slots are 64 KB erase blocks at `0x90400000` (slot k at `+k × 0x10000`); the state records are two 4 KB sectors at `0x90480000`/`0x90481000`; MPU region 4 makes `0x90400000–0x904FFFFF` read-only, write-through cached and execute-never, and the rest of QSPI stays no-access. The slot format (`DKPS`, version, flags, size, name, model binary, optional IR binary, CRC-32) is `daisy/src/preset.h`, shared with `editor/src/preset/bank.ts`. The pedal writes only the state record; presets reach flash as a 512 KB bank image from `tools/preset_bank.ts`, written by dfu-util at `0x90400000` (`tools/flash_when_ready.sh FILE ADDR`), which the Daisy bootloader's layout (`0x90400000/60*64Kg`) allows. Chunked upload stays in M7. `MODEL=`/`IR=` are gone. All 8 slots are parsed into SDRAM at boot (127 KB), so a switch only reloads the engine and the convolver. The fade reuses `MuteRamp` (5 ms each way). The state record is written 2 s after the last switch, so stepping through slots does not wear the sectors. With no valid slot the pedal plays dry (trim, EQ, volume, mute) at unity calibration and level.
+- **Measured (Seed 1.2):** preset load 138 µs without an IR, 994 µs with one; state write 80–85 ms; 0 underruns over 16 logged switches and 7 state writes; load 500 permille with an IR, 394 without, 42 dry. On the pedal, while playing, LED2's counts matched, the switches did not click, the saved slot came back after a power cycle, a corrupt slot 2 was skipped (`slots ok crc empty ok …`, FS2 1 → 4 → 1), and power pulled during the bank download left the pedal booting dry with all slots erased, recovered by flashing the bank again. The bench is unchanged (chain 496.4 permille, go).
+- **Gap:** about 11 ms by construction (5 ms out, the load, 5 ms in), shorter than the 20–30 ms planned; not measured on the output, no click by ear.
+- **Docs:** `docs/FIRMWARE.md` "Preset store", "Threads" (the switch handshake), "Memory" (SDRAM, QSPI, MPU region 4), "Log lines" (`slots`, `preset`, `state`), "Measured (M6)"; `docs/FILTERS.md` "Getting an IR onto the pedal".
 
 ### M7: Link protocol
 - Preset upload in chunks, with an acknowledgement and CRC per chunk. List, erase, rename, and reorder slots.
@@ -145,6 +149,6 @@ graph LR
 
 ## Risks
 
-- **CPU:** the generic NAM core is built on Eigen, which has no float SIMD on Cortex-M7, so it is assumed too slow. The custom kernel passed the M3 gate at 35 % for the model alone. With the IR and the EQ (M5) the bench chain is at 49.6 % (gate 55 %) and the pedal at 50.1 % live, so M6's preset switching and later work have about half the block period left. The kernel's speed depends on GCC keeping the instruction order it was written in (`docs/M7_PERFORMANCE.md`), so a toolchain or flag change needs a bench run.
+- **CPU:** the generic NAM core is built on Eigen, which has no float SIMD on Cortex-M7, so it is assumed too slow. The custom kernel passed the M3 gate at 35 % for the model alone. With the IR and the EQ (M5) the bench chain is at 49.6 % (gate 55 %) and the pedal at 50.1 % live; M6's preset switching adds no steady load (the loads run in the main loop while the callback is parked), so later work has about half the block period left. The kernel's speed depends on GCC keeping the instruction order it was written in (`docs/M7_PERFORMANCE.md`), so a toolchain or flag change needs a bench run.
 - **Locked model shape:** if NAM revises A2-Lite, the firmware needs an update. The shape descriptor plus the editor's check keep unsupported models from playing incorrectly.
 - **QSPI coexistence:** another firmware's image could grow into the preset region. The largest sibling image is about 2.2 MB, and the presets start above 4 MB.

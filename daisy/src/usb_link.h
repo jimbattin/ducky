@@ -25,7 +25,7 @@ void Flush();
 // Logs "dfu reset", Flush()es for ~100 ms, then restarts into the Daisy bootloader's DFU mode (no timeout).
 [[noreturn]] void EnterDfu();
 // The whole host session, once per main-loop pass: Poll, then every complete message: Identity Request queues the
-// Identity Reply, HELLO calls onHello (it logs the boot line), DFU EnterDfu()s, any other command of this pedal logs
+// Identity Reply, HELLO calls onHello (it logs the boot lines), DFU EnterDfu()s, any other command of this pedal logs
 // `link: unknown command CC`; then the Identity Reply if it fits (else on a later pass), then Flush.
 void Serve(void (*onHello)());
 

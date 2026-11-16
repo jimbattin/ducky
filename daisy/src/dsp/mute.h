@@ -1,4 +1,4 @@
-// FS1's mute. Host-portable (no libDaisy, no allocation), covered by tests/mute_test.cpp.
+// FS1's mute and the preset switch's fade. Host-portable (no libDaisy, no allocation), covered by tests/mute_test.cpp.
 #pragma once
 
 #include <algorithm>
@@ -17,6 +17,8 @@ public:
     // A change mid-ramp reverses from the current gain.
     void SetMuted(bool muted) { target_ = muted ? 0.0f : 1.0f; }
     bool Muted() const { return target_ == 0.0f; }
+    // The gain has landed on 0 (the ramp lands exactly on its target).
+    bool Silent() const { return gain_ == 0.0f; }
 
     // out[i] = in[i] * gain, the gain first stepping by 1 / kRampSamples toward the target and clamped to it (it lands
     // exactly on 0 or 1). in and out may alias.
