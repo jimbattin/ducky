@@ -1,18 +1,21 @@
-// Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). M4: the left input goes through Knob 1's input trim,
-// the A2-Lite model compiled in by daisy/Makefile MODEL= (dsp/a2lite.h), and Knob 2's output volume times the model's
-// level match (dsp/gain.h), then FS1's mute ramp, and is copied to both outputs (dual mono). If the model does not
-// parse, audio never starts: the pedal serves USB (DFU included) and logs "model <status>" once a second.
+// Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). M5: the left input goes through Knob 1's input trim,
+// the A2-Lite model compiled in by daisy/Makefile MODEL= (dsp/a2lite.h), the cab IR compiled in by IR= when there is
+// one (dsp/convolver.h), the EQ (dsp/filters.h: low-cut on Knobs 5-6 and SW1, the SW3 mid, high-cut on Knobs 4-3 and
+// SW2), and Knob 2's output volume times the model's level match (dsp/gain.h), then FS1's mute ramp, and is copied to
+// both outputs (dual mono). If the model or the IR does not parse, audio never starts: the pedal serves USB (DFU
+// included) and logs "model ..." and "ir <status>" once a second.
 //
 // Two threads of control:
 // - AudioCallback (the audio DMA interrupt, 48 kHz, 48-sample blocks): reads the controls (30 ms toggle hysteresis),
-//   toggles the mute on FS1, smooths knobs 1-2, runs the trim, the engine and the output gain, runs the mute ramp,
-//   drives LED1 and measures the input and output peaks, the load and the underruns.
+//   toggles the mute on FS1, smooths knobs 1-2, runs the trim, the engine, the IR, the EQ and the output gain, runs
+//   the mute ramp, drives LED1 and measures the input and output peaks, the load and the underruns.
 // - The main loop: USB (usb_link.h: Identity, HELLO, DFU) and the once-a-second log lines.
 // They share only relaxed atomics, each with one writer:
 // - callback -> main loop: gKnob, gToggle, gFsHeld, gMutedPub, gUnderruns, gPeak, gOutPeak, gLoadAvg, gLoadMax;
 // - main loop -> callback: gPeakReset, gLoadReset.
-// Memory (memory.h): AudioCallback runs from ITCM; the engine and the callback's own state live in DTCM. FPSCR.FZ is
-// on (denormals flush to zero).
+// Memory (memory.h): AudioCallback runs from ITCM; the engine, the EQ and the callback's own state live in DTCM, the
+// IR convolver (66 KB of spectra, streamed through the D-cache every block) in AXI SRAM, which the bench measured 21%
+// faster for it than D2 SRAM (docs/FILTERS.md). FPSCR.FZ is on (denormals flush to zero).
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -23,9 +26,12 @@
 #include "controls.h"
 #include "dsp/a2lite.h"
 #include "dsp/blocks.h"
+#include "dsp/convolver.h"
+#include "dsp/filters.h"
 #include "dsp/gain.h"
 #include "dsp/mute.h"
 #include "firmware.h"
+#include "ir.h"
 #include "memory.h"
 #include "model.h"
 #include "usb_link.h"
@@ -46,6 +52,22 @@ asm(".section .rodata.dk_model,\"a\",%progbits\n"
     "dk_model_end:\n"
     ".previous\n");
 extern "C" const uint8_t dk_model[], dk_model_end[];
+
+// The compiled-in IR, when daisy/Makefile IR= names one.
+#ifdef DK_IR_PATH
+asm(".section .rodata.dk_ir,\"a\",%progbits\n"
+    ".balign 4\n"
+    ".global dk_ir\n"
+    "dk_ir:\n"
+    ".incbin \"" DK_IR_PATH "\"\n"
+    ".global dk_ir_end\n"
+    "dk_ir_end:\n"
+    ".previous\n");
+extern "C" const uint8_t dk_ir[], dk_ir_end[];
+constexpr bool kHaveIr = true;
+#else
+constexpr bool kHaveIr = false;
+#endif
 
 namespace {
 
@@ -68,10 +90,16 @@ DK_DTCM dkdsp::GainRamp gInGain, gOutGain;  // Knob 1's trim times gInCal; Knob 
 DK_DTCM float gPeakAcc;        // input peak since the main loop last read gPeak
 DK_DTCM float gOutPeakAcc;     // output peak since the main loop last read gOutPeak
 DK_DTCM bool gMuted = false;   // FS1's state; not persisted
+dkdsp::IrConvolver gIr;        // AXI SRAM; Init and Load before StartAudio
+DK_DTCM bool gIrOn = false;    // an IR is loaded (set before StartAudio)
+DK_DTCM dkdsp::Eq gEq;
 
 // Main loop only: written once in main before USB serves anything or audio starts.
 dkmodel::Model gModel;
 dkmodel::Status gModelStatus = dkmodel::Status::kOk;
+dkir::Ir gIrData;
+dkir::Status gIrStatus = dkir::Status::kOk;
+bool gIrFft = true;  // the convolver's FFT initialised
 
 // Shared with the main loop: in SRAM (AXI), relaxed.
 // Callback -> main loop.
@@ -133,12 +161,34 @@ void logModel() {
                level, input, hasInput ? " dBu" : "", cal, gModel.name);
 }
 
+// The compiled-in IR's tap count, source rate, normalisation gain and name; "none" without one; "fft" if the
+// convolver's FFT did not initialise; otherwise its parse status. The name is last, as in logModel.
+void logIr() {
+    if (!kHaveIr) {
+        dkusb::Log("ir none");
+        return;
+    }
+    if (!gIrFft) {
+        dkusb::Log("ir fft");
+        return;
+    }
+    if (gIrStatus != dkir::Status::kOk) {
+        dkusb::Log("ir %s", dkir::StatusName(gIrStatus));
+        return;
+    }
+    char gain[12];
+    tenthsDb(gain, 20.0f * log10f(gIrData.gain));
+    dkusb::Log("ir taps %u src %u Hz gain %s dB \"%s\"", unsigned(gIrData.tap_count), unsigned(gIrData.source_rate),
+               gain, gIrData.name);
+}
+
 void logBoot() {
     dkusb::Log("ducky %s seed %s sysclk %u MHz audio %u Hz %u bit block %u %s", dkboard::kName,
                SeedName(hw.seed.CheckBoardVersion()), unsigned(System::GetSysClkFreq() / 1000000),
                unsigned(hw.seed.AudioSampleRate()), bitDepth(hw.seed.AudioSaiHandle().GetConfig().bit_depth),
                unsigned(hw.seed.AudioBlockSize()), dkfw::kBuildId);
     logModel();
+    logIr();
 }
 
 DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
@@ -151,8 +201,11 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     }
 
     for (int k = 0; k < 6; ++k) gKnob[k].store(hw.Knob(k), std::memory_order_relaxed);
-    for (int t = 0; t < 3; ++t)
-        gToggle[t].store(gToggleFilter[t].Process(hw.Toggle(t)), std::memory_order_relaxed);
+    uint8_t tog[3];
+    for (int t = 0; t < 3; ++t) {
+        tog[t] = gToggleFilter[t].Process(hw.Toggle(t));
+        gToggle[t].store(tog[t], std::memory_order_relaxed);
+    }
     gFsHeld.store(uint8_t((hw.FootswitchPressed(0) ? 1 : 0) | (hw.FootswitchPressed(1) ? 2 : 0)),
                   std::memory_order_relaxed);
 
@@ -162,6 +215,9 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     const float inTarget = gInCal * dkdsp::InputGain(gInKnob.Process(hw.Knob(0)));
     gInGain.Process(in[0], out[0], size, inTarget);
     gEngine.Process(out[0], out[0], size);
+    if (gIrOn) gIr.Process(out[0], out[0]);  // size is kBlockSize: dkfw::Start sets the block size
+    // Knob 5 low-cut, Knob 6 its resonance, Knob 4 high-cut, Knob 3 its resonance.
+    gEq.Process(out[0], size, {hw.Knob(4), hw.Knob(5), hw.Knob(3), hw.Knob(2), tog[0], tog[1], tog[2]});
     const float outTarget = gLevel * dkdsp::OutputGain(gOutKnob.Process(hw.Knob(1)));
     gOutGain.Process(out[0], out[0], size, outTarget);
     gMute.Process(out[0], out[0], size);
@@ -225,8 +281,17 @@ int main() {
 
     dkusb::Init(hw.seed);
     gModelStatus = dkmodel::Parse(dk_model, size_t(dk_model_end - dk_model), &gModel);
-    if (gModelStatus != dkmodel::Status::kOk) {
-        // No audio, LEDs off; USB (DFU included) keeps serving so a good model can be flashed.
+    if (gModelStatus == dkmodel::Status::kOk) {
+        gLevel = dkdsp::LevelMatchGain((gModel.flags & dkmodel::kFlagHasLoudness) != 0, gModel.loudness);
+        gInCal = dkdsp::InputCalibrationGain((gModel.flags & dkmodel::kFlagHasInputLevel) != 0,
+                                             gModel.input_level_dbu);
+    }
+#ifdef DK_IR_PATH
+    gIrStatus = dkir::Parse(dk_ir, size_t(dk_ir_end - dk_ir), &gIrData);
+    gIrFft = gIr.Init();
+#endif
+    if (gModelStatus != dkmodel::Status::kOk || !gIrFft || gIrStatus != dkir::Status::kOk) {
+        // No audio, LEDs off; USB (DFU included) keeps serving so a good model and IR can be flashed.
         logBoot();
         uint32_t lastLog = System::GetNow();
         for (;;) {
@@ -235,12 +300,15 @@ int main() {
             if (now - lastLog >= 1000) {
                 lastLog = now;
                 logModel();
+                logIr();
             }
         }
     }
     gEngine.Load(gModel.weights, gModel.head_scale);
-    gLevel = dkdsp::LevelMatchGain((gModel.flags & dkmodel::kFlagHasLoudness) != 0, gModel.loudness);
-    gInCal = dkdsp::InputCalibrationGain((gModel.flags & dkmodel::kFlagHasInputLevel) != 0, gModel.input_level_dbu);
+    if (kHaveIr) {
+        gIr.Load(gIrData.taps);
+        gIrOn = true;
+    }
     logBoot();
 
     gMute.Init(false);
@@ -252,6 +320,8 @@ int main() {
     gLoad.Init(hw.seed.AudioSampleRate(), hw.seed.AudioBlockSize());
     gBlockTicks = uint32_t(uint64_t(System::GetTickFreq()) * dkdsp::kBlockSize / uint32_t(dkdsp::kSampleRate));
     for (dkctl::ToggleFilter& f : gToggleFilter) f.Init(1);
+    // Neutral-ish; the EQ settles on the real controls within ~100 ms, while the output fades in.
+    gEq.Init({0.5f, 0.5f, 0.5f, 0.5f, 1, 1, 1});
     hw.seed.adc.Start();
     hw.seed.StartAudio(AudioCallback);
 

@@ -10,9 +10,9 @@ test: $(STAMP)
 
 check: $(STAMP)
 	$(BUN) x tsc --noEmit
-	$(BUN) x biome check . ../tools/nam_convert.ts
+	$(BUN) x biome check . ../tools/nam_convert.ts ../tools/ir_convert.ts ../tools/make_ir_fixture.ts
 
 fmt: $(STAMP)
-	$(BUN) x biome check --write . ../tools/nam_convert.ts
+	$(BUN) x biome check --write . ../tools/nam_convert.ts ../tools/ir_convert.ts ../tools/make_ir_fixture.ts
 
 .PHONY: test check fmt

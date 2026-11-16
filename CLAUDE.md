@@ -29,6 +29,7 @@ Presets contain the NAM Model and optional IR. They do not track Input/Output ga
 Roadmap, decisions, and milestones: `docs/ROADMAP.md`
 Firmware build/flash/log, source layout, memory map, log lines, bench (`APP=bench`): `docs/FIRMWARE.md`
 NAM A2 format, A2-Lite shape check, weight order, forward pass, Ducky model binary, converter, reference renders, engine: `docs/NAM_FORMAT.md`
+IR convolver, cut/mid filters, IR binary, `.wav` converter, `IR=` build option: `docs/FILTERS.md`
 Cortex-M7 float performance (measured cost model, rules for DSP kernels, steering GCC, how to measure). Read before writing or optimising DSP code: `docs/M7_PERFORMANCE.md`
 
 ## Technology
@@ -46,9 +47,9 @@ This project lives in a private repo that will one day get its history squashed 
 - `docs/`: Place all documentation here
 - `tools/`: Reusable tools go here. 
 - `daisy/`: Pedal code
-- `editor/`: Editor code (Bun + TS; `src/nam/` is the `.nam` converter shared with `tools/nam_convert.ts`)
+- `editor/`: Editor code (Bun + TS; `src/nam/` is the `.nam` converter shared with `tools/nam_convert.ts`, `src/ir/` the `.wav` IR converter shared with `tools/ir_convert.ts`)
 - `models/`: NAM Models (git-ignored)
-- `tests/`: Host GoogleTest; `tests/fixtures/nam/` holds upstream MIT NAM fixtures, `A2.bin` converted from `A2.nam`, and the committed reference render
+- `tests/`: Host GoogleTest; `tests/fixtures/nam/` holds upstream MIT NAM fixtures, `A2.bin` converted from `A2.nam`, and the committed reference render; `tests/fixtures/ir/` a generated IR (`decay.wav`, `decay.bin`)
 - `renders/`: Local reference renders and stimuli (git-ignored)
 
 ## Reference material

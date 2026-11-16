@@ -2,6 +2,7 @@
 /daisy/build/
 *.bin
 !/tests/fixtures/nam/A2.bin
+!/tests/fixtures/ir/decay.bin
 *.elf
 *.hex
 *.map

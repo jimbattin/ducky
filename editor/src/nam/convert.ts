@@ -1,6 +1,7 @@
 // .nam (JSON) → Ducky model binary, format 1. Spec: docs/NAM_FORMAT.md "Ducky model binary (format 1)".
 // Pure TypeScript (no DOM, no Bun APIs): shared by the editor and tools/nam_convert.ts.
 
+import { sanitiseName } from "../name";
 import { crc32 } from "./crc32";
 
 export const MODEL_MAGIC = "DKNM";
@@ -15,7 +16,6 @@ const CHANNELS = 3;
 const NUM_LAYERS = 23;
 const HEAD_KERNEL = 16;
 const SAMPLE_RATE = 48000;
-const NAME_MAX = 63;
 
 export const KERNEL_SIZES: readonly number[] = [...Array(14).fill(6), 15, 15, ...Array(7).fill(6)];
 const DIL7 = [1, 3, 7, 17, 41, 101, 239];
@@ -198,16 +198,6 @@ function checkWeights(w: unknown): number[] {
       throw new ModelRejected("weights", `weights[${i}] is not a finite number`);
   }
   return w as number[];
-}
-
-// Printable ASCII only (the pedal's LOG lines), at most NAME_MAX characters.
-function sanitiseName(s: string): string {
-  let out = "";
-  for (const ch of s) {
-    const cp = ch.codePointAt(0)!;
-    out += cp >= 0x20 && cp <= 0x7e ? ch : "?";
-  }
-  return out.slice(0, NAME_MAX);
 }
 
 export function convertNam(text: string, fallbackName: string): ConvertedModel {

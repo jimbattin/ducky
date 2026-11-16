@@ -1,20 +1,32 @@
-// The A2-Lite benchmark and device check (daisy/Makefile APP=bench, build/<BOARD>-bench/ducky_bench.bin). No audio:
-// the board and USB come up with the pedal's startup (firmware.h: FZ, the MPU), the committed fixture model
-// tests/fixtures/nam/A2.bin is compiled in (.incbin, with a slice of input.wav and its reference render), and then:
+// The A2-Lite, IR and EQ benchmark and device check (daisy/Makefile APP=bench, build/<BOARD>-bench/ducky_bench.bin).
+// No audio: the board and USB come up with the pedal's startup (firmware.h: FZ, the MPU), the committed fixtures
+// tests/fixtures/nam/A2.bin and tests/fixtures/ir/decay.bin are compiled in (.incbin, with a slice of input.wav and
+// its reference render), and then:
 // - the check: a reset engine runs input.wav[48000, 72000) and its output is compared with A2.input.ref.wav's;
+// - the IR check: a reset convolver runs input.wav[48000, 52800) and its output is compared with a direct convolution
+//   computed here in double;
 // - the model: dkdsp::A2Lite::Process on kBlockSize blocks of uniform noise (+-0.5), timed with the DWT cycle counter:
 //   200 ms of warm-up blocks, then 2 s of measured ones, interrupts masked inside each measured block; the M3 gate is
 //   its maximum against kGatePermille of the block period;
-// - the layers: the same blocks, each stage of Process (BeginChunk, RunLayer per layer, EndChunk) timed separately.
-// Placement matches the pedal's: the engine in DTCM (DK_DTCM_BSS), its stages and the timed blocks in ITCM.
+// - the layers: the same blocks, each stage of Process (BeginChunk, RunLayer per layer, EndChunk) timed separately;
+// - the IR convolver with its state in D2 SRAM and in AXI SRAM, the EQ (its slope switches fading every 10 blocks),
+//   and the pedal's whole chain (trim, engine, IR, EQ, output gain, mute), timed the same way; the M5 gate is the
+//   chain's maximum against kChainGatePermille.
+// Placement matches the pedal's: the engine and the EQ in DTCM, the pedal's convolver in AXI SRAM (gIrAxi; gIrD2 is
+// the D2 SRAM comparison), the stages and the timed blocks in ITCM.
 // Log lines (usb_log.py; docs/FIRMWARE.md "Bench"):
 //   at power-on and on HELLO "ducky_bench <board> sysclk N MHz <build id>";
 //   "bench model "<name>" ok" (or "bench model <status>", repeated, when the embedded model does not parse);
+//   "bench ir "<name>" ok" (or "bench ir <status>|fft", repeated, when the IR does not parse or the FFT does not
+//   initialise);
 //   "bench pass N budget B cycles" (B: cycles in one block period);
 //   "bench check samples 24000 max err Ee-9 limit 10000e-9 ok|FAIL";
+//   "bench ir check samples 4800 max err Ee-9 limit 10000e-9 ok|FAIL";
 //   "bench a2lite cycles avg A max M permille avg P.p max Q.q" (permille of B), then
 //   "bench gate a2lite max Q.q permille limit 450 go|no-go";
-//   per stage "bench input|layer NN kK dD|head cycles avg ... " as above; then "bench pass N done".
+//   per stage "bench input|layer NN kK dD|head cycles avg ... " as above;
+//   "bench ir d2|ir axi|eq|chain cycles avg ..." as above, then
+//   "bench gate chain max Q.q permille limit 550 go|no-go"; then "bench pass N done".
 // Passes repeat forever, 2 s apart. The link's DFU message restarts into the bootloader (checked between stages).
 #include <cmath>
 #include <cstdint>
@@ -24,7 +36,12 @@
 #include "board.h"
 #include "dsp/a2lite.h"
 #include "dsp/blocks.h"
+#include "dsp/convolver.h"
+#include "dsp/filters.h"
+#include "dsp/gain.h"
+#include "dsp/mute.h"
 #include "firmware.h"
+#include "ir.h"
 #include "memory.h"
 #include "model.h"
 #include "usb_link.h"
@@ -59,8 +76,15 @@ asm(".section .rodata.dk_bench,\"a\",%progbits\n"
     ".incbin \"" DK_REPO_ROOT "/tests/fixtures/nam/A2.input.ref.wav\", 192044, 96000\n"
     ".global dk_bench_ref_end\n"
     "dk_bench_ref_end:\n"
+    ".balign 4\n"
+    ".global dk_bench_ir\n"
+    "dk_bench_ir:\n"
+    ".incbin \"" DK_REPO_ROOT "/tests/fixtures/ir/decay.bin\"\n"
+    ".global dk_bench_ir_end\n"
+    "dk_bench_ir_end:\n"
     ".previous\n");
-extern "C" const uint8_t dk_bench_model[], dk_bench_model_end[], dk_bench_input[], dk_bench_ref[];
+extern "C" const uint8_t dk_bench_model[], dk_bench_model_end[], dk_bench_input[], dk_bench_ref[], dk_bench_ir[],
+    dk_bench_ir_end[];
 
 namespace {
 
@@ -70,7 +94,10 @@ constexpr uint32_t kPassGapMs = 2000;
 constexpr size_t kCheckOffset = 48000, kCheckSamples = 24000;
 constexpr float kCheckLimit = 1e-5f;  // the M2 tolerance; FMA contraction measured 2.4e-7 on the host
 constexpr uint32_t kGatePermille = 450;
+constexpr uint32_t kChainGatePermille = 550;
+constexpr size_t kIrCheckSamples = 4800;  // input.wav[48000, 52800): past the IR's 2048 taps
 static_assert(kCheckSamples % kBlockSize == 0, "the check runs whole blocks");
+static_assert(kIrCheckSamples % kBlockSize == 0 && kIrCheckSamples <= kCheckSamples, "the IR check runs whole blocks");
 static_assert(kCheckOffset == 48000 && kCheckSamples == 24000, "the .incbin offsets and counts above");
 
 // xorshift32; s must not be 0.
@@ -88,7 +115,15 @@ struct XorShift32 {
 dkboard::Board hw;
 DK_DTCM_BSS dkdsp::A2Lite gEngine;
 dkmodel::Model gModel;
+dkir::Ir gIrData;
+DK_D2 dkdsp::IrConvolver gIrD2;  // D2 SRAM, for comparison
+dkdsp::IrConvolver gIrAxi;       // AXI SRAM (.bss): the pedal's placement
+DK_DTCM dkdsp::Eq gEq;
+DK_DTCM uint32_t gEqBlocks;  // counts the EQ's blocks: its slope switches flip every 10
+DK_DTCM dkdsp::GainRamp gInGain, gOutGain;
+DK_DTCM dkdsp::MuteRamp gMute;
 float gNoise[kBlockSize * kNoiseBlocks];  // SRAM: DTCM has no room beside the engine and the stack reserve
+float gIrIn[kIrCheckSamples], gIrOut[kIrCheckSamples];  // SRAM, the IR check's
 DK_DTCM float gOut[kBlockSize];
 uint32_t gBudget = 1;  // cycles in one block period
 
@@ -114,6 +149,23 @@ uint32_t logCycles(const char* name, uint64_t sum, uint32_t max) {
     return pm;
 }
 
+// input.wav's 24-bit sample i of the slice, as tools/wav.h reads 24-bit PCM.
+float inputSample(size_t i) {
+    const uint8_t* p = dk_bench_input + 3 * i;
+    const uint32_t u = uint32_t(p[0]) << 8 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 24;
+    return float(int32_t(u) >> 8) * (1.0f / 8388608.0f);
+}
+
+// "max err Ee-9 limit 10000e-9 ok|FAIL" for a check named `name`.
+void logCheck(const char* name, size_t samples, float err, bool nan) {
+    const bool ok = !nan && err <= kCheckLimit;
+    if (nan)
+        dkusb::Log("bench %s samples %u max err nan limit 10000e-9 FAIL", name, unsigned(samples));
+    else  // capped at 1 for the integer print
+        dkusb::Log("bench %s samples %u max err %lue-9 limit 10000e-9 %s", name, unsigned(samples),
+                   (unsigned long)lroundf(std::fmin(err, 1.0f) * 1e9f), ok ? "ok" : "FAIL");
+}
+
 // The device check: input.wav[kCheckOffset, + kCheckSamples) through a reset engine against the reference render.
 void check() {
     gEngine.Reset();
@@ -121,11 +173,7 @@ void check() {
     bool nan = false;
     float in[kBlockSize];
     for (size_t b = 0; b < kCheckSamples; b += kBlockSize) {
-        for (size_t i = 0; i < kBlockSize; ++i) {
-            const uint8_t* p = dk_bench_input + 3 * (b + i);
-            const uint32_t u = uint32_t(p[0]) << 8 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 24;
-            in[i] = float(int32_t(u) >> 8) * (1.0f / 8388608.0f);  // as tools/wav.h reads 24-bit PCM
-        }
+        for (size_t i = 0; i < kBlockSize; ++i) in[i] = inputSample(b + i);
         gEngine.Process(in, gOut, kBlockSize);
         for (size_t i = 0; i < kBlockSize; ++i) {
             float ref;
@@ -135,16 +183,53 @@ void check() {
             else if (d > err) err = d;
         }
     }
-    const bool ok = !nan && err <= kCheckLimit;
-    if (nan)
-        dkusb::Log("bench check samples %u max err nan limit 10000e-9 FAIL", unsigned(kCheckSamples));
-    else  // capped at 1 for the integer print
-        dkusb::Log("bench check samples %u max err %lue-9 limit 10000e-9 %s", unsigned(kCheckSamples),
-                   (unsigned long)lroundf(std::fmin(err, 1.0f) * 1e9f), ok ? "ok" : "FAIL");
+    logCheck("check", kCheckSamples, err, nan);
+}
+
+// The IR check: input.wav[kCheckOffset, + kIrCheckSamples) through the reset convolver against a direct
+// convolution in double.
+void irCheck() {
+    for (size_t i = 0; i < kIrCheckSamples; ++i) gIrIn[i] = inputSample(i);
+    gIrAxi.Reset();
+    for (size_t b = 0; b < kIrCheckSamples; b += kBlockSize) gIrAxi.Process(gIrIn + b, gIrOut + b);
+    float err = 0.0f;
+    bool nan = false;
+    for (size_t n = 0; n < kIrCheckSamples; ++n) {
+        double want = 0.0;
+        for (size_t k = 0; k <= n && k < dkdsp::kIrTaps; ++k) want += double(gIrData.taps[k]) * gIrIn[n - k];
+        const float d = float(std::fabs(double(gIrOut[n]) - want));
+        if (std::isnan(d)) nan = true;
+        else if (d > err) err = d;
+    }
+    logCheck("ir check", kIrCheckSamples, err, nan);
 }
 
 // The timed blocks, in ITCM like the pedal's AudioCallback.
 DK_ITCM void blockModel(const float* in) { gEngine.Process(in, gOut, kBlockSize); }
+DK_ITCM void blockIrD2(const float* in) { gIrD2.Process(in, gOut); }
+DK_ITCM void blockIrAxi(const float* in) { gIrAxi.Process(in, gOut); }
+
+// Knobs mid-travel and resonance at the top; SW1/SW2 flip between 24 and 12 dB every 10 blocks, so the maximum
+// includes slope fades; SW3 up (the boost).
+DK_ITCM dkdsp::EqControls eqControls() {
+    const uint8_t sw = uint8_t((gEqBlocks++ / 10) % 2);
+    return {0.5f, 1.0f, 0.5f, 1.0f, sw, sw, 2};
+}
+
+DK_ITCM void blockEq(const float* in) {
+    std::memcpy(gOut, in, sizeof gOut);
+    gEq.Process(gOut, kBlockSize, eqControls());
+}
+
+// The pedal's AudioCallback chain, without the control reads and meters.
+DK_ITCM void blockChain(const float* in) {
+    gInGain.Process(in, gOut, kBlockSize, 1.0f);
+    gEngine.Process(gOut, gOut, kBlockSize);
+    gIrAxi.Process(gOut, gOut);
+    gEq.Process(gOut, kBlockSize, eqControls());
+    gOutGain.Process(gOut, gOut, kBlockSize, 1.0f);
+    gMute.Process(gOut, gOut, kBlockSize);
+}
 
 constexpr int kStages = a2::kLayers + 2;  // input, the layers, head
 // c[0]: BeginChunk; c[1 + l]: RunLayer(l); c[kStages - 1]: EndChunk.
@@ -170,9 +255,10 @@ DK_ITCM void blockLayers(const float* in, uint32_t* c) {
 
 const float* noiseBlock(int k) { return gNoise + size_t((k + kWarmBlocks) % kNoiseBlocks) * kBlockSize; }
 
-// block(in) once per block, k from -kWarmBlocks; logs the measured blocks, then the gate. noipa: block stays an
-// indirect call, so GCC cannot clone this (SRAM) function and inline an ITCM block into it.
-[[gnu::noipa]] void timeModel(void (*block)(const float* in)) {
+// block(in) once per block, k from -kWarmBlocks; logs the measured blocks as stage `name` and returns their maximum
+// in tenths of a permille. noipa: block stays an indirect call, so GCC cannot clone this (SRAM) function and inline an
+// ITCM block into it.
+[[gnu::noipa]] uint32_t timeStage(const char* name, void (*block)(const float* in)) {
     uint64_t sum = 0;
     uint32_t max = 0;
     for (int k = -kWarmBlocks; k < kRunBlocks; ++k) {
@@ -188,9 +274,13 @@ const float* noiseBlock(int k) { return gNoise + size_t((k + kWarmBlocks) % kNoi
         sum += c;
         if (c > max) max = c;
     }
-    const uint32_t pm = logCycles("a2lite", sum, max);
-    dkusb::Log("bench gate a2lite max %lu.%lu permille limit %lu %s", (unsigned long)(pm / 10),
-               (unsigned long)(pm % 10), (unsigned long)kGatePermille, pm <= kGatePermille * 10 ? "go" : "no-go");
+    return logCycles(name, sum, max);
+}
+
+void logGate(const char* name, uint32_t pm, uint32_t limit) {
+    dkusb::Log("bench gate %s max %lu.%lu permille limit %lu %s", name, (unsigned long)(pm / 10),
+               (unsigned long)(pm % 10), (unsigned long)limit, pm <= limit * 10 ? "go" : "no-go");
+    serveFor(5);
 }
 
 [[gnu::noipa]] void timeLayers(void (*block)(const float* in, uint32_t* c)) {
@@ -221,10 +311,20 @@ void runPass(unsigned pass) {
     dkusb::Serve(logBoot);
     check();
     dkusb::Serve(logBoot);
+    irCheck();
+    dkusb::Serve(logBoot);
     gEngine.Reset();
-    timeModel(blockModel);
+    logGate("a2lite", timeStage("a2lite", blockModel), kGatePermille);
     dkusb::Serve(logBoot);
     timeLayers(blockLayers);
+    dkusb::Serve(logBoot);
+    timeStage("ir d2", blockIrD2);
+    dkusb::Serve(logBoot);
+    timeStage("ir axi", blockIrAxi);
+    dkusb::Serve(logBoot);
+    timeStage("eq", blockEq);
+    dkusb::Serve(logBoot);
+    logGate("chain", timeStage("chain", blockChain), kChainGatePermille);
     dkusb::Log("bench pass %u done", pass);
     serveFor(kPassGapMs);
 }
@@ -254,6 +354,22 @@ int main() {
     }
     dkusb::Log("bench model \"%s\" ok", gModel.name);
     gEngine.Load(gModel.weights, gModel.head_scale);
+
+    const dkir::Status ist = dkir::Parse(dk_bench_ir, size_t(dk_bench_ir_end - dk_bench_ir), &gIrData);
+    const bool fft = gIrD2.Init() && gIrAxi.Init();
+    if (ist != dkir::Status::kOk || !fft) {
+        for (;;) {
+            dkusb::Log("bench ir %s", fft ? dkir::StatusName(ist) : "fft");
+            serveFor(kPassGapMs);
+        }
+    }
+    dkusb::Log("bench ir \"%s\" ok", gIrData.name);
+    gIrD2.Load(gIrData.taps);
+    gIrAxi.Load(gIrData.taps);
+    gEq.Init({0.5f, 1.0f, 0.5f, 1.0f, 0, 0, 2});
+    gInGain.Init(1.0f);
+    gOutGain.Init(1.0f);
+    gMute.Init(false);
 
     for (unsigned pass = 1;; ++pass) runPass(pass);
 }

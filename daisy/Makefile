@@ -1,7 +1,8 @@
 # ducky: the Ducky NAM player pedal on the Daisy Seed in a Cleveland Music Co. HotHouse (src/board.h).
 # APP=ducky (default): the pedal firmware, build/<BOARD>/ducky.bin; MODEL=FILE.bin picks the compiled-in model (default
-# tests/fixtures/nam/A2.bin).
-# APP=bench: the A2-Lite benchmark and device check (src/bench.cpp, no audio), build/<BOARD>-bench/ducky_bench.bin.
+# tests/fixtures/nam/A2.bin); IR=FILE.bin picks the compiled-in IR (default none).
+# APP=bench: the A2-Lite, IR and EQ benchmark and device check (src/bench.cpp, no audio),
+# build/<BOARD>-bench/ducky_bench.bin.
 
 # The app runs from SRAM, loaded from QSPI by the Daisy bootloader.
 export APP_TYPE = BOOT_SRAM
@@ -42,6 +43,7 @@ endif
 ifeq ($(wildcard $(LIBDAISY_DIR)/build/libdaisy.a),)
 $(error libdaisy.a not built. From the repo root run: make -C daisy/libDaisy)
 endif
+include cmsis_fft.mk
 
 # No instruction scheduling: GCC's Cortex-M7 model interleaves FP loads with multiply-accumulates, and on this core a
 # load, store, move or add right after a multiply-accumulate waits about 3 cycles (docs/M7_PERFORMANCE.md).
@@ -62,17 +64,20 @@ BUILD_ID_SRC := const char kBuildId[] = "$(BUILD_ID)";
 ifneq ($(BUILD_ID_SRC),$(shell cat $(BUILD_ID_C) 2>/dev/null))
 $(shell printf '%s\n' '$(BUILD_ID_SRC)' > $(BUILD_ID_C))
 endif
-C_SOURCES = $(BUILD_ID_C)
+C_SOURCES = $(BUILD_ID_C) $(addprefix $(LIBDAISY_DIR)/Drivers/CMSIS-DSP/Source/,$(CMSIS_FFT_FILES))
 
 SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
 include $(SYSTEM_FILES_DIR)/Makefile
 
 C_DEFS += $(BOARD_DEF)
+C_DEFS += $(CMSIS_FFT_DEFS)
+C_INCLUDES += -I$(LIBDAISY_DIR)/Drivers/CMSIS-DSP/PrivateInclude
 
 ifeq ($(APP),bench)
 # src/bench.cpp .incbins these fixtures by absolute path; rebuild when they change.
 C_DEFS += -DDK_REPO_ROOT='"$(abspath $(CURDIR)/..)"'
-$(BUILD_DIR)/bench.o: ../tests/fixtures/nam/A2.bin ../tests/fixtures/nam/input.wav ../tests/fixtures/nam/A2.input.ref.wav
+$(BUILD_DIR)/bench.o: ../tests/fixtures/nam/A2.bin ../tests/fixtures/nam/input.wav ../tests/fixtures/nam/A2.input.ref.wav \
+  ../tests/fixtures/ir/decay.bin
 endif
 
 ifeq ($(APP),ducky)
@@ -90,6 +95,24 @@ $(shell printf '%s\n' '$(MODEL_PATH)' > $(MODEL_STAMP))
 endif
 C_DEFS += -DDK_MODEL_PATH='"$(MODEL_PATH)"'
 $(BUILD_DIR)/ducky.o: $(MODEL_PATH) $(MODEL_STAMP)
+
+# The compiled-in IR: IR=FILE.bin (a format-1 IR binary, docs/FILTERS.md; bun tools/ir_convert.ts makes one from a
+# .wav), relative to the repo root or absolute; default none (no IR stage). The path must not contain spaces (.incbin
+# and make both split on them). $(BUILD_DIR)/ir_path records it as MODEL's stamp does, "none" without one.
+IR ?=
+$(if $(word 2,$(IR)),$(error IR path must not contain spaces: $(IR)))
+IR_PATH := $(if $(IR),$(if $(filter /%,$(IR)),$(IR),$(abspath $(CURDIR)/../$(IR))))
+ifneq ($(IR),)
+ifeq ($(wildcard $(IR_PATH)),)
+$(error IR not found: $(IR_PATH))
+endif
+C_DEFS += -DDK_IR_PATH='"$(IR_PATH)"'
+endif
+IR_STAMP := $(BUILD_DIR)/ir_path
+ifneq ($(or $(IR_PATH),none),$(shell cat $(IR_STAMP) 2>/dev/null))
+$(shell printf '%s\n' '$(or $(IR_PATH),none)' > $(IR_STAMP))
+endif
+$(BUILD_DIR)/ducky.o: $(IR_STAMP) $(IR_PATH)
 endif
 
 # Relink when the linker script changes: the core link rule lists only $(OBJECTS) and Makefile as prerequisites.
