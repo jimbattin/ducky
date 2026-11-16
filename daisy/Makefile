@@ -1,5 +1,6 @@
 # ducky: the Ducky NAM player pedal on the Daisy Seed in a Cleveland Music Co. HotHouse (src/board.h).
-# APP=ducky (default): the pedal firmware, build/<BOARD>/ducky.bin.
+# APP=ducky (default): the pedal firmware, build/<BOARD>/ducky.bin; MODEL=FILE.bin picks the compiled-in model (default
+# tests/fixtures/nam/A2.bin).
 # APP=bench: the A2-Lite benchmark and device check (src/bench.cpp, no audio), build/<BOARD>-bench/ducky_bench.bin.
 
 # The app runs from SRAM, loaded from QSPI by the Daisy bootloader.
@@ -72,6 +73,23 @@ ifeq ($(APP),bench)
 # src/bench.cpp .incbins these fixtures by absolute path; rebuild when they change.
 C_DEFS += -DDK_REPO_ROOT='"$(abspath $(CURDIR)/..)"'
 $(BUILD_DIR)/bench.o: ../tests/fixtures/nam/A2.bin ../tests/fixtures/nam/input.wav ../tests/fixtures/nam/A2.input.ref.wav
+endif
+
+ifeq ($(APP),ducky)
+# The compiled-in model: MODEL=FILE.bin (a format-1 model binary, docs/NAM_FORMAT.md), relative to the repo root or
+# absolute; default the committed fixture. src/ducky.cpp .incbins it by absolute path. $(BUILD_DIR)/model_path records
+# the path and is rewritten only when it changes, so switching MODEL rebuilds ducky.o even when the new file is older.
+MODEL ?= tests/fixtures/nam/A2.bin
+MODEL_PATH := $(if $(filter /%,$(MODEL)),$(MODEL),$(abspath $(CURDIR)/../$(MODEL)))
+ifeq ($(wildcard $(MODEL_PATH)),)
+$(error MODEL not found: $(MODEL_PATH))
+endif
+MODEL_STAMP := $(BUILD_DIR)/model_path
+ifneq ($(MODEL_PATH),$(shell cat $(MODEL_STAMP) 2>/dev/null))
+$(shell printf '%s\n' '$(MODEL_PATH)' > $(MODEL_STAMP))
+endif
+C_DEFS += -DDK_MODEL_PATH='"$(MODEL_PATH)"'
+$(BUILD_DIR)/ducky.o: $(MODEL_PATH) $(MODEL_STAMP)
 endif
 
 # Relink when the linker script changes: the core link rule lists only $(OBJECTS) and Makefile as prerequisites.
