@@ -10,7 +10,7 @@ make -C daisy/libDaisy                    # daisy/libDaisy/build/libdaisy.a
 uv sync                                   # .venv with pyusb for tools/usb_log.py
 ```
 
-This needs `arm-none-eabi-gcc` (tested with 13.3.rel1), `dfu-util`, `uv`, `g++`, GoogleTest visible to `pkg-config gtest_main`, and Bun (tested with 1.4.4) for `editor/` and the `tools/*.ts` converters. `make -C editor` installs the editor's dependencies on first use.
+This needs `arm-none-eabi-gcc` (tested with 13.3.rel1), `dfu-util`, `uv`, `g++`, GoogleTest visible to `pkg-config gtest_main`, and Bun (tested with 1.4.4) for `editor/` and the `tools/*.ts` tools. `make -C editor` installs the editor's dependencies on first use. `tools/pedal.ts` needs Linux with ALSA and read/write access to `/dev/snd/midiC*D0` (group `audio`, or the seat ACL a desktop session grants).
 
 ## Build, test, flash, log
 
