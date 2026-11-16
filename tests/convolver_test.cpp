@@ -13,6 +13,7 @@
 
 using dkdsp::IrConvolver;
 using dkdsp::kBlockSize;
+using dkdsp::kIrParts;
 using dkdsp::kIrTaps;
 
 namespace {
@@ -49,7 +50,7 @@ TEST(IrConvolver, ImpulseGivesTheTaps) {
     auto c = std::make_unique<IrConvolver>();
     ASSERT_TRUE(c->Init());
     c->Load(ir->taps);
-    std::vector<float> in(44 * kBlockSize, 0.0f);
+    std::vector<float> in((kIrParts + 1) * kBlockSize, 0.0f);  // the taps and at least 16 more samples
     in[0] = 1.0f;
     const std::vector<float> out = Convolve(*c, in);
     for (size_t i = 0; i < kIrTaps; ++i) ASSERT_NEAR(out[i], ir->taps[i], 1e-6) << i;
@@ -61,7 +62,7 @@ TEST(IrConvolver, NoiseMatchesDirectConvolution) {
     auto c = std::make_unique<IrConvolver>();
     ASSERT_TRUE(c->Init());
     c->Load(ir->taps);
-    const std::vector<float> in = Noise(100 * kBlockSize);
+    const std::vector<float> in = Noise((2 * kIrParts + 14) * kBlockSize);  // past two turns of the spectrum ring
     const std::vector<float> out = Convolve(*c, in);
     double max_err = 0.0;
     for (size_t n = 0; n < in.size(); ++n) {

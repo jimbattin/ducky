@@ -54,7 +54,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `daisy/src/link.h` | `dklink`: the SysEx wire format, the septet and Pack7 codecs, `TxBuffer` (LOG, SLOT, RESULT, STATUS, Identity), `SysExAssembler`, `PedalCommand`, and the protocol tables `kCommands`/`kResults` that `docs/MIDI.md` is generated from. The protocol reference. | yes |
 | `daisy/src/upload.h` | `dklink::Upload`: UPLOAD BEGIN/CHUNK staging (CRC per chunk, resends, gaps). | yes |
 | `daisy/src/controls.h` | `dkctl::ToggleFilter` (30 ms toggle hysteresis), `dkctl::Blinker` (LED2's N blinks, repeated after 5 s dark). | yes |
-| `daisy/src/dsp/blocks.h` | `dkdsp::kSampleRate` (48 kHz), `kBlockSize` (48), `kIrTaps` (2048). | yes |
+| `daisy/src/dsp/blocks.h` | `dkdsp::kSampleRate` (48 kHz), `kBlockSize` (24), `kIrTaps` (2048). | yes |
 | `daisy/src/dsp/mute.h` | `dkdsp::MuteRamp`: FS1's 5 ms linear mute, and the preset switch's fade. | yes |
 | `daisy/src/dsp/gain.h` | `dkdsp::InputGain` (Knob 1), `OutputGain` (Knob 2), `LevelMatchGain`, `Smoother` (one-pole), `GainRamp` (per-block linear gain ramp). | yes |
 | `daisy/src/dsp/a2lite.h` | `dkdsp::A2Lite`: the A2-Lite network (`docs/NAM_FORMAT.md` "Engine"); `dkdsp::a2` holds the shape and memory layout; `dkdsp::FpHere`. | yes |
@@ -88,7 +88,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 
 ## Threads
 
-- **`AudioCallback`** is the audio DMA interrupt at 48 kHz, in 48-sample blocks (1 ms). It runs from ITCM, and its state, the engine and the EQ included, lives in DTCM; the IR convolver lives in AXI SRAM. In order, it:
+- **`AudioCallback`** is the audio DMA interrupt at 48 kHz, in 24-sample blocks (0.5 ms). It runs from ITCM, and its state, the engine and the EQ included, lives in DTCM; the IR convolver lives in AXI SRAM. Control timings (toggle hysteresis, LED2's blinks) are set in milliseconds and counted in blocks (`dkctl::BlocksForMs`). In order, it:
   1. reads the controls;
   2. toggles the mute on FS1 and counts FS2 presses;
   3. steps the preset switch's handshake ("Preset switch" below);
@@ -123,7 +123,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | Region | Size | Holds now | Reserved for |
 |---|---|---|---|
 | ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages, the convolver, the mid and the gains inlined), `A2Lite::RunLayer`, `CutFilter::Process` (8 KB in all) | |
-| DTCM `0x20000000` | 128 KB | The engine (99,124 bytes in `.dtcm_bss`: history 90,600, weights 7,480); callback state; the 16 KB stack reserve at the top | |
+| DTCM `0x20000000` | 128 KB | The engine (92,116 bytes in `.dtcm_bss`: history 83,976, weights 7,480); callback state; the 16 KB stack reserve at the top | |
 | AXI SRAM `0x24000000` | 480 KB | Code (CMSIS-DSP's FFT included), `.data`, `.bss` with the IR convolver (68 KB): 226 KB in total | |
 | D2 SRAM `0x30008000` | 256 KB | — (the convolver measured slower here than in AXI SRAM, `docs/FILTERS.md`) | |
 | SDRAM `0xC0000000` | 64 MB | The 8 parsed presets (`gPresets`, 127,232 bytes; the gear texts stay in flash), the link's upload buffer (16,280), RENAME/SWAP scratch (2 × 16,280) and COMMIT's parse target (`gCheck`, 15,904): 191,976 bytes in `.sdram_bss` | |
@@ -332,11 +332,13 @@ Over the link with `bun tools/pedal.ts`, audio running throughout (input −16�
 
 1. **Check:** a reset engine runs `input.wav[48000, 72000)` (the file's first second is silence, so a reset engine is already in that state) against the reference render; limit 1e-5.
 2. **IR check:** the reset convolver runs `input.wav[48000, 52800)` against a direct convolution computed on the device in double; limit 1e-5.
-3. **Model:** `A2Lite::Process` on 48-sample blocks of uniform noise (±0.5), timed with the DWT cycle counter: 200 warm-up blocks, then 2000 measured, interrupts masked inside each block. The M3 gate is the maximum against 450 permille of the block period.
+3. **Model:** `A2Lite::Process` on `kBlockSize` blocks of uniform noise (±0.5), timed with the DWT cycle counter: 200 ms of warm-up blocks, then 2 s measured, interrupts masked inside each block. The M3 gate is the maximum against 450 permille of the block period.
 4. **Layers:** the same blocks, each stage (`BeginChunk`, `RunLayer` per layer, `EndChunk`) timed separately.
 5. **IR, EQ, chain:** the same way, the convolver from D2 and from AXI SRAM; the EQ at mid-travel knobs, top resonance, SW3 up, with SW1/SW2 flipping between 24 and 12 dB every 10 blocks so slope fades are in the maximum; and the pedal's whole chain (input gain, engine, IR, EQ, output gain, mute). The M5 gate is the chain's maximum against 550 permille.
 
 Passes repeat every 2 s; the DFU command works between stages, so `flash_when_ready.sh` returns to the pedal with no button presses.
+
+A pass with 48-sample blocks (M5); the 24-sample figures are in `docs/FILTERS.md` "Measured":
 
 ```
 ducky_bench hothouse sysclk 480 MHz 999fce4+dirty                                 (boot / HELLO)

@@ -20,18 +20,18 @@ The IR stage runs only when the current preset has an IR (`docs/FIRMWARE.md` "Pr
 | | |
 |---|---|
 | IR length | `kIrTaps` 2048 taps at 48 kHz (42.7 ms) |
-| Partition | `kIrPartition` = `kBlockSize` = 48 taps; `kIrParts` = 43 partitions (the last one 32 taps, zero-padded) |
-| FFT | `kIrFft` = 128-point real (`arm_rfft_fast_f32`, a 64-point complex FFT inside) |
+| Partition | `kIrPartition` = `kBlockSize` = 24 taps; `kIrParts` = 86 partitions (the last one 8 taps, zero-padded) |
+| FFT | `kIrFft` = 64-point real (`arm_rfft_fast_f32`, a 32-point complex FFT inside) |
 | Latency | none: a block's output includes its own input's contribution |
-| Cost per block | constant: 1 forward FFT, 43 × 64 complex multiply-adds, 1 inverse FFT |
+| Cost per block | constant: 1 forward FFT, 86 × 32 complex multiply-adds, 1 inverse FFT |
 
-- **Per block:** the frame is the newest 128 input samples (80 older, 48 new). Its spectrum is stored as the newest entry of the input-spectrum ring. The output spectrum is Σₚ X(block − p)·Hₚ over the 43 partitions. The inverse FFT's last 48 samples are the block's output: overlap-save keeps outputs 47…127 of the circular convolution (81 valid samples, 48 needed).
-- **Spectra:** CMSIS packs a real spectrum as `[DC, Nyquist, re1, im1, …, re63, im63]`. The multiply-accumulate treats every pair as one complex bin and then recomputes pair 0 as the two real products. CMSIS's inverse is a true inverse (unity scale), which the impulse test checks.
-- **Mirrored ring:** `x_` holds 2 × 43 spectra and each new spectrum is written twice, at `slot` and `slot + 43`. Partition p reads `x_[slot + 43 − p]`, so its pointer moves down one spectrum per partition and never wraps.
-- **Kernel:** 16 tiles of 4 complex bins. A tile keeps 8 accumulators in registers across all 43 partitions; each partition is one island of 16 loads (8 of X, 8 of H, each through `FpHere`) and then 16 multiply-adds, ordered so that an accumulator's two updates are 8 instructions apart (`docs/M7_PERFORMANCE.md` rules 2 and 6). The image reads `L16 M16` per partition.
+- **Per block:** the frame is the newest 64 input samples (40 older, 24 new). Its spectrum is stored as the newest entry of the input-spectrum ring. The output spectrum is Σₚ X(block − p)·Hₚ over the 86 partitions. The inverse FFT's last 24 samples are the block's output: overlap-save keeps outputs 23…63 of the circular convolution (41 valid samples, 24 needed).
+- **Spectra:** CMSIS packs a real spectrum as `[DC, Nyquist, re1, im1, …, re31, im31]`. The multiply-accumulate treats every pair as one complex bin and then recomputes pair 0 as the two real products. CMSIS's inverse is a true inverse (unity scale), which the impulse test checks.
+- **Mirrored ring:** `x_` holds 2 × 86 spectra and each new spectrum is written twice, at `slot` and `slot + 86`. Partition p reads `x_[slot + 86 − p]`, so its pointer moves down one spectrum per partition and never wraps.
+- **Kernel:** 8 tiles of 4 complex bins. A tile keeps 8 accumulators in registers across all 86 partitions; each partition is one island of 16 loads (8 of X, 8 of H, each through `FpHere`) and then 16 multiply-adds, ordered so that an accumulator's two updates are 8 instructions apart (`docs/M7_PERFORMANCE.md` rules 2 and 6). The image reads `L16 M16` per partition.
 - **Memory:** `h_` (partition spectra) 22,016 bytes, `x_` (input spectra) 44,032 bytes; 68 KB in all with the FFT buffers. No default member initialisers, so an instance may live in a `NOLOAD` section.
-- **Placement:** AXI SRAM (`.bss`). The 66 KB of spectra stream through the 16 KB D-cache every block, and the bench measured the convolver at 109 permille from AXI SRAM against 138 from D2 SRAM (`DK_D2`), so D2 stays unused. The FFT itself (CMSIS-DSP C, built with Ducky's flags) runs from AXI SRAM, not ITCM.
-- **Build:** libDaisy's `libdaisy.a` does not contain CMSIS-DSP. `daisy/cmsis_fft.mk` lists the sources and table defines for the 128-point real FFT; `daisy/Makefile` compiles them for the pedal, and the top-level `Makefile` compiles them for the host tests and `render` with CMSIS's own host switch `__GNUC_PYTHON__`. A missing table compiles fine but makes `Init` return false.
+- **Placement:** AXI SRAM (`.bss`). The 66 KB of spectra stream through the 16 KB D-cache every block, and the bench measured the convolver at 189 permille from AXI SRAM against 248 from D2 SRAM (`DK_D2`; 109 against 138 with 48-sample blocks), so D2 stays unused. The FFT itself (CMSIS-DSP C, built with Ducky's flags) runs from AXI SRAM, not ITCM.
+- **Build:** libDaisy's `libdaisy.a` does not contain CMSIS-DSP. `daisy/cmsis_fft.mk` lists the sources and table defines for the 64-point real FFT; `daisy/Makefile` compiles them for the pedal (and recompiles them when `cmsis_fft.mk` changes), and the top-level `Makefile` compiles them for the host tests and `render` with CMSIS's own host switch `__GNUC_PYTHON__`. A missing table compiles fine but makes `Init` return false.
 
 ## IR binary (format 1)
 
@@ -135,17 +135,18 @@ The slot's CRC covers the IR, and the IR binary is also checked with `dkir::Pars
 
 ## Measured (Seed 1.2)
 
-Bench (`APP=bench`, `docs/FIRMWARE.md` "Bench"), cycles per 48-sample block of noise, permille of the 480,000-cycle block period:
+Bench (`APP=bench`, `docs/FIRMWARE.md` "Bench"), cycles per block of noise, maximum in permille of the block period (240,000 cycles at 24 samples, 480,000 at 48):
 
-| Stage | Avg cycles | Max permille |
-|---|---|---|
-| A2-Lite | 168,561 | 352.4 |
-| IR convolver, AXI SRAM (the pedal's) | 51,735 | 109.8 |
-| IR convolver, D2 SRAM | 64,440 | 138.2 |
-| EQ (both cuts, mid; slope fades every 10 blocks) | 15,135 | 31.8 |
-| Whole chain (gate, limit 550) | 237,192 | 496.4 |
+| Stage | 24 samples: avg cycles | 24 samples: max permille | 48 samples (M5): avg cycles | 48 samples (M5): max permille |
+|---|---|---|---|---|
+| A2-Lite | 87,334 | 366.9 | 168,561 | 352.4 |
+| IR convolver, AXI SRAM (the pedal's) | 44,230 | 189.4 | 51,735 | 109.8 |
+| IR convolver, D2 SRAM | 57,844 | 248.4 | 64,440 | 138.2 |
+| EQ (both cuts, mid; slope fades every 10 blocks) | 8,652 | 36.2 | 15,135 | 31.8 |
+| Whole chain (gate, limit 550) | 141,648 | 594.7 (no-go) | 237,192 | 496.4 |
 
-- **IR check:** the convolver against a direct convolution in double on the device, 4,800 samples of `input.wav`: max error 182e-9 (limit 1e-5).
-- **Live** (`A2.bin`, `IR=irs/fdmn_blnd_mix01.bin`, 5 minutes): load avg 499, max 501 permille, 0 underruns (limit 600). Without `IR=`: avg 392, max 393. The load does not depend on the controls, since every section always runs.
+- **24-sample blocks:** the convolver's per-block work is the same as at 48 (86 × 32 against 43 × 64 complex multiply-adds, the same 66 KB of spectra through the D-cache) and runs twice as often, so its share of the block period nearly doubles. The model's per-sample cost barely moves. The chain misses the M5 gate. Live without an IR the pedal measured load avg 415, max 419 permille, 0 underruns (394 at 48 samples); live with an IR is not yet measured.
+- **IR check:** the convolver against a direct convolution in double on the device, 4,800 samples of `input.wav`: max error 146e-9 at 24 samples, 182e-9 at 48 (limit 1e-5).
+- **Live, 48 samples** (`A2.bin`, `IR=irs/fdmn_blnd_mix01.bin`, 5 minutes): load avg 499, max 501 permille, 0 underruns (limit 600). Without `IR=`: avg 392, max 393. The load does not depend on the controls, since every section always runs.
 - **Level:** with the reference-band normalisation the FDMN mix raises `A2.bin`'s render by 2.8 dB RMS (3.9 dB peak); on the pedal the `out` peak stayed at −8…−16 dBFS, against −9…−15 without an IR. Under the earlier unit-energy normalisation it was +10.7 dB and the output reached 0 dBFS.
 - **Knob ends:** on the pedal, Knob 5 fully counter-clockwise and Knob 4 fully clockwise bypass their filters (the 0.02/0.04 thresholds hold).

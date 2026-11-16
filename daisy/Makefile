@@ -72,6 +72,8 @@ include $(SYSTEM_FILES_DIR)/Makefile
 C_DEFS += $(BOARD_DEF)
 C_DEFS += $(CMSIS_FFT_DEFS)
 C_INCLUDES += -I$(LIBDAISY_DIR)/Drivers/CMSIS-DSP/PrivateInclude
+# Recompile CMSIS when its table selection changes: the core rule's prerequisites do not include cmsis_fft.mk.
+$(addprefix $(BUILD_DIR)/,$(notdir $(CMSIS_FFT_FILES:.c=.o))): cmsis_fft.mk
 
 ifeq ($(APP),bench)
 # src/bench.cpp .incbins these fixtures by absolute path; rebuild when they change.

@@ -88,7 +88,8 @@ extern "C" const uint8_t dk_bench_model[], dk_bench_model_end[], dk_bench_input[
 
 namespace {
 
-constexpr int kWarmBlocks = 200, kRunBlocks = 2000, kNoiseBlocks = 64;  // 200 ms and 2 s of 1 ms blocks
+constexpr int kBlocksPerMs = int(size_t(dkdsp::kSampleRate) / kBlockSize / 1000);
+constexpr int kWarmBlocks = 200 * kBlocksPerMs, kRunBlocks = 2000 * kBlocksPerMs, kNoiseBlocks = 64;  // 200 ms, 2 s
 constexpr uint32_t kPassGapMs = 2000;
 // input.wav's first second is digital silence, so a reset engine is already in the state of sample 48000.
 constexpr size_t kCheckOffset = 48000, kCheckSamples = 24000;

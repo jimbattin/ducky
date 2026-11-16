@@ -8,7 +8,7 @@
 // does not initialise, audio never starts: the pedal serves USB (DFU included) and logs "ir fft" once a second.
 //
 // Two threads of control:
-// - AudioCallback (the audio DMA interrupt, 48 kHz, 48-sample blocks): reads the controls (30 ms toggle hysteresis),
+// - AudioCallback (the audio DMA interrupt, 48 kHz, 24-sample blocks): reads the controls (30 ms toggle hysteresis),
 //   toggles the mute on FS1, counts FS2 presses, smooths knobs 1-2, runs the trim, the engine, the IR, the EQ and the
 //   output gain, runs the mute ramp and the preset fade, drives LED1 and LED2's blinks and measures the input and
 //   output peaks, the load and the underruns.
@@ -24,7 +24,7 @@
 // - main loop -> callback (relaxed): gPeakReset, gLoadReset, gBlinkCount; gSwapReq, gSwapLoaded (publishing gNextLevel,
 //   gNextInCal, gNextIrOn, gNextModelOn) and gBlinkReq (release/acquire).
 // Memory (memory.h): AudioCallback runs from ITCM; the engine, the EQ and the callback's own state live in DTCM, the
-// IR convolver (66 KB of spectra, streamed through the D-cache every block) in AXI SRAM, which the bench measured 21%
+// IR convolver (66 KB of spectra, streamed through the D-cache every block) in AXI SRAM, which the bench measured 24%
 // faster for it than D2 SRAM (docs/FILTERS.md), the parsed presets in SDRAM. FPSCR.FZ is on (denormals flush to zero).
 #include <algorithm>
 #include <atomic>
@@ -54,11 +54,6 @@ using namespace daisy;
 namespace {
 
 namespace ps = dkpreset;
-
-static_assert(dkctl::kToggleStableBlocks * dkdsp::kBlockSize * 1000 == 30 * size_t(dkdsp::kSampleRate),
-              "the toggle filter holds 30 ms");
-static_assert(dkctl::kBlinkOnBlocks * dkdsp::kBlockSize * 1000 == 150 * size_t(dkdsp::kSampleRate),
-              "a blink is on for 150 ms");
 
 dkboard::Board hw;
 

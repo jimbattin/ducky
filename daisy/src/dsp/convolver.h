@@ -12,16 +12,16 @@
 
 namespace dkdsp {
 
-constexpr size_t kIrFft = 128;                                           // real FFT size
+constexpr size_t kIrFft = 64;                                            // real FFT size
 constexpr size_t kIrPartition = kBlockSize;                              // taps per partition
-constexpr size_t kIrParts = (kIrTaps + kIrPartition - 1) / kIrPartition;  // 43
-constexpr size_t kIrHistory = kIrFft - kIrPartition;                     // older input samples in each frame: 80
+constexpr size_t kIrParts = (kIrTaps + kIrPartition - 1) / kIrPartition;  // 86
+constexpr size_t kIrHistory = kIrFft - kIrPartition;                     // older input samples in each frame: 40
 static_assert(kIrFft - kIrPartition + 1 >= kBlockSize, "overlap-save yields at least one block of valid outputs");
 static_assert(kIrFft % 8 == 0, "the multiply-accumulate runs tiles of 4 complex bins");
 
 // Every block: one forward FFT of the newest kIrFft input samples, the spectra of the last kIrParts blocks times the
 // kIrParts partition spectra, summed, one inverse FFT; the last kBlockSize outputs are the block's. Spectra are CMSIS
-// arm_rfft_fast_f32 packed: [DC, Nyquist, re1, im1, ..., re63, im63].
+// arm_rfft_fast_f32 packed: [DC, Nyquist, re1, im1, ..., re31, im31].
 //
 // No default member initialisers, so an instance can live in a NOLOAD section (the bench's DK_D2 one): Init, Load and
 // Reset write every member before Process runs.

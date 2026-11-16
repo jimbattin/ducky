@@ -76,7 +76,7 @@ constexpr int ReceptiveField() {
 constexpr int kReceptiveField = ReceptiveField();
 
 static_assert(kWeightCount == 1870, "docs/NAM_FORMAT.md: 1870 network weights");
-static_assert(kHistFloats == 22650, "6331 lookback frames plus 48 and a 5-frame guard per layer, 3 floats a frame");
+static_assert(kHistFloats == 20994, "6331 lookback frames plus 24 and a 5-frame guard per layer, 3 floats a frame");
 static_assert(kReceptiveField == 6346, "docs/NAM_FORMAT.md: receptive field");
 
 }  // namespace dkdsp::a2

@@ -4,11 +4,19 @@
 
 #include <cstdint>
 
+#include "dsp/blocks.h"
+
 namespace dkctl {
+
+// The control timings below count blocks; every whole millisecond is a whole number of them.
+constexpr int kBlocksPerSecond = int(size_t(dkdsp::kSampleRate) / dkdsp::kBlockSize);
+static_assert(size_t(dkdsp::kSampleRate) % dkdsp::kBlockSize == 0 && kBlocksPerSecond % 1000 == 0,
+              "the block rate is a whole number of kHz");
+constexpr int BlocksForMs(int ms) { return ms * (kBlocksPerSecond / 1000); }
 
 // A toggle accepts a new position only after it has read that position for kToggleStableBlocks consecutive blocks,
 // so a lever moving up <-> down never reports the middle it passes through.
-constexpr int kToggleStableBlocks = 30;  // 30 ms at the 1 kHz block rate
+constexpr int kToggleStableBlocks = BlocksForMs(30);
 class ToggleFilter {
 public:
     void Init(uint8_t pos) {
@@ -40,8 +48,8 @@ private:
 };
 
 // LED2's preset number: n blinks, each kBlinkOnBlocks on then kBlinkOffBlocks off, then kBlinkPauseBlocks off, repeated.
-constexpr int kBlinkOnBlocks = 150, kBlinkOffBlocks = 150;  // 150 ms on, 150 ms off at the 1 kHz block rate
-constexpr int kBlinkPauseBlocks = 5000;                     // 5 s dark between repeats
+constexpr int kBlinkOnBlocks = BlocksForMs(150), kBlinkOffBlocks = BlocksForMs(150);
+constexpr int kBlinkPauseBlocks = BlocksForMs(5000);  // 5 s dark between repeats
 class Blinker {
 public:
     // n blinks from the next Tick, repeating; restarts any pattern in progress; n <= 0 is off.
