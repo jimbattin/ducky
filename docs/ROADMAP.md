@@ -17,8 +17,8 @@ A living plan. Milestones are done in order; any of them may be revised, split, 
 | Preset switching | FS2 steps forward through filled slots only and wraps. Audio fades out, the model is swapped and reset, then audio fades back in (5 ms each way, a gap of about 11 ms, no crossfade). LED2 blinks N times for slot N. The last slot is remembered across power cycles. |
 | Preset persistence | Presets survive switching to another firmware and back. They live in the upper 4 MB of the QSPI flash, outside any firmware image and outside bad_tape's saved values at `0x903FE000`. |
 | Hardware | Daisy Seed with 64 MB or more of SDRAM (development unit: Seed 1.2, 64 MB). HotHouse. |
-| SysEx | `F0 7D 64 <version> <cmd> … F7`. Device byte `0x64` is unused by sibling projects. Identity Reply and DFU command follow the bad_tape conventions. Since M7 the link also manages slots (list, chunked upload, erase, rename, swap) and streams status; `daisy/src/link.h` is the reference and `docs/MIDI.md` is generated from it. |
-| Editor | Preset manager plus live status: log, CPU load meter, knob/switch states. It does not control the knobs remotely, because the pedal is "what you see is what you get". |
+| SysEx | `F0 7D 64 <version> <cmd> … F7`. Device byte `0x64` is unused by sibling projects. Identity Reply and DFU command follow the bad_tape conventions. Since M7 the link also manages slots (list, chunked upload, erase, rename, swap) and streams status; since M8 it reads slots back (READ/DATA). `daisy/src/link.h` is the reference and `docs/MIDI.md` is generated from it. |
+| Editor | Preset manager plus live status: log, CPU load meter, knob/switch states. It does not control the knobs remotely, because the pedal is "what you see is what you get". One self-contained HTML file, so it can be hosted anywhere, including in an iframe. Stored slots' metadata is read back from the pedal, not kept by the editor. |
 | Model and IR files | `models/*.nam`, converted `*.bin` and `irs/` are git-ignored. Only upstream MIT fixtures (`tests/fixtures/nam/`) are committed, plus `A2.bin` converted from upstream `A2.nam`, the generated IR fixture `tests/fixtures/ir/decay.{wav,bin}`, and the preset fixture `tests/fixtures/preset/A2_decay.bin` built from those two. |
 
 ## Feasibility
@@ -72,7 +72,7 @@ graph LR
 - Decided: the converter lives in `editor/src/nam/` and the CLI is `tools/nam_convert.ts`. A model without an A2-Lite `loudness` is accepted, flagged, and plays at unity. The DI stimulus is the first 20 s of the left channel of the sibling projects' `guitar.wav` (local, in `renders/`); upstream's MIT fixtures and the `A2.nam` reference are committed under `tests/fixtures/nam/`.
 - **Done when:** both development models convert, and models with a non-Lite shape are rejected with a named reason.
 - **Result:** `bun tools/nam_convert.ts` converts both development models and upstream `A2.nam` to 7652-byte format-1 binaries, and rejects upstream `slimmable_container.nam` (`no-lite-submodel`) and `wavenet_a2_feature_test.nam` (`not-container`). `tools/nam_reference.sh` renders A2-Lite references for every model on `input.wav` (96,000 samples) and the 20 s guitar stimulus (960,000 samples); reruns are bit-identical.
-- **Docs:** `docs/NAM_FORMAT.md` "Ducky model binary (format 1)" and "Reference renders".
+- **Docs:** `docs/NAM_FORMAT.md` "Ducky model binary (format 2)" (format 1 until M8) and "Reference renders".
 
 ### M2: A2-Lite engine on the PC (done, `a60b2a9`)
 - Portable C++ that does not include libDaisy: block processing and constant-fill reset.
@@ -145,6 +145,9 @@ graph LR
 - Manages 8 slots and shows model metadata, including `input_level_dbu` and gear type.
 - Panel showing the log, CPU load meter, and knob/switch states. DFU button.
 - **Done when:** a full preset round trip works from the browser, and the editor works when hosted inside a multi-firmware launcher.
+- **Decided:** model binary format 2 adds `gear_type`, `gear_make`, `gear_model` and `modeled_by` (64 bytes each) after the name, so the preset slot becomes format 2 (7,988 / 16,280 bytes); format-1 slots read `version` and must be uploaded again. A new READ command returns up to 160 bytes of an ok slot's image per DATA reply, so the editor and `tools/pedal.ts info` show stored slots' full metadata (`editor/src/preset/info.ts`: 4 READs per slot, 5 with an IR). The sidebar is read-only and shows the firmware's tapers in units (dB, Hz, Q). Requests go through one queue (`usePedal.ts` `serial`), since the pedal answers one at a time.
+- **Verified (Seed 1.2, Chromium):** the editor links, syncs (Identity, LIST, slot infos, WATCH) and shows the build. A `.nam` + 48 kHz `.wav` import showed gear type, `input_level_dbu`, and the cab and truncation warnings; the upload's progress rose to 100 % (flash 158 ms) and slot 3's read-back details matched the import panel. Rename, ↑/↓ (the playing lamp and FS2 followed the playing preset) and erase each ended with a status line, and `pedal.ts list` agreed with the table. The sidebar followed the knobs, toggles and footswitches. DFU mode put the pedal into `0483:df11`; after `flash_when_ready.sh` the editor relinked and re-enabled WATCH on its own. Served from a local iframe page at `/editors/ducky`, the single-file build (no external `src`/`href`) linked, listed, uploaded, and showed DFU's confirm dialog.
+- **Docs:** `docs/MIDI.md` (READ, DATA); `docs/NAM_FORMAT.md` "Ducky model binary (format 2)"; `docs/FIRMWARE.md` "Editor", "Preset store", "Link protocol", "Source layout"; `docs/FILTERS.md` "Getting an IR onto the pedal".
 
 ### M9: Hardening and release prep
 - Stress tests: fast FS2 presses, uploading while playing, power loss during writes, rapid knob sweeps.

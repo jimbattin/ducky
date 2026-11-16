@@ -47,10 +47,10 @@ int main() {
     std::printf("\n");
 
     std::printf("## Results\n\n");
-    std::printf("RESULT's value: the next expected offset for UPLOAD BEGIN and CHUNK; for COMMIT the flash time in "
-                "ms on ok, the slot status on `invalid`, else 0; for ERASE, RENAME and SWAP the flash time in ms on "
-                "ok, else 0; 8 for LIST; 0 for WATCH. A LIST, WATCH or COMMIT with a payload of the wrong length "
-                "answers `bad-request`.\n\n");
+    std::printf("RESULT's value: the next expected offset for UPLOAD BEGIN and CHUNK; for READ the next offset; for "
+                "COMMIT the flash time in ms on ok, the slot status on `invalid`, else 0; for ERASE, RENAME and SWAP "
+                "the flash time in ms on ok, else 0; 8 for LIST; 0 for WATCH. A LIST, WATCH or COMMIT with a payload "
+                "of the wrong length answers `bad-request`.\n\n");
     std::printf("|Code|Name|Meaning|\n|---|---|---|\n");
     for (const ResultDoc& r : kResults) std::printf("|%d|%s|%s|\n", int(r.code), r.name, r.meaning);
     std::printf("\n");
@@ -64,7 +64,7 @@ int main() {
     std::printf("\n");
 
     std::printf("## Upload\n\n");
-    std::printf("An image is a complete format-1 preset slot (docs/FIRMWARE.md \"Preset store\"): %zu bytes without "
+    std::printf("An image is a complete format-2 preset slot (docs/FIRMWARE.md \"Preset store\"): %zu bytes without "
                 "an IR, %zu with one.\n\n",
                 dkpreset::kSizeNoIr, dkpreset::kSizeWithIr);
     std::printf("1. UPLOAD BEGIN `<slot> <size>`; RESULT ok, value 0. A BEGIN discards any earlier upload. Resend "

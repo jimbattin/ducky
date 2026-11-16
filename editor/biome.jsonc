@@ -11,8 +11,13 @@
     "rules": {
       "preset": "recommended",
       "style": {
+        // tsconfig's noUncheckedIndexedAccess types every index as possibly undefined; `!` marks the indices the
+        // length checks before it guarantee (the wire parsers), where a `?? 0` fallback would hide a bad frame.
         "noNonNullAssertion": "off"
       }
+    },
+    "domains": {
+      "react": "recommended"
     }
   },
   "assist": {

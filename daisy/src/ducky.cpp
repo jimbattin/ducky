@@ -134,6 +134,11 @@ bool gResultDue = false;                        // a RESULT waiting for room in 
 uint8_t gResultCmd = 0;
 dklink::Result gResultCode = dklink::Result::kOk;
 uint32_t gResultValue = 0;
+uint8_t gReadBuf[dklink::kReadBytes];  // READ's bytes, sent as DATA before its RESULT
+bool gReadDue = false;
+uint8_t gReadSlot = 0;
+uint32_t gReadOff = 0;
+size_t gReadLen = 0;
 bool gWatch = false;  // STATUS every kWatchPeriodMs
 uint32_t gWatchAt = 0;
 uint16_t gLoadAvgPm = 0, gLoadMaxPm = 0;  // the last `load` line's values
@@ -656,12 +661,36 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
             finishWrite(cmd, failed < 0, ms);
             return true;
         }
+        case dklink::kRead: {
+            if (n != 4 || p[0] >= ps::kSlots) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            const int k = p[0];
+            if (!gFilled[k]) {
+                result(cmd, Result::kSlotState, 0);
+                return true;
+            }
+            const uint32_t off = dklink::GetSeptets(p + 1, 3);
+            if (off >= imageSize(k)) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            const size_t len = std::min<size_t>(dklink::kReadBytes, imageSize(k) - off);
+            std::memcpy(gReadBuf, mapped(slotOff(k)) + off, len);
+            gReadDue = true;
+            gReadSlot = uint8_t(k);
+            gReadOff = off;
+            gReadLen = len;
+            result(cmd, Result::kOk, uint32_t(off + len));
+            return true;
+        }
         default: return false;
     }
 }
 
-// Once per main-loop pass, before dkusb::Serve: LIST's SLOTs then its RESULT, the pending RESULT, and the STATUS when
-// WATCH is on and kWatchPeriodMs has passed. Whatever does not fit in Tx() waits for a later pass, in order.
+// Once per main-loop pass, before dkusb::Serve: LIST's SLOTs then its RESULT, READ's DATA, the pending RESULT, and the
+// STATUS when WATCH is on and kWatchPeriodMs has passed. Whatever does not fit in Tx() waits for a later pass, in order.
 void serveReplies(uint32_t now) {
     dklink::TxBuffer& tx = dkusb::Tx();
     while (gListNext >= 0 && gListNext < ps::kSlots) {
@@ -678,7 +707,9 @@ void serveReplies(uint32_t now) {
         result(dklink::kList, dklink::Result::kOk, ps::kSlots);
         gListNext = -1;
     }
-    if (gResultDue && tx.AppendResult(gResultCmd, gResultCode, gResultValue)) gResultDue = false;
+    if (gReadDue && tx.AppendData(gReadSlot, gReadOff, dkmodel::Crc32(gReadBuf, gReadLen), gReadBuf, gReadLen))
+        gReadDue = false;
+    if (gResultDue && !gReadDue && tx.AppendResult(gResultCmd, gResultCode, gResultValue)) gResultDue = false;
     if (gWatch && now - gWatchAt >= dklink::kWatchPeriodMs) {
         dklink::StatusFrame s;
         s.load_avg = gLoadAvgPm;

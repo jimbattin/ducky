@@ -57,7 +57,7 @@ The IR stage runs only when the current preset has an IR (`docs/FIRMWARE.md` "Pr
 
 ### Converter
 
-`editor/src/ir/convert.ts` `convertIr(bytes, fallbackName)`, pure TypeScript shared with the M8 editor:
+`editor/src/ir/convert.ts` `convertIr(bytes, fallbackName)`, pure TypeScript shared with the editor:
 
 1. **Read** (`ir/wav.ts`, the semantics of `tools/wav.h`): RIFF/WAVE chunks walked (unknown ones skipped, odd sizes padded, a truncated last chunk tolerated). PCM 16/24/32-bit scaled by 1/2^(bits−1), IEEE float 32-bit, and `WAVE_FORMAT_EXTENSIBLE` with PCM or float subformat. Channel 0 only; `ir_convert` warns when there are more.
 2. **Resample** to 48 kHz (`ir/resample.ts`) unless the source already is: direct windowed-sinc evaluation in float64. Lowpass at 0.95 × the lower Nyquist (`fc = 0.95 · min(rate, 48000) / 2`), Kaiser window β 8.6, 32 zero crossings each side. The output length is `ceil(frames · 48000 / rate)`.
@@ -118,7 +118,7 @@ A bell at 515 Hz, Q 1.0, constant-Q form: `A = 10^(dB/40)`, `k = 1/(Q·A)`, `m1 
 
 ## Getting an IR onto the pedal
 
-An IR is part of a preset. `tools/pedal.ts` (one slot over the link, while the pedal plays) and `tools/preset_bank.ts` (all 8 slots as a bank image over DFU) convert a `.wav` themselves, and take an IR binary as well:
+An IR is part of a preset. The editor's import panel (`docs/FIRMWARE.md` "Editor") takes a `.wav` beside the `.nam` and uploads both to a slot. `tools/pedal.ts` (one slot over the link, while the pedal plays) and `tools/preset_bank.ts` (all 8 slots as a bank image over DFU) convert a `.wav` themselves, and take an IR binary as well:
 
 ```sh
 bun tools/pedal.ts upload 1 models/fender_super_eob_with_cab.nam \

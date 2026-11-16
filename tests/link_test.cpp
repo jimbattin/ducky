@@ -1,5 +1,5 @@
-// daisy/src/link.h: the wire contract host tools parse (Identity Reply, LOG, SLOT, RESULT, STATUS, PedalCommand), the
-// septet and Pack7 codecs, and the host-message reassembly.
+// daisy/src/link.h: the wire contract host tools parse (Identity Reply, LOG, SLOT, RESULT, STATUS, DATA,
+// PedalCommand), the septet and Pack7 codecs, and the host-message reassembly.
 #include "link.h"
 
 #include <gtest/gtest.h>
@@ -179,6 +179,22 @@ TEST(Status, Bytes) {
     EXPECT_EQ(Unpack(t), (std::vector<uint8_t>{0xF0, 0x7D, 0x64, 0x01, 0x15, 0x03, 0x74, 0x03, 0x77, 0x00, 0x00,
                                                0x00, 0x03, 0x03, 0x00, 0x00, 0x00, 0x01, 0x7A, 0x03, 0x74, 0x05,
                                                0x6E, 0x07, 0x68, 0x00, 0x7B, 0x02, 0x01, 0x00, 0x02, 0xF7}));
+}
+
+TEST(Data, Bytes) {
+    TxBuffer t;
+    const uint8_t d[] = {0x80, 0x01};
+    ASSERT_TRUE(t.AppendData(3, 300, 0xDEADBEEF, d, 2));
+    EXPECT_EQ(Unpack(t), (std::vector<uint8_t>{0xF0, 0x7D, 0x64, 0x01, 0x16, 0x03, 0x00, 0x02, 0x2C, 0x0D, 0x75,
+                                               0x36, 0x7D, 0x6F, 0x01, 0x00, 0x01, 0xF7}));
+}
+
+TEST(Data, LengthLimits) {
+    TxBuffer t;
+    uint8_t d[kReadBytes + 1] = {};
+    EXPECT_FALSE(t.AppendData(0, 0, 0, d, 0));
+    EXPECT_FALSE(t.AppendData(0, 0, 0, d, kReadBytes + 1));
+    EXPECT_EQ(t.size(), 0u);
 }
 
 TEST(Slot, NamesSeparatedCutAndPrintable) {

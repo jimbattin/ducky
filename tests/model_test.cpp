@@ -1,4 +1,4 @@
-// daisy/src/model.h: the format-1 model binary parser.
+// daisy/src/model.h: the format-2 model binary parser.
 #include "model.h"
 
 #include <gtest/gtest.h>
@@ -27,7 +27,7 @@ void Put32(std::vector<uint8_t>& b, size_t off, uint32_t v) {
     for (int i = 0; i < 4; ++i) b[off + i] = uint8_t(v >> (8 * i));
 }
 
-void FixCrc(std::vector<uint8_t>& b) { Put32(b, 7648, Crc32(b.data(), 7648)); }
+void FixCrc(std::vector<uint8_t>& b) { Put32(b, 7904, Crc32(b.data(), 7904)); }
 
 Status ParseBytes(const std::vector<uint8_t>& b) {
     auto m = std::make_unique<Model>();
@@ -52,7 +52,7 @@ TEST(Parse, A2Fixture) {
 
 TEST(Parse, TruncatedIsSize) {
     std::vector<uint8_t> b = A2Bin();
-    b.resize(7651);
+    b.resize(dkmodel::kBinSize - 1);
     EXPECT_EQ(ParseBytes(b), Status::kSize);
 }
 

@@ -21,10 +21,12 @@ export const CMD = {
   uploadBegin: 0x08,
   uploadChunk: 0x09,
   uploadCommit: 0x0a,
+  read: 0x0b,
   log: 0x12,
   slot: 0x13,
   result: 0x14,
   status: 0x15,
+  data: 0x16,
 } as const;
 
 /** docs/MIDI.md's command names, by code. */
@@ -39,10 +41,12 @@ export const CMD_NAMES: Readonly<Record<number, string>> = {
   [CMD.uploadBegin]: "UPLOAD BEGIN",
   [CMD.uploadChunk]: "UPLOAD CHUNK",
   [CMD.uploadCommit]: "UPLOAD COMMIT",
+  [CMD.read]: "READ",
   [CMD.log]: "LOG",
   [CMD.slot]: "SLOT",
   [CMD.result]: "RESULT",
   [CMD.status]: "STATUS",
+  [CMD.data]: "DATA",
 };
 
 /** RESULT codes (link.h Result); the index is the code. */
@@ -73,6 +77,8 @@ export const RESULT = {
 export const SLOT_STATUS_NAMES = ["ok", "empty", "magic", "version", "size", "crc", "model", "ir"] as const;
 
 export const CHUNK_BYTES = 256;
+/** A DATA's bytes, at most. */
+export const READ_BYTES = 160;
 export const MAX_NAME = 63;
 /** The two preset image sizes: without and with an IR. */
 export const IMAGE_SIZES = [
@@ -131,6 +137,8 @@ export function pedalMsg(cmd: number, payload: ArrayLike<number> = []): Uint8Arr
 }
 
 export const identityRequest = (): Uint8Array => Uint8Array.of(0xf0, 0x7e, 0x7f, 0x06, 0x01, 0xf7);
+export const helloMsg = (): Uint8Array => pedalMsg(CMD.hello);
+export const dfuMsg = (): Uint8Array => pedalMsg(CMD.dfu);
 export const listMsg = (): Uint8Array => pedalMsg(CMD.list);
 export const eraseMsg = (slot: number): Uint8Array => pedalMsg(CMD.erase, [slot]);
 /** name: printable ASCII; other characters become '?'. */
@@ -143,6 +151,7 @@ export const uploadBeginMsg = (slot: number, size: number): Uint8Array =>
 export const uploadChunkMsg = (offset: number, bytes: Uint8Array): Uint8Array =>
   pedalMsg(CMD.uploadChunk, [...septets(offset, 3), ...septets(crc32(bytes), 5), ...pack7(bytes)]);
 export const uploadCommitMsg = (): Uint8Array => pedalMsg(CMD.uploadCommit);
+export const readMsg = (slot: number, offset: number): Uint8Array => pedalMsg(CMD.read, [slot, ...septets(offset, 3)]);
 
 /**
  * Reassembles SysEx messages from a MIDI byte stream (link.h SysExAssembler): realtime bytes are ignored, F0 restarts,
@@ -222,7 +231,15 @@ export interface IdentityMessage {
   board: number;
   build: string;
 }
-export type PedalMessage = LogMessage | SlotMessage | ResultMessage | StatusMessage | IdentityMessage;
+export interface DataMessage {
+  type: "data";
+  /** 0-7. */
+  slot: number;
+  /** The image offset of data[0]. */
+  offset: number;
+  data: Uint8Array;
+}
+export type PedalMessage = LogMessage | SlotMessage | ResultMessage | StatusMessage | IdentityMessage | DataMessage;
 
 const ascii = (bytes: Uint8Array): string => String.fromCharCode(...bytes);
 
@@ -269,6 +286,14 @@ export function parseMessage(msg: Uint8Array): PedalMessage | null {
         fs1: (p[25]! & 1) !== 0,
         fs2: (p[25]! & 2) !== 0,
       };
+    case CMD.data: {
+      // A corrupt DATA reads as missing, so the session resends its READ.
+      if (p.length < 10) return null;
+      const data = unpack7(p.subarray(9));
+      if (data === null || data.length === 0 || data.length > READ_BYTES) return null;
+      if (crc32(data) !== fromSeptets(p, 4, 5)) return null;
+      return { type: "data", slot: p[0]!, offset: fromSeptets(p, 1, 3), data };
+    }
     default:
       return null;
   }

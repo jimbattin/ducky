@@ -1,6 +1,7 @@
-// A request/reply session with the pedal over any SysEx transport (docs/MIDI.md): slot listing and changes, the
-// chunked upload with its retries, and the STATUS stream. Pure TypeScript: the transport supplies the I/O.
+// A request/reply session with the pedal over any SysEx transport (docs/MIDI.md): slot listing, reading and changes,
+// the chunked upload with its retries, and the STATUS stream. Pure TypeScript: the transport supplies the I/O.
 
+import { infoRanges, type SlotInfo, slotInfo } from "../preset/info";
 import {
   CHUNK_BYTES,
   CMD,
@@ -17,6 +18,7 @@ import {
   RESULT,
   RESULT_NAMES,
   type ResultMessage,
+  readMsg,
   renameMsg,
   SLOT_STATUS_NAMES,
   type SlotMessage,
@@ -42,11 +44,11 @@ export class LinkError extends Error {
 }
 
 export interface SessionOptions {
-  /** LIST, WATCH, Identity, BEGIN and CHUNK. */
+  /** LIST, WATCH, Identity, READ, BEGIN and CHUNK. */
   replyTimeoutMs?: number;
   /** COMMIT, ERASE, RENAME and SWAP: they write flash. */
   flashTimeoutMs?: number;
-  /** Resends of one BEGIN or CHUNK. */
+  /** Resends of one READ, BEGIN or CHUNK. */
   retries?: number;
   /** LOG lines that arrive while waiting for a reply. */
   onLog?: (text: string) => void;
@@ -139,13 +141,53 @@ export class PedalSession {
     return (await this.request(swapMsg(a, b), CMD.swap, this.flashTimeoutMs)).value;
   }
 
+  /**
+   * length bytes of the slot's preset image from offset, one READ per DATA. A READ is resent on no reply or no
+   * matching DATA up to `retries` times.
+   */
+  async read(slot: number, offset: number, length: number): Promise<Uint8Array> {
+    checkSlot("READ", slot);
+    const out = new Uint8Array(length);
+    let got = 0;
+    let tries = 0;
+    while (got < length) {
+      const off = offset + got;
+      let data = null as Uint8Array | null;
+      const r = await this.exchange(readMsg(slot, off), CMD.read, this.replyTimeoutMs, (m) => {
+        if (m.type === "data" && m.slot === slot && m.offset === off) data = m.data;
+      });
+      if (r !== null && r.code !== RESULT.ok) throw resultError(r);
+      if (r === null || data === null) {
+        if (tries >= this.retries) throw new LinkError(`READ at ${off}: ${r === null ? "no reply" : "no data"}`);
+        tries++;
+        continue;
+      }
+      const n = Math.min(data.length, length - got);
+      out.set(data.subarray(0, n), got);
+      got += n;
+      tries = 0;
+    }
+    return out;
+  }
+
+  /** The metadata of the preset in an ok slot, read with infoRanges. */
+  async readInfo(slot: number): Promise<SlotInfo> {
+    const [head, ...rest] = infoRanges(false);
+    const first = await this.read(slot, head![0], head![1]);
+    const hasIr = (first[6]! & 1) !== 0;
+    const image = new Uint8Array(IMAGE_SIZES[hasIr ? 1 : 0]);
+    image.set(first, head![0]);
+    for (const [off, len] of hasIr ? infoRanges(true).slice(1) : rest) image.set(await this.read(slot, off, len), off);
+    return slotInfo(image);
+  }
+
   /** STATUS every 100 ms while on. */
   async watch(on: boolean): Promise<void> {
     await this.request(watchMsg(on), CMD.watch, this.replyTimeoutMs);
   }
 
   /**
-   * Writes a preset image (7732 or 16024 bytes) to the slot. BEGIN and each CHUNK are resent on no reply (and a CHUNK
+   * Writes a preset image (7988 or 16280 bytes) to the slot. BEGIN and each CHUNK are resent on no reply (and a CHUNK
    * on `crc`) up to `retries` times; COMMIT is not resent (the pedal has cleared the upload).
    */
   async upload(

@@ -1,12 +1,12 @@
-// .nam (JSON) → Ducky model binary, format 1. Spec: docs/NAM_FORMAT.md "Ducky model binary (format 1)".
+// .nam (JSON) → Ducky model binary, format 2. Spec: docs/NAM_FORMAT.md "Ducky model binary (format 2)".
 // Pure TypeScript (no DOM, no Bun APIs): shared by the editor and tools/nam_convert.ts.
 
 import { sanitiseName } from "../name";
 import { crc32 } from "./crc32";
 
 export const MODEL_MAGIC = "DKNM";
-export const MODEL_FORMAT_VERSION = 1;
-export const MODEL_BIN_SIZE = 7652;
+export const MODEL_FORMAT_VERSION = 2;
+export const MODEL_BIN_SIZE = 7908;
 export const LITE_WEIGHT_COUNT = 1871; // NAM stream incl. trailing head_scale
 export const NETWORK_WEIGHT_COUNT = 1870; // stored weights, head_scale split out
 export const FLAG_HAS_LOUDNESS = 0x0001;
@@ -22,7 +22,7 @@ const DIL7 = [1, 3, 7, 17, 41, 101, 239];
 export const DILATIONS: readonly number[] = [...DIL7, ...DIL7, 1, 13, ...DIL7];
 
 // Byte offsets in the binary.
-const OFF_FLAGS = 6;
+export const OFF_FLAGS = 6;
 const OFF_SIZE = 8;
 const OFF_DESC = 12;
 const OFF_KERNELS = 16;
@@ -30,10 +30,14 @@ const OFF_DILATIONS = 40;
 const OFF_WEIGHT_COUNT = 88;
 const OFF_WEIGHTS = 92;
 const OFF_HEAD_SCALE = OFF_WEIGHTS + 4 * NETWORK_WEIGHT_COUNT; // 7572
-const OFF_LOUDNESS = OFF_HEAD_SCALE + 4;
-const OFF_INPUT_LEVEL = OFF_LOUDNESS + 4;
-const OFF_NAME = OFF_INPUT_LEVEL + 4; // 7584
-const OFF_CRC = OFF_NAME + 64; // 7648
+export const OFF_LOUDNESS = OFF_HEAD_SCALE + 4;
+export const OFF_INPUT_LEVEL = OFF_LOUDNESS + 4;
+export const OFF_NAME = OFF_INPUT_LEVEL + 4; // 7584
+export const OFF_GEAR_TYPE = OFF_NAME + 64; // 7648
+export const OFF_GEAR_MAKE = OFF_GEAR_TYPE + 64;
+export const OFF_GEAR_MODEL = OFF_GEAR_MAKE + 64;
+export const OFF_MODELED_BY = OFF_GEAR_MODEL + 64;
+export const OFF_CRC = OFF_MODELED_BY + 64; // 7904
 
 const FILM_KEYS = [
   "conv_pre_film",
@@ -67,10 +71,10 @@ export class ModelRejected extends Error {
 
 export interface ModelInfo {
   name: string; // exactly the stored (sanitised) name
-  gearType: string | null;
-  gearMake: string | null;
-  gearModel: string | null;
-  modeledBy: string | null;
+  gearType: string | null; // exactly the stored (sanitised) text; null when absent or blank
+  gearMake: string | null; // likewise
+  gearModel: string | null; // likewise
+  modeledBy: string | null; // likewise
   loudness: number | null; // A2-Lite submodel metadata.loudness (dB)
   inputLevelDbu: number | null; // top-level metadata
   outputLevelDbu: number | null; // top-level metadata
@@ -108,8 +112,9 @@ function finiteOrNull(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-function stringOrNull(v: unknown): string | null {
-  return typeof v === "string" ? v : null;
+// A stored text field: null when absent or blank, else trimmed and sanitised.
+function textOrNull(v: unknown): string | null {
+  return typeof v === "string" && v.trim() !== "" ? sanitiseName(v.trim()) : null;
 }
 
 function checkIntArray(path: string, v: unknown, want: readonly number[]): void {
@@ -238,10 +243,10 @@ export function convertNam(text: string, fallbackName: string): ConvertedModel {
   const rawName = typeof md.name === "string" && md.name.trim() !== "" ? md.name.trim() : fallbackName;
   const info: ModelInfo = {
     name: sanitiseName(rawName),
-    gearType: stringOrNull(md.gear_type),
-    gearMake: stringOrNull(md.gear_make),
-    gearModel: stringOrNull(md.gear_model),
-    modeledBy: stringOrNull(md.modeled_by),
+    gearType: textOrNull(md.gear_type),
+    gearMake: textOrNull(md.gear_make),
+    gearModel: textOrNull(md.gear_model),
+    modeledBy: textOrNull(md.modeled_by),
     loudness: finiteOrNull(lmd.loudness),
     inputLevelDbu: finiteOrNull(md.input_level_dbu),
     outputLevelDbu: finiteOrNull(md.output_level_dbu),
@@ -267,7 +272,14 @@ export function convertNam(text: string, fallbackName: string): ConvertedModel {
   dv.setFloat32(OFF_HEAD_SCALE, info.headScale, true);
   dv.setFloat32(OFF_LOUDNESS, info.loudness ?? 0, true);
   dv.setFloat32(OFF_INPUT_LEVEL, info.inputLevelDbu ?? 0, true);
-  for (let i = 0; i < info.name.length; i++) bin[OFF_NAME + i] = info.name.charCodeAt(i);
+  const putText = (at: number, s: string | null): void => {
+    if (s !== null) for (let i = 0; i < s.length; i++) bin[at + i] = s.charCodeAt(i);
+  };
+  putText(OFF_NAME, info.name);
+  putText(OFF_GEAR_TYPE, info.gearType);
+  putText(OFF_GEAR_MAKE, info.gearMake);
+  putText(OFF_GEAR_MODEL, info.gearModel);
+  putText(OFF_MODELED_BY, info.modeledBy);
   dv.setUint32(OFF_CRC, crc32(bin.subarray(0, OFF_CRC)), true);
   return { bin, info };
 }

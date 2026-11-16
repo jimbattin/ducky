@@ -1,12 +1,16 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { crc32 } from "../nam/crc32";
 import {
+  CMD,
   CMD_NAMES,
   fromSeptets,
   pack7,
   parseMessage,
+  pedalMsg,
   RESULT_NAMES,
+  readMsg,
   SysExAssembler,
   septets,
   unpack7,
@@ -128,6 +132,21 @@ test("uploadChunkMsg frame", () => {
   expect(m.length).toBe(307);
   expect([...m.subarray(5, 8)]).toEqual([0x00, 0x04, 0x00]);
   expect([...m.subarray(8, 13)]).toEqual([0x02, 0x48, 0x16, 0x18, 0x73]);
+});
+
+test("readMsg frame", () => {
+  expect([...readMsg(2, 300)]).toEqual([0xf0, 0x7d, 0x64, 0x01, 0x0b, 0x02, 0x00, 0x02, 0x2c, 0xf7]);
+});
+
+test("DATA parses only with its CRC", () => {
+  // tests/link_test.cpp Data.Bytes: CRC DEADBEEF does not match the data.
+  const bad = Uint8Array.of(
+    ...[0xf0, 0x7d, 0x64, 0x01, 0x16, 0x03, 0x00, 0x02, 0x2c, 0x0d, 0x75, 0x36, 0x7d, 0x6f, 0x01, 0x00, 0x01, 0xf7],
+  );
+  expect(parseMessage(bad)).toBeNull();
+  const data = Uint8Array.of(0x80, 0x01);
+  const good = pedalMsg(CMD.data, [3, ...septets(300, 3), ...septets(crc32(data), 5), ...pack7(data)]);
+  expect(parseMessage(good)).toEqual({ type: "data", slot: 3, offset: 300, data });
 });
 
 test("SysExAssembler splits and skips realtime", () => {

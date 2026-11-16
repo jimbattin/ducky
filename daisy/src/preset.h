@@ -1,9 +1,9 @@
-// The preset store (docs/FIRMWARE.md "Preset store"): 8 slots of 64 KB in QSPI from 0x90400000, each a format-1
+// The preset store (docs/FIRMWARE.md "Preset store"): 8 slots of 64 KB in QSPI from 0x90400000, each a format-2
 // preset (a model binary, an optional IR binary, a name, a CRC), and a two-copy state record holding the last slot.
 // Host-portable (no libDaisy, no allocation), covered by tests/preset_test.cpp. The slot format is the contract with
 // editor/src/preset/bank.ts.
 //
-// Slot (format 1, little-endian): "DKPS", u16 version, u16 flags (bit 0 kFlagHasIr), u32 size (kSizeNoIr, or
+// Slot (format 2, little-endian): "DKPS", u16 version, u16 flags (bit 0 kFlagHasIr), u32 size (kSizeNoIr, or
 // kSizeWithIr with the IR flag), name[64] (NUL-terminated printable ASCII), the model binary (dkmodel::kBinSize),
 // the IR binary (dkir::kBinSize) when flagged, then the CRC-32 of bytes [0, size - 4). Erased flash (0xFF) follows.
 //
@@ -29,12 +29,12 @@ constexpr uint32_t kBankBytes = kSlots * kSlotBytes;      // 0x80000, the DFU ba
 constexpr uint32_t kStateOffset[2] = {0x480000, 0x481000};  // QSPI chip offsets of the two state sectors
 constexpr uint32_t kStateSectorBytes = 0x1000;            // 4 KB sector, erased as a whole
 constexpr uint32_t kMpuBytes = 0x100000;                  // firmware.h region 4: 0x90400000-0x904FFFFF
-constexpr uint16_t kFormatVersion = 1;
+constexpr uint16_t kFormatVersion = 2;
 constexpr uint16_t kFlagHasIr = 0x0001;
 constexpr size_t kNameSize = 64;
 constexpr size_t kHeaderSize = 76;
-constexpr size_t kSizeNoIr = kHeaderSize + dkmodel::kBinSize + 4;  // 7732
-constexpr size_t kSizeWithIr = kSizeNoIr + dkir::kBinSize;         // 16024
+constexpr size_t kSizeNoIr = kHeaderSize + dkmodel::kBinSize + 4;  // 7988
+constexpr size_t kSizeWithIr = kSizeNoIr + dkir::kBinSize;         // 16280
 constexpr size_t kStateBytes = 16;
 constexpr uint32_t kStateMagic = 0x54534B44;  // "DKST"
 
@@ -42,7 +42,7 @@ static_assert(kBankOffset + kBankBytes <= kStateOffset[0], "the slots end before
 static_assert(kStateOffset[0] + kStateSectorBytes <= kStateOffset[1], "the state sectors do not overlap");
 static_assert(kStateOffset[1] + kStateSectorBytes <= kBankOffset + kMpuBytes, "the store lies inside MPU region 4");
 static_assert(kSizeWithIr <= kSlotBytes, "a preset fits its slot");
-static_assert(kSizeNoIr == 7732 && kSizeWithIr == 16024, "the format-1 sizes");
+static_assert(kSizeNoIr == 7988 && kSizeWithIr == 16280, "the format-2 sizes");
 
 enum class Status : uint8_t { kOk, kEmpty, kMagic, kVersion, kSize, kCrc, kModel, kIr };
 
@@ -73,7 +73,7 @@ namespace detail {
 constexpr size_t kOffVersion = 4, kOffFlags = 6, kOffSize = 8, kOffName = 12, kOffModel = kHeaderSize,
                  kOffIr = kHeaderSize + dkmodel::kBinSize;
 static_assert(kOffName + kNameSize == kHeaderSize, "name, then the model");
-static_assert(kOffIr == 7728, "the IR follows the model");
+static_assert(kOffIr == 7984, "the IR follows the model");
 
 inline void PutLe32(uint8_t* p, uint32_t v) {
     for (int i = 0; i < 4; ++i) p[i] = uint8_t(v >> (8 * i));

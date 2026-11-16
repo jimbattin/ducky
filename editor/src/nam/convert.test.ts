@@ -23,7 +23,14 @@ interface Lite {
   config: { layers: Layer[] };
 }
 interface Root {
-  metadata: { name?: string; loudness: number };
+  metadata: {
+    name?: string;
+    loudness: number;
+    gear_type?: string;
+    gear_make?: string;
+    gear_model?: string;
+    modeled_by?: string;
+  };
   config: { submodels: { model: Lite }[] };
 }
 
@@ -53,15 +60,15 @@ test("crc32 check value", () => {
   expect(crc32(new TextEncoder().encode("123456789"))).toBe(0xcbf43926);
 });
 
-test("A2.nam converts to the format-1 layout", () => {
+test("A2.nam converts to the format-2 layout", () => {
   const lite = (JSON.parse(a2Text) as Root).config.submodels[0]!.model;
   const { bin, info } = convertNam(a2Text, "A2");
   const dv = new DataView(bin.buffer);
-  expect(bin.length).toBe(7652);
+  expect(bin.length).toBe(7908);
   expect(new TextDecoder().decode(bin.subarray(0, 4))).toBe("DKNM");
-  expect(dv.getUint16(4, true)).toBe(1);
+  expect(dv.getUint16(4, true)).toBe(2);
   expect(dv.getUint16(6, true)).toBe(3);
-  expect(dv.getUint32(8, true)).toBe(7652);
+  expect(dv.getUint32(8, true)).toBe(7908);
   expect([...bin.subarray(12, 16)]).toEqual([3, 3, 23, 16]);
   expect([...bin.subarray(16, 39)]).toEqual([...KERNEL_SIZES]);
   expect(bin[39]).toBe(0);
@@ -75,7 +82,8 @@ test("A2.nam converts to the format-1 layout", () => {
   expect(dv.getFloat32(7580, true)).toBe(Math.fround(14.76));
   expect(storedName(bin)).toBe("A2");
   expect(bin.subarray(7586, 7648).every((b) => b === 0)).toBe(true);
-  expect(dv.getUint32(7648, true)).toBe(crc32(bin.subarray(0, 7648)));
+  expect(bin.subarray(7648, 7904).every((b) => b === 0)).toBe(true); // A2.nam has no gear metadata
+  expect(dv.getUint32(7904, true)).toBe(crc32(bin.subarray(0, 7904)));
   expect(info.name).toBe("A2");
   expect(info.headScale).toBe(lite.weights[1870]!);
 });
@@ -84,6 +92,29 @@ test("A2.nam converts to the committed A2.bin", async () => {
   const committed = new Uint8Array(await Bun.file(`${FIXTURES}/A2.bin`).arrayBuffer());
   expect(convertNam(a2Text, "A2").bin).toEqual(committed);
 });
+
+test("gear metadata is stored sanitised", () => {
+  const root = JSON.parse(a2Text) as Root;
+  root.metadata.gear_type = "amp";
+  root.metadata.gear_make = " Fender ";
+  root.metadata.gear_model = "Deluxe\u00e9";
+  delete root.metadata.modeled_by;
+  const { bin, info } = convertNam(JSON.stringify(root), "A2");
+  expect(info.gearType).toBe("amp");
+  expect(info.gearMake).toBe("Fender");
+  expect(info.gearModel).toBe("Deluxe?");
+  expect(info.modeledBy).toBeNull();
+  expect(bin.subarray(7648, 7712)).toEqual(padded("amp"));
+  expect(bin.subarray(7712, 7776)).toEqual(padded("Fender"));
+  expect(bin.subarray(7776, 7840)).toEqual(padded("Deluxe?"));
+  expect(bin.subarray(7840, 7904).every((b) => b === 0)).toBe(true);
+});
+
+function padded(s: string): Uint8Array {
+  const out = new Uint8Array(64);
+  out.set(new TextEncoder().encode(s));
+  return out;
+}
 
 describe("rejections", () => {
   const cases: [string, () => string | Promise<string>, RejectReason, string?][] = [

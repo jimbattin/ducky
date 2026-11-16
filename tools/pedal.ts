@@ -8,6 +8,7 @@
 //   list                                     the 8 slots (* marks the playing one)
 //   upload N MODEL [--ir IR] [--name NAME]   write a preset to slot N
 //   erase N | rename N NAME | swap A B
+//   info N                                   the preset in slot N: its name, model metadata and IR (read back)
 //   status [SECONDS]                         STATUS and LOG lines for SECONDS (default 5) or until Ctrl-C
 
 import { SLOT_STATUS_NAMES, type StatusMessage } from "../editor/src/link/protocol";
@@ -19,6 +20,7 @@ const USAGE = `usage: bun tools/pedal.ts [--port BUS-PORT] COMMAND
   list
   upload N MODEL [--ir IR] [--name NAME]
   erase N
+  info N
   rename N NAME
   swap A B
   status [SECONDS]`;
@@ -61,6 +63,7 @@ const arity: Record<string, [number, number]> = {
   list: [0, 0],
   upload: [2, 2],
   erase: [1, 1],
+  info: [1, 1],
   rename: [2, 2],
   swap: [2, 2],
   status: [0, 1],
@@ -81,7 +84,8 @@ if (command === "status" && rest[0] !== undefined) {
   seconds = Number(rest[0]);
   if (!Number.isFinite(seconds) || seconds <= 0) usage(`status: ${rest[0]}: must be a positive number of seconds`);
 }
-const slots = command === "upload" || command === "erase" || command === "rename" ? [slotArg(rest[0]!)] : [];
+const slots =
+  command === "upload" || command === "erase" || command === "rename" || command === "info" ? [slotArg(rest[0]!)] : [];
 if (command === "swap") slots.push(slotArg(rest[0]!), slotArg(rest[1]!));
 
 // The upload's image, before touching the pedal.
@@ -111,6 +115,9 @@ const statusLine = (s: StatusMessage): string =>
   `status load ${s.loadAvg}/${s.loadMax} permille underruns ${s.underruns} slot ${s.slot === null ? "dry" : s.slot + 1} ` +
   `mute ${s.muted ? "on" : "off"} k ${s.knobs.map(pct).join(" ")} sw ${s.toggles.join(" ")} ` +
   `fs ${s.fs1 ? 1 : 0} ${s.fs2 ? 1 : 0}`;
+const signed = (v: number | null, unit: string): string =>
+  v === null ? "none" : `${v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(1)} ${unit}`;
+const quoted = (s: string | null): string => (s === null ? "none" : `"${s}"`);
 
 const midi = await openRawMidi(seed.dev).catch((e: unknown) => fail((e as Error).message));
 try {
@@ -143,6 +150,25 @@ try {
         `rename slot ${slots[0]! + 1} "${rest[1]}": ok, flash ${await session.rename(slots[0]!, rest[1]!)} ms`,
       );
       break;
+    case "info": {
+      const k = slots[0]!;
+      const status = (await session.list())[k]!.status;
+      if (status !== 0) fail(`slot ${k + 1}: ${SLOT_STATUS_NAMES[status] ?? status}`);
+      const { name, model: m, ir } = await session.readInfo(k);
+      console.log(`slot ${k + 1} "${name}"`);
+      console.log(
+        `model "${m.name}" gear type ${m.gearType ?? "none"} make ${quoted(m.gearMake)} model ${quoted(m.gearModel)} ` +
+          `modeled by ${quoted(m.modeledBy)}`,
+      );
+      console.log(`model loudness ${signed(m.loudness, "dB")} input ${signed(m.inputLevelDbu, "dBu")}`);
+      console.log(
+        ir === null
+          ? "ir none"
+          : `ir "${ir.name}" taps ${ir.taps} src ${ir.sourceRate} Hz ${ir.sourceChannels} ch ${ir.sourceFrames} ` +
+              `frames gain ${signed(ir.gainDb, "dB")}`,
+      );
+      break;
+    }
     case "swap":
       console.log(
         `swap slots ${slots[0]! + 1} ${slots[1]! + 1}: ok, flash ${await session.swap(slots[0]!, slots[1]!)} ms`,

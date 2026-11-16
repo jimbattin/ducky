@@ -15,13 +15,13 @@ export const IR_FADE = 64;
 // Byte offsets in the binary.
 const OFF_VERSION = 4;
 const OFF_SIZE = 8;
-const OFF_TAP_COUNT = 12;
-const OFF_SOURCE_RATE = 16;
-const OFF_SOURCE_FRAMES = 20;
-const OFF_SOURCE_CHANNELS = 24;
-const OFF_GAIN = 28;
-const OFF_NAME = 32;
-const OFF_TAPS = 96;
+export const OFF_TAP_COUNT = 12;
+export const OFF_SOURCE_RATE = 16;
+export const OFF_SOURCE_FRAMES = 20;
+export const OFF_SOURCE_CHANNELS = 24;
+export const OFF_GAIN = 28;
+export const OFF_NAME = 32;
+export const OFF_TAPS = 96;
 const OFF_CRC = OFF_TAPS + 4 * IR_TAPS; // 8288
 
 export type IrRejectReason = "not-wav" | "format" | "empty" | "samples" | "silent";

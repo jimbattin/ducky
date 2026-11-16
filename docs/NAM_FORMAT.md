@@ -118,16 +118,16 @@ Both come from TONE3000 (`trainer`), with `input_level_dbu` 15 and `output_level
 | `example_models/wavenet_a2_feature_test.nam` | Plain `WaveNet`, 4 channels, A2 features exercised | Reject: not a container |
 | `example_audio/input.wav` | 48 kHz, 24-bit, mono, 96,000 frames (2 s) | A short stimulus for reference renders |
 
-## Ducky model binary (format 1)
+## Ducky model binary (format 2)
 
-The converter (`editor/src/nam/convert.ts`, CLI `bun tools/nam_convert.ts IN.nam...`, which writes `IN.bin`) turns the A2-Lite submodel into a fixed 7652-byte image. M2 (the PC engine) and M6 (the pedal) read this format. All values are little-endian.
+The converter (`editor/src/nam/convert.ts`, CLI `bun tools/nam_convert.ts IN.nam...`, which writes `IN.bin`) turns the A2-Lite submodel into a fixed 7908-byte image. The engine and the pedal read this format. All values are little-endian. Format 2 adds the four gear texts after the name; a format-1 image (7652 bytes, CRC at 7648) parses as `version`, so slots written before it must be uploaded again.
 
 | Offset | Type | Field |
 |---|---|---|
 | 0 | `u8[4]` | magic `"DKNM"` |
-| 4 | `u16` | format version `1` |
+| 4 | `u16` | format version `2` |
 | 6 | `u16` | flags: bit 0 `FLAG_HAS_LOUDNESS`, bit 1 `FLAG_HAS_INPUT_LEVEL` |
-| 8 | `u32` | total size `7652` |
+| 8 | `u32` | total size `7908` |
 | 12 | `u8` ×4 | channels 3, bottleneck 3, layers 23, head kernel 16 |
 | 16 | `u8[23]` | kernel sizes |
 | 39 | `u8` | pad 0 |
@@ -139,12 +139,17 @@ The converter (`editor/src/nam/convert.ts`, CLI `bun tools/nam_convert.ts IN.nam
 | 7576 | `f32` | A2-Lite `loudness` (dB); 0 when the flag is clear |
 | 7580 | `f32` | top-level `input_level_dbu`; 0 when the flag is clear |
 | 7584 | `u8[64]` | name, ASCII, NUL-padded (at most 63 characters, so always NUL-terminated) |
-| 7648 | `u32` | CRC-32 of bytes `[0, 7648)` |
+| 7648 | `u8[64]` | `gear_type`, as the name; all zero when absent |
+| 7712 | `u8[64]` | `gear_make`, likewise |
+| 7776 | `u8[64]` | `gear_model`, likewise |
+| 7840 | `u8[64]` | `modeled_by`, likewise |
+| 7904 | `u32` | CRC-32 of bytes `[0, 7904)` |
 
 - **Floats:** each JSON double is rounded to float32.
 - **CRC-32:** IEEE 802.3 / zlib (reflected polynomial `0xEDB88320`, init and final XOR `0xFFFFFFFF`; check value `crc32("123456789") = 0xCBF43926`).
 - **Name:** the top-level `metadata.name`, trimmed, when it is a non-empty string, else the file's basename without `.nam`. Every code point outside U+0020–U+007E becomes `?`, then the name is cut to 63 characters. The pedal's LOG lines are printable ASCII.
-- **Flags:** without `FLAG_HAS_LOUDNESS` the model plays at unity (no level-matching). Without `FLAG_HAS_INPUT_LEVEL` the editor shows the input level as "unknown", and the firmware assumes a +12 dBu capture for the input calibration.
+- **Gear texts:** the top-level `metadata.gear_type`, `gear_make`, `gear_model` and `modeled_by`, each trimmed and sanitised as the name; absent, non-string or blank stores all zeros. The firmware does not decode them: the editor and `tools/pedal.ts info` read them back from flash (READ, `docs/MIDI.md`) with `editor/src/preset/info.ts`.
+- **Flags:** without `FLAG_HAS_LOUDNESS` the model plays at unity (no level-matching). Without `FLAG_HAS_INPUT_LEVEL` the editor shows the input level as "none (assumed +12.0 dBu)", and the firmware assumes a +12 dBu capture for the input calibration.
 
 ### Reject reasons
 
@@ -185,7 +190,7 @@ make -C editor test check       # converter tests, tsc, Biome
 
 ## Engine
 
-`daisy/src/dsp/a2lite.h` (`dkdsp::A2Lite`) runs the network from a format-1 image parsed by `daisy/src/model.h` (`dkmodel::Parse`). It keeps upstream `A2FastModel<3>`'s per-output summation order (conv bias, taps oldest first, inputs 0..2 within a tap, then the mixin; the layer1x1 residual as `lb + L0·a0 + L1·a1 + L2·a2`), so on the host (`g++ -O2`, no FMA) its output is bit-identical to every reference render. On the device, GCC contracts multiply-adds into FMAs; the error is then 241e-9 on `input.wav[48000, 72000)` (`docs/FIRMWARE.md` "Bench").
+`daisy/src/dsp/a2lite.h` (`dkdsp::A2Lite`) runs the network from a format-2 image parsed by `daisy/src/model.h` (`dkmodel::Parse`). It keeps upstream `A2FastModel<3>`'s per-output summation order (conv bias, taps oldest first, inputs 0..2 within a tap, then the mixin; the layer1x1 residual as `lb + L0·a0 + L1·a1 + L2·a2`), so on the host (`g++ -O2`, no FMA) its output is bit-identical to every reference render. On the device, GCC contracts multiply-adds into FMAs; the error is then 241e-9 on `input.wav[48000, 72000)` (`docs/FIRMWARE.md` "Bench").
 
 Each chunk of up to 48 frames passes through every layer in turn. A layer reads its input `x_l` from its own history ring and writes `x_{l+1}` straight into the next layer's ring. It works in tiles of 6 frames whose 18 conv sums stay in registers across every kernel tap, then applies the tile's mixin, activation, head sum and residual. Each ring holds its lookback plus one chunk, followed by a 5-frame guard that mirrors its first 5 frames, so any 6 consecutive frames are contiguous in memory (90,600 bytes in all). The stages (`BeginChunk`, `RunLayer`, `EndChunk`) are public so the bench can time each layer. Why the code is shaped as load islands followed by runs of multiply-adds: `docs/M7_PERFORMANCE.md`. Differences from upstream, none of which changes a result bit:
 

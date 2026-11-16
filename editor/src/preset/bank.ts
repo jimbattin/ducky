@@ -1,4 +1,4 @@
-// Presets and the preset bank, format 1. Spec: daisy/src/preset.h and docs/FIRMWARE.md "Preset store".
+// Presets and the preset bank, format 2. Spec: daisy/src/preset.h and docs/FIRMWARE.md "Preset store".
 // Pure TypeScript (no DOM, no Bun APIs): shared by the editor and tools/preset_bank.ts.
 //
 // A slot: "DKPS", u16 version, u16 flags (bit 0 PRESET_FLAG_HAS_IR), u32 size, name[64], the model binary, the IR
@@ -11,7 +11,7 @@ import { crc32 } from "../nam/crc32";
 import { sanitiseName } from "../name";
 
 export const PRESET_MAGIC = "DKPS";
-export const PRESET_FORMAT_VERSION = 1;
+export const PRESET_FORMAT_VERSION = 2;
 export const PRESET_FLAG_HAS_IR = 0x0001;
 export const PRESET_HEADER_SIZE = 76;
 export const PRESET_NAME_SIZE = 64;
@@ -21,9 +21,9 @@ export const BANK_BYTES = SLOT_COUNT * SLOT_BYTES;
 export const BANK_ADDRESS = 0x90400000;
 
 const OFF_VERSION = 4;
-const OFF_FLAGS = 6;
+export const OFF_FLAGS = 6;
 const OFF_SIZE = 8;
-const OFF_NAME = 12;
+export const OFF_NAME = 12;
 
 export class PresetError extends Error {
   constructor(message: string) {

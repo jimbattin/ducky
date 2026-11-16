@@ -108,7 +108,7 @@ TEST(PresetParse, UnknownFlagIsVersion) {
 
 TEST(PresetParse, OtherVersionIsVersion) {
     std::vector<uint8_t> b = Fixture();
-    Put16(b, 4, 2);
+    Put16(b, 4, 3);
     FixCrc(b);
     EXPECT_EQ(ParseBytes(b), Status::kVersion);
 }
@@ -135,7 +135,7 @@ TEST(PresetParse, BadEmbeddedModelIsModel) {
 
 TEST(PresetParse, BadEmbeddedIrIsIr) {
     std::vector<uint8_t> b = Fixture();
-    b[7728 + 1000] ^= 0xFF;
+    b[7984 + 1000] ^= 0xFF;
     FixCrc(b);
     EXPECT_EQ(ParseBytes(b), Status::kIr);
 }

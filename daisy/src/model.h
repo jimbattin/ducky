@@ -1,4 +1,4 @@
-// The Ducky model binary, format 1 (docs/NAM_FORMAT.md "Ducky model binary (format 1)"). Host-portable (no libDaisy,
+// The Ducky model binary, format 2 (docs/NAM_FORMAT.md "Ducky model binary (format 2)"). Host-portable (no libDaisy,
 // no allocation), covered by tests/model_test.cpp.
 #pragma once
 
@@ -11,11 +11,12 @@
 
 namespace dkmodel {
 
-constexpr uint16_t kFormatVersion = 1;
-constexpr size_t kBinSize = 7652;
+constexpr uint16_t kFormatVersion = 2;
+constexpr size_t kBinSize = 7908;
 constexpr uint16_t kFlagHasLoudness = 0x0001;
 constexpr uint16_t kFlagHasInputLevel = 0x0002;
 constexpr size_t kNameSize = 64;
+constexpr size_t kTextSize = 64;  // gear_type, gear_make, gear_model, modeled_by: NUL-padded printable ASCII
 
 enum class Status : uint8_t { kOk, kSize, kMagic, kVersion, kCrc, kShape, kWeights };
 
@@ -53,12 +54,16 @@ inline uint32_t Crc32(const uint8_t* data, size_t n) {
 
 namespace detail {
 
-// Byte offsets of the format-1 fields.
+// Byte offsets of the format-2 fields.
 constexpr size_t kOffVersion = 4, kOffFlags = 6, kOffSize = 8, kOffDesc = 12, kOffKernels = 16, kOffKernelPad = 39,
                  kOffDilations = 40, kOffDilationPad = 86, kOffWeightCount = 88, kOffWeights = 92,
-                 kOffHeadScale = 7572, kOffLoudness = 7576, kOffInputLevel = 7580, kOffName = 7584, kOffCrc = 7648;
+                 kOffHeadScale = 7572, kOffLoudness = 7576, kOffInputLevel = 7580, kOffName = 7584,
+                 kOffGearType = 7648, kOffGearMake = 7712, kOffGearModel = 7776, kOffModeledBy = 7840, kOffCrc = 7904;
 static_assert(kOffWeights + 4 * dkdsp::a2::kWeightCount == kOffHeadScale, "weights run up to head_scale");
-static_assert(kOffName + kNameSize == kOffCrc && kOffCrc + 4 == kBinSize, "name, then CRC, then the end");
+static_assert(kOffName + kNameSize == kOffGearType && kOffGearType + kTextSize == kOffGearMake &&
+                  kOffGearMake + kTextSize == kOffGearModel && kOffGearModel + kTextSize == kOffModeledBy &&
+                  kOffModeledBy + kTextSize == kOffCrc && kOffCrc + 4 == kBinSize,
+              "name, the gear texts, then CRC, then the end");
 
 inline uint16_t Le16(const uint8_t* p) { return uint16_t(p[0] | p[1] << 8); }
 inline uint32_t Le32(const uint8_t* p) {
@@ -73,7 +78,7 @@ inline float LeF32(const uint8_t* p) {
 
 }  // namespace detail
 
-// Validates and decodes a format-1 image. *out is written only on kOk.
+// Validates and decodes a format-2 image (the gear texts stay in flash). *out is written only on kOk.
 inline Status Parse(const uint8_t* data, size_t n, Model* out) {
     using namespace detail;
     namespace a2 = dkdsp::a2;

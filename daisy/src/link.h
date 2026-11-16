@@ -12,13 +12,14 @@ namespace dklink {
 constexpr uint8_t kManufacturer = 0x7D, kDevice = 0x64, kVersion = 0x01;
 // Host -> pedal.
 constexpr uint8_t kHello = 0x01, kList = 0x02, kErase = 0x03, kRename = 0x04, kSwap = 0x05, kDfu = 0x06,
-                  kWatch = 0x07, kUploadBegin = 0x08, kUploadChunk = 0x09, kUploadCommit = 0x0A;
+                  kWatch = 0x07, kUploadBegin = 0x08, kUploadChunk = 0x09, kUploadCommit = 0x0A, kRead = 0x0B;
 // Pedal -> host.
-constexpr uint8_t kLog = 0x12, kSlot = 0x13, kResult = 0x14, kStatus = 0x15;
+constexpr uint8_t kLog = 0x12, kSlot = 0x13, kResult = 0x14, kStatus = 0x15, kData = 0x16;
 constexpr size_t kMaxLog = 120, kMaxBuildId = 32;
 constexpr size_t kMaxName = 63;       // a SLOT name or a RENAME name
 constexpr size_t kChunkBytes = 256;   // an UPLOAD CHUNK's data, unpacked
-constexpr size_t kMaxPayload = 200;   // a pedal -> host payload (LOG, SLOT, RESULT, STATUS)
+constexpr size_t kReadBytes = 160;    // a DATA's data, unpacked
+constexpr size_t kMaxPayload = 200;   // a pedal -> host payload (LOG, SLOT, RESULT, STATUS, DATA)
 constexpr size_t kStatusBytes = 26;   // a STATUS payload
 constexpr uint32_t kWatchPeriodMs = 100;
 
@@ -28,6 +29,7 @@ constexpr size_t Packed7Size(size_t n) { return n + (n + 6) / 7; }
 constexpr size_t kMaxHostFrame = 5 + 3 + 5 + Packed7Size(kChunkBytes) + 1;
 static_assert(kMaxHostFrame == 307, "an UPLOAD CHUNK frame of 256 bytes");
 static_assert(3 + 3 * kMaxName + 2 <= kMaxPayload, "a SLOT fits");
+static_assert(1 + 3 + 5 + Packed7Size(kReadBytes) <= kMaxPayload, "a DATA fits");
 
 enum class Result : uint8_t { kOk, kBadRequest, kNoUpload, kOffset, kCrc, kIncomplete, kInvalid, kFlash, kSlotState };
 
@@ -127,6 +129,16 @@ public:
         for (int t = 0; t < 3; ++t) p[22 + t] = s.toggle[t] & 0x7F;
         p[25] = s.footswitches & 0x03;
         return AppendSysEx(kStatus, p, sizeof p);
+    }
+    // DATA: the slot, the image offset (u21), the CRC-32 of data[0, n) (u32), then the data Pack7'd; n 1..kReadBytes.
+    bool AppendData(uint8_t slot, uint32_t offset, uint32_t crc, const uint8_t* data, size_t n) {
+        if (n == 0 || n > kReadBytes) return false;
+        uint8_t p[kMaxPayload];
+        p[0] = slot & 0x7F;
+        PutSeptets(p + 1, offset, 3);
+        PutSeptets(p + 4, crc, 5);
+        const size_t m = Pack7(data, n, p + 9);
+        return AppendSysEx(kData, p, 9 + m);
     }
 
     const uint8_t* data() const { return buf_; }
@@ -261,7 +273,7 @@ inline constexpr CommandDoc kCommands[] = {
      "tools/flash_when_ready.sh. No RESULT."},
     {kWatch, Dir::kToPedal, "WATCH", "`<on 0/1>`",
      "RESULT ok (value 0). While on, a STATUS every 100 ms. Off at boot."},
-    {kUploadBegin, Dir::kToPedal, "UPLOAD BEGIN", "`<slot 0-7> <size u21>` (size 7732 or 16024)",
+    {kUploadBegin, Dir::kToPedal, "UPLOAD BEGIN", "`<slot 0-7> <size u21>` (size 7988 or 16280)",
      "Starts staging a preset image for the slot, discarding any earlier upload. RESULT value: the next offset "
      "(0)."},
     {kUploadChunk, Dir::kToPedal, "UPLOAD CHUNK",
@@ -272,6 +284,11 @@ inline constexpr CommandDoc kCommands[] = {
      "Validates the complete image as a preset, writes it to its slot and verifies the flash; the upload is "
      "cleared whatever the outcome. RESULT ok with the flash time in ms; `invalid` with the slot status number "
      "(Slot status) when the image does not parse."},
+    {kRead, Dir::kToPedal, "READ", "`<slot 0-7> <offset u21>`",
+     "Reads up to 160 bytes of the slot's preset image from offset: one DATA, then RESULT ok with the next offset "
+     "(offset + the bytes sent). `bad-request` when the payload is not 4 bytes, the slot is not 0-7 or the offset "
+     "is at or past the image's size; `slot-state` when the slot is not ok. Reads flash only: audio and the slot "
+     "are untouched."},
     {kLog, Dir::kToHost, "LOG", "`<printable ASCII, at most 120 bytes>`",
      "One log line (boot, HELLO, slot changes, the controls and status lines once a second)."},
     {kSlot, Dir::kToHost, "SLOT",
@@ -288,6 +305,8 @@ inline constexpr CommandDoc kCommands[] = {
      "Sent every 100 ms while WATCH is on. Load in permille, as the last once-a-second `load` line reported it (0 "
      "before the first); underruns since boot, clamped at 2^28 - 1; slot 0-7, or 7F when dry; mute 0/1; knobs in "
      "permille (0-1000); SW1-SW3 0 down, 1 middle, 2 up; footswitches held: bit 0 FS1, bit 1 FS2."},
+    {kData, Dir::kToHost, "DATA", "`<slot 0-7> <offset u21> <crc32 u32> <Pack7 data>` (1-160 bytes unpacked)",
+     "Answers READ: the image bytes at offset and the CRC-32 of the unpacked bytes. Comes before READ's RESULT."},
 };
 
 struct ResultDoc {

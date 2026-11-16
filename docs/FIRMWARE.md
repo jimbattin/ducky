@@ -23,8 +23,10 @@ tools/flash_when_ready.sh [FILE.bin [ADDR]]   # sends DFU over USB-MIDI, waits f
 bun tools/preset_bank.ts -o build/bank.bin --slot 1 MODEL.nam --ir IR.wav --slot 2 …   # preset bank ("Preset store")
 tools/flash_when_ready.sh build/bank.bin 0x90400000                                   # writes all 8 slots
 uv run tools/usb_log.py 10 --identity   # 10 s of log, preceded by the Identity Reply
-bun tools/pedal.ts list                 # slots over the link while the pedal plays: list, upload, erase, rename, swap, status ("Link protocol")
-make -C editor test check        # converter tests (bun:test), tsc, Biome
+bun tools/pedal.ts list                 # slots over the link while the pedal plays: list, info, upload, erase, rename, swap, status ("Link protocol")
+make -C editor test check        # editor and converter tests (bun:test), tsc, Biome
+make -C editor serve             # the editor with hot reload at http://localhost:3000/ (Chrome; allow MIDI with SysEx)
+make -C editor html              # editor/dist/editor.html: the editor as one self-contained file
 bun tools/nam_convert.ts models/*.nam   # .nam -> .bin next to each input (docs/NAM_FORMAT.md)
 bun tools/ir_convert.ts IR.wav...       # .wav -> IR .bin next to each input (docs/FILTERS.md)
 tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Reference renders")
@@ -58,7 +60,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `daisy/src/dsp/a2lite.h` | `dkdsp::A2Lite`: the A2-Lite network (`docs/NAM_FORMAT.md` "Engine"); `dkdsp::a2` holds the shape and memory layout; `dkdsp::FpHere`. | yes |
 | `daisy/src/dsp/convolver.h` | `dkdsp::IrConvolver`: the partitioned FFT IR convolver (`docs/FILTERS.md`). | yes |
 | `daisy/src/dsp/filters.h` | `dkdsp::Eq` (`CutFilter` ×2, `MidFilter`), `EdgeBypass`, the knob and toggle maps (`docs/FILTERS.md`). | yes |
-| `daisy/src/model.h` | `dkmodel::Parse`: validates and decodes a format-1 model binary; `Crc32`. | yes |
+| `daisy/src/model.h` | `dkmodel::Parse`: validates and decodes a format-2 model binary; `Crc32`. | yes |
 | `daisy/src/ir.h` | `dkir::Parse`: validates and decodes a format-1 IR binary. | yes |
 | `daisy/src/preset.h` | `dkpreset`: the slot format (`Parse`), the state record (`StateValid`, `NewestState`, `BuildState`), slot stepping (`NextFilled`, `BootSlot`), the QSPI layout ("Preset store"). | yes |
 | `daisy/cmsis_fft.mk` | The CMSIS-DSP FFT sources and table defines both builds compile. | |
@@ -69,6 +71,8 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `tools/usb_log.py`, `tools/flash_when_ready.sh` | Log reader with `--port`, `--identity` and `--dfu`, and the flasher (`DK_USB_PORT`). | |
 | `tools/gen_midi_doc.cpp` | `build/host/gen_midi_doc`: prints `docs/MIDI.md` from `link.h` (`make midi-doc`; `make test` diffs it). | |
 | `editor/src/link/`, `tools/pedal.ts`, `tools/rawmidi.ts`, `tools/slot_source.ts` | The link's TypeScript side (`protocol.ts`: builders, codecs, parsing; `session.ts`: `PedalSession`, the upload with its retries), the slot CLI, its ALSA rawmidi transport, and the model + IR → slot image loading it shares with `preset_bank.ts`. | |
+| `editor/src/App.tsx`, `editor/src/components/`, `editor/src/midi.ts`, `editor/src/usePedal.ts`, `editor/src/state.ts`, `editor/src/controls.ts`, `editor/src/importer.ts`, `editor/src/ducky.css` | The browser editor (Preact): Web MIDI link and its session transport, the sync and request queue, the reducer, the sidebar readouts (the firmware's tapers), the import panel, the slot table. Close the tab before using `pedal.ts` (the MIDI port is exclusive). | |
+| `editor/src/preset/info.ts` | `infoRanges`, `slotInfo`: a stored preset's metadata from the bytes READ fetches. | |
 | `editor/src/nam/`, `tools/nam_convert.ts`, `tools/nam_reference.sh`, `tools/make_stimuli.py` | The `.nam` → model binary converter and its CLI, the NAM reference renders, and their stimulus (`docs/NAM_FORMAT.md`). | |
 | `editor/src/ir/`, `tools/ir_convert.ts`, `tools/make_ir_fixture.ts` | The `.wav` → IR binary converter and its CLI, and the generator of `tests/fixtures/ir/decay.wav` (`docs/FILTERS.md`). | |
 | `editor/src/preset/`, `tools/preset_bank.ts`, `tools/make_preset_fixture.ts` | The slot and bank builders (`buildSlot`, `buildBank`), the bank CLI, and the generator of `tests/fixtures/preset/A2_decay.bin`. | |
@@ -122,7 +126,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | DTCM `0x20000000` | 128 KB | The engine (99,124 bytes in `.dtcm_bss`: history 90,600, weights 7,480); callback state; the 16 KB stack reserve at the top | |
 | AXI SRAM `0x24000000` | 480 KB | Code (CMSIS-DSP's FFT included), `.data`, `.bss` with the IR convolver (68 KB): 226 KB in total | |
 | D2 SRAM `0x30008000` | 256 KB | — (the convolver measured slower here than in AXI SRAM, `docs/FILTERS.md`) | |
-| SDRAM `0xC0000000` | 64 MB | The 8 parsed presets (`gPresets`, 127,232 bytes), the link's upload buffer (16,024), RENAME/SWAP scratch (2 × 16,024) and COMMIT's parse target (`gCheck`, 15,904): 191,208 bytes in `.sdram_bss` | |
+| SDRAM `0xC0000000` | 64 MB | The 8 parsed presets (`gPresets`, 127,232 bytes; the gear texts stay in flash), the link's upload buffer (16,280), RENAME/SWAP scratch (2 × 16,280) and COMMIT's parse target (`gCheck`, 15,904): 191,976 bytes in `.sdram_bss` | |
 | QSPI `0x90000000` | 8 MB | Image at `0x90040000`; preset slots at `0x90400000`; state records at `0x90480000` ("Preset store") | |
 
 - **TCM copy:** `.itcm_text` and `.dtcm_data` are copied from their SRAM load image in `.preinit_array` (`memory.cpp`), before any constructor runs; `.dtcm_bss` is zeroed there.
@@ -144,17 +148,17 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 
 The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes the bank there. The pedal itself writes the state sectors, and single slots on the link's commands ("Slot writes").
 
-**Slot (format 1),** little-endian; erased flash (0xFF) follows it:
+**Slot (format 2),** little-endian; erased flash (0xFF) follows it. A format-1 slot (from before the model binary's gear texts) parses as `version`; upload it again:
 
 | Offset | Field |
 |---|---|
 | 0 | magic `DKPS` |
-| 4 | u16 version (1) |
+| 4 | u16 version (2) |
 | 6 | u16 flags: bit 0 has IR; other bits 0 |
-| 8 | u32 size: 7,732, or 16,024 with an IR |
+| 8 | u32 size: 7,988, or 16,280 with an IR |
 | 12 | name[64], NUL-terminated printable ASCII |
-| 76 | model binary (7,652 bytes, `docs/NAM_FORMAT.md`) |
-| 7728 | IR binary (8,292 bytes, `docs/FILTERS.md`), only with the IR flag |
+| 76 | model binary (7,908 bytes, `docs/NAM_FORMAT.md`) |
+| 7984 | IR binary (8,292 bytes, `docs/FILTERS.md`), only with the IR flag |
 | size − 4 | CRC-32 of bytes [0, size − 4) |
 
 `dkpreset::Parse` checks, in order: `empty` (the first 4 bytes are 0xFF), `magic`, `version` (the version or an unknown flag), `size`, `crc`, then the embedded binaries with their own parsers (`model`, `ir`). A slot that does not parse is skipped.
@@ -176,7 +180,7 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 
 ## Link protocol
 
-`daisy/src/link.h` is the reference: the command and result tables (`kCommands`, `kResults`) generate `docs/MIDI.md` (`make midi-doc`; `make test` fails when it is stale), which documents the framing, every command, the upload and the playback rules. Frames are `F0 7D 64 01 <cmd> … F7` (device byte `0x64`, version `0x01`). M0's HELLO, DFU, LOG and Identity are unchanged; M7 adds LIST, ERASE, RENAME, SWAP, WATCH, UPLOAD BEGIN/CHUNK/COMMIT, and the SLOT, RESULT and STATUS replies. Every request except HELLO and DFU gets exactly one RESULT, last.
+`daisy/src/link.h` is the reference: the command and result tables (`kCommands`, `kResults`) generate `docs/MIDI.md` (`make midi-doc`; `make test` fails when it is stale), which documents the framing, every command, the upload and the playback rules. Frames are `F0 7D 64 01 <cmd> … F7` (device byte `0x64`, version `0x01`). M0's HELLO, DFU, LOG and Identity are unchanged; M7 adds LIST, ERASE, RENAME, SWAP, WATCH, UPLOAD BEGIN/CHUNK/COMMIT, and the SLOT, RESULT and STATUS replies; M8 adds READ and its DATA reply (up to 160 bytes of an ok slot's image, copied from the mapped QSPI and sent by `serveReplies` before READ's RESULT). Every request except HELLO and DFU gets exactly one RESULT, last.
 
 **CLI:** `bun tools/pedal.ts [--port BUS-PORT] COMMAND`, slots 1–8:
 
@@ -184,14 +188,26 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 list                                     # one line per slot: N STATUS "NAME" model "M" ir "I"|none, * on the playing one
 upload N MODEL [--ir IR] [--name NAME]   # MODEL/IR as preset_bank.ts reads them; prints flash ms, retries, seconds
 erase N | rename N NAME | swap A B       # each prints the flash time
+info N                                   # READs the preset's metadata: name; model, gear type/make/model, modeled by; loudness, input level; IR taps, source, gain
 status [SECONDS]                         # WATCH: a STATUS line every 100 ms and the LOG lines, for SECONDS (5) or until Ctrl-C
 ```
 
 - Usage errors exit 2; a refused command (`pedal: RENAME: slot-state`), a rejected file or no reply exits 1.
 - The upload resends a CHUNK on no reply (1 s) or `crc` and gives up after 5 tries of one chunk; COMMIT is not resent (`UPLOAD COMMIT: no reply; check with list`).
-- Transport: the ALSA rawmidi device of the Seed's sound card (`/dev/snd/midiC<N>D0`, found through `/sys/class/sound/card*/device` with `0483:5740`), opened exclusively and nonblocking; input pending at open (stale replies) is dropped. The protocol code (`editor/src/link/`) is plain TypeScript, shared with the M8 editor.
+- Transport: the ALSA rawmidi device of the Seed's sound card (`/dev/snd/midiC<N>D0`, found through `/sys/class/sound/card*/device` with `0483:5740`), opened exclusively and nonblocking; input pending at open (stale replies) is dropped. The protocol code (`editor/src/link/`) is plain TypeScript, shared with the editor, which supplies a Web MIDI transport instead (`editor/src/midi.ts`).
 - `pedal.ts` and `usb_log.py` cannot run together ("Port conflicts").
 - Unknown commands with this header still log `link: unknown command CC`. Other devices' frames are ignored.
+
+## Editor
+
+`make -C editor serve` serves the editor with hot reload at `http://localhost:3000/`; `make -C editor html` builds `editor/dist/editor.html`, one self-contained file (scripts and styles inlined, no external URLs). It needs Chrome (Web MIDI with SysEx, allowed on the first visit). The page holds the pedal's MIDI port, so close it before `pedal.ts` or `usb_log.py` ("Port conflicts").
+
+- **Link:** the input and output ports whose name contains `daisy` (the toolbar's In/Out menus override them), HELLO every second until the pedal answers, and `LINKED` while anything arrived in the last 4 s (WATCH's STATUS every 100 ms keeps it fresh).
+- **Sync:** on each link, on the boot line (`ducky …`, so a reflashed or power-cycled pedal is picked up without a reload), and every 3 s until one succeeds: Identity (device 64), LIST, every ok slot's metadata over READ (`editor/src/preset/info.ts`: 4 READs per slot, 5 with an IR), then WATCH on. Every request goes through one queue (`usePedal.ts` `serial`): the pedal answers one request at a time.
+- **Sidebar:** read-only, from STATUS: FS1 mute, FS2's playing slot, the knobs in the firmware's units (`editor/src/controls.ts` mirrors `dsp/gain.h` and `dsp/filters.h`; `Off` at the cut filters' bypass ends, a resonance knob dimmed when its slope is 6 dB/oct or its filter is off), the toggles, and the CPU load and underruns.
+- **Presets tab:** the slot table (↑/↓ swap neighbours, rename, erase), the selected slot's metadata, and the import panel: a `.nam` and an optional `.wav` through the same converters as the CLI, with the level match, input calibration and warnings (no loudness, no `input_level_dbu`, a cab model with an IR, a truncated IR) before the upload. After every slot change the table is listed and read again, so it shows what the flash holds even after a failure.
+- **DFU mode…** sends DFU after a confirmation; `tools/flash_when_ready.sh` then flashes, and the editor relinks and resyncs by itself.
+- **Hosting:** the built file runs from any URL, in an `<iframe>` too, when the frame grants MIDI (`allow="midi"`).
 
 ## Log lines
 

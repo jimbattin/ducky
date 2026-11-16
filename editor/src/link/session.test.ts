@@ -1,16 +1,34 @@
 import { expect, test } from "bun:test";
 import { crc32 } from "../nam/crc32";
-import { CHUNK_BYTES, CMD, fromSeptets, HEADER, pedalMsg, RESULT, septets, unpack7 } from "./protocol";
+import {
+  CHUNK_BYTES,
+  CMD,
+  fromSeptets,
+  HEADER,
+  pack7,
+  pedalMsg,
+  READ_BYTES,
+  RESULT,
+  septets,
+  unpack7,
+} from "./protocol";
 import { PedalSession, type Transport } from "./session";
 
-/** link.h/upload.h's semantics for BEGIN, CHUNK and COMMIT; hooks may drop or replace a CHUNK's reply. */
+/**
+ * link.h/upload.h's semantics for BEGIN, CHUNK and COMMIT, and ducky.cpp's READ over `flash` (slot 0's image); hooks
+ * may drop or replace a CHUNK's reply, or drop a READ's DATA.
+ */
 class FakePedal implements Transport {
   staged = new Uint8Array(0);
   chunks = 0;
+  flash = new Uint8Array(0);
+  /** The offset of every READ received. */
+  reads: number[] = [];
+  /** True drops the DATA of READ number n (0-based). */
+  dropData: (n: number) => boolean = () => false;
   private next = 0;
   private active = false;
   private replies: Uint8Array[] = [];
-
   /** The CHUNK reply for chunk number n (0-based): "drop", a forced [code, value], or undefined for the real one. */
   constructor(private readonly hook: (n: number) => "drop" | [number, number] | undefined = () => undefined) {}
 
@@ -42,6 +60,14 @@ class FakePedal implements Transport {
       const done = this.active && this.next === this.staged.length;
       this.active = false;
       this.reply(cmd, done ? RESULT.ok : RESULT.incomplete, done ? 321 : 0);
+    } else if (cmd === CMD.read) {
+      const off = fromSeptets(p, 1, 3);
+      const n = this.reads.push(off) - 1;
+      if (p[0] !== 0 || off >= this.flash.length) return this.reply(cmd, RESULT.badRequest, 0);
+      const data = this.flash.subarray(off, Math.min(off + READ_BYTES, this.flash.length));
+      if (!this.dropData(n))
+        this.replies.push(pedalMsg(CMD.data, [0, ...septets(off, 3), ...septets(crc32(data), 5), ...pack7(data)]));
+      this.reply(cmd, RESULT.ok, off + data.length);
     }
   }
 
@@ -55,7 +81,7 @@ class FakePedal implements Transport {
   }
 }
 
-const image = Uint8Array.from({ length: 16024 }, (_, i) => (i * 7 + 3) & 0xff);
+const image = Uint8Array.from({ length: 16280 }, (_, i) => (i * 7 + 3) & 0xff);
 
 test("a dropped CHUNK reply is resent once and the upload completes", async () => {
   const pedal = new FakePedal((n) => (n === 0 ? "drop" : undefined));
@@ -74,4 +100,21 @@ test("an `offset` reply restarts the upload from its value", async () => {
   // Chunk 3 answered `offset` 0; the resent chunk 0 is answered with the next expected offset (768), so the upload
   // resumes at chunk 3: two extra sends.
   expect(pedal.chunks).toBe(Math.ceil(image.length / CHUNK_BYTES) + 2);
+});
+
+test("read collects a run across READs", async () => {
+  const pedal = new FakePedal();
+  pedal.flash = image;
+  const s = new PedalSession(pedal, { replyTimeoutMs: 10 });
+  expect(await s.read(0, 150, 200)).toEqual(image.subarray(150, 350));
+  expect(pedal.reads).toEqual([150, 310]);
+});
+
+test("a dropped DATA resends its READ", async () => {
+  const pedal = new FakePedal();
+  pedal.flash = image;
+  pedal.dropData = (n) => n === 0;
+  const s = new PedalSession(pedal, { replyTimeoutMs: 10 });
+  expect(await s.read(0, 150, 200)).toEqual(image.subarray(150, 350));
+  expect(pedal.reads).toEqual([150, 150, 310]);
 });

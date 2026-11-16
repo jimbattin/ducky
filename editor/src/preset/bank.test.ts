@@ -11,13 +11,13 @@ test("the A2 + decay slot matches the committed fixture byte for byte", async ()
   expect(buildSlot(model, ir, "A2 + decay")).toEqual(await read("preset/A2_decay.bin"));
 });
 
-test("a model-only slot is 7732 bytes with flags 0 and a valid CRC", () => {
+test("a model-only slot is 7988 bytes with flags 0 and a valid CRC", () => {
   const slot = buildSlot(model, null, "A2");
-  expect(slot.length).toBe(7732);
+  expect(slot.length).toBe(7988);
   const dv = new DataView(slot.buffer);
   expect(dv.getUint16(6, true)).toBe(0);
-  expect(dv.getUint32(8, true)).toBe(7732);
-  expect(dv.getUint32(7728, true)).toBe(crc32(slot.subarray(0, 7728)));
+  expect(dv.getUint32(8, true)).toBe(7988);
+  expect(dv.getUint32(7984, true)).toBe(crc32(slot.subarray(0, 7984)));
 });
 
 test("a model with a bad CRC is rejected", () => {

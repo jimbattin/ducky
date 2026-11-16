@@ -1,4 +1,4 @@
-// Convert .nam files to Ducky model binaries (docs/NAM_FORMAT.md "Ducky model binary (format 1)").
+// Convert .nam files to Ducky model binaries (docs/NAM_FORMAT.md "Ducky model binary (format 2)").
 // Each IN.nam is written to IN.bin next to it.
 //
 // Usage: bun tools/nam_convert.ts IN.nam [IN2.nam ...]

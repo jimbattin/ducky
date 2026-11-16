@@ -2,6 +2,8 @@
   "compilerOptions": {
     "target": "ES2024",
     "module": "Preserve",
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
@@ -15,5 +17,5 @@
     "lib": ["ES2024", "DOM"],
     "types": ["bun"]
   },
-  "include": ["src", "../tools/*.ts"]
+  "include": ["src", "server.ts", "build.ts", "../tools/*.ts"]
 }
