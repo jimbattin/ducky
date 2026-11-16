@@ -129,7 +129,7 @@ graph LR
 - **Gap:** about 11 ms by construction (5 ms out, the load, 5 ms in), shorter than the 20–30 ms planned; not measured on the output, no click by ear.
 - **Docs:** `docs/FIRMWARE.md` "Preset store", "Threads" (the switch handshake), "Memory" (SDRAM, QSPI, MPU region 4), "Log lines" (`slots`, `preset`, `state`), "Measured (M6)"; `docs/FILTERS.md` "Getting an IR onto the pedal".
 
-### M7: Link protocol (done)
+### M7: Link protocol (done, `dc80284`)
 - Preset upload in chunks, with an acknowledgement and CRC per chunk. List, erase, rename, and reorder slots.
 - Status stream: CPU load (average and maximum), underruns, current slot, knob and switch states, and log lines.
 - `docs/MIDI.md` is generated from the protocol header. A command-line tool uploads presets and dumps status.
