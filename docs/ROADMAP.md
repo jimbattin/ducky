@@ -118,7 +118,7 @@ graph LR
 - **IR level (revised after the first build):** unit energy (Σh² = 1) is level-neutral only for white noise; a cab cuts everything above 5 kHz, so unit energy boosted its passband and the FDMN IR made `A2.bin` 10.7 dB louder, reaching 0 dBFS at noon. Normalising the 80 Hz–5 kHz band instead brings that to +2.8 dB, and across the 1,160 48 kHz York IRs to +0.8…+3.4 dB (5th–95th percentile) on `A2.bin`'s output.
 - **Docs:** `docs/FILTERS.md`; `docs/FIRMWARE.md` "Threads", "Log lines" (`ir`), "Measured (M5)", "Bench" and the `IR=` build option.
 
-### M6: Preset store and switching (done)
+### M6: Preset store and switching (done, `ef3d6ee`)
 - Flash region in the upper 4 MB, clear of the last flash addresses (chip erratum `ES0392 2.7.5`). 8 slots, each holding a header, model, optional IR, and CRC. A small two-copy state record holds the last slot.
 - Presets load into RAM. FS2 skips empty slots and wraps; audio fades out, the model is reset, and audio fades back in. LED2 blinks N times.
 - The audio callback never reads QSPI, so flash writes cannot stall audio.
