@@ -91,7 +91,7 @@ graph LR
 - **Also:** `.dtcm_bss` (`DK_DTCM_BSS`), a zeroed DTCM section with no load image, for the engine. `tools/usb_log.py --port` and `DK_USB_PORT` for `tools/flash_when_ready.sh` address one Seed by USB path when several are attached.
 - **Docs:** `docs/M7_PERFORMANCE.md` (the cost model, the rules for DSP code, how to measure); `docs/FIRMWARE.md` "Bench (M3)"; `docs/NAM_FORMAT.md` "Engine".
 
-### M4: Live amp
+### M4: Live amp (done, `047ddc6`)
 - The engine runs in the audio callback with one compiled-in model.
 - Knobs 1 and 2 are smoothed, and output is level-matched with `loudness`.
 - **Done when:** playable, with no zipper noise and no denormal spikes after long silence.
@@ -99,6 +99,7 @@ graph LR
 - **Input calibration (added after the first playing test):** with 0 dB at noon, the models sounded distorted until Knob 1 was near 9 o'clock. Ducky's input reaches 0 dBFS at about +4.5 dBu (from the datasheets, not measured), while the development models were captured at +15 dBu, so noon drove them about 10 dB harder than the captured amps. The input gain at noon is now `+4.5 dBu − input_level_dbu`, as in NeuralAmpModelerPlugin's input calibration; a model without `input_level_dbu` is assumed captured at +12 dBu (`docs/FIRMWARE.md` "Threads"). Confirmed by ear on `A2.bin`: noon is no longer distorted.
 - **Measured (`A2.bin`, Seed 1.2):** load avg 361, max 363 permille, 0 underruns, and the same after 5 minutes with nothing plugged in (input −84 dBFS); DTCM 115,704 bytes; `model loudness -24.0 dB level +6.0 dB input +14.8 dBu cal -10.3 dB "A2"`. Level matches: Fender −2.1 dB, SSS +3.7 dB; input calibration −10.5 dB for both. With no input the `out` peak is not −120 dBFS: the model has a −60 dBFS DC offset at zero input, before the output gain.
 - **Result:** on the pedal with the Fender build, the knob sweeps have no zipper noise or clicks, Knob 2 fully counter-clockwise is silent, and FS1 still mutes with its ramp. The SSS build plays quieter at noon than the Fender. NAM's loudness measurement (its 1.75 s burst signal, K-weighted), run on the PC through the engine, reproduces both models' stored `loudness` exactly at the capture level. At the calibrated level the Fender drops 8.1 dB and the SSS 9.9 dB, because the clean amp does not compress, so the SSS ends up 1.8 dB quieter. NeuralAmpModelerPlugin behaves the same with input calibration and normalisation both on, and both models sit 8–10 dB below the −18 dB target at noon. Accepted for M4. The fix, if wanted later, is to measure `loudness` at the calibrated level on the pedal when a model loads.
+- **Docs:** `docs/FIRMWARE.md` "Threads" (the chain, input calibration, level match), "Log lines", "Measured (M4)" and the `MODEL=` build option; `docs/NAM_FORMAT.md` "Metadata Ducky uses".
 
 ### M5: IR and filters
 - Partitioned FFT convolver for IRs up to 2048 taps.
