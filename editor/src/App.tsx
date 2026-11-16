@@ -1,5 +1,6 @@
 import { useRef, useState } from "preact/hooks";
 import { Details } from "./components/Details";
+import { EqGraph } from "./components/EqGraph";
 import { FrontPanel } from "./components/FrontPanel";
 import { GroupBox } from "./components/GroupBox";
 import { ImportBox } from "./components/ImportBox";
@@ -13,9 +14,10 @@ import type { PedalSession } from "./link/session";
 import { NAME_MAX, sanitiseName } from "./name";
 import { errorText, usePedal } from "./usePedal";
 
-type TabId = "presets" | "log";
+type TabId = "presets" | "eq" | "log";
 const TABS: readonly NavTab<TabId>[] = [
   { id: "presets", label: "Presets" },
+  { id: "eq", label: "EQ" },
   { id: "log", label: "Log" },
 ];
 const OK = 0;
@@ -155,7 +157,7 @@ export function App() {
         <div class="workspace">
           <TabNav tabs={TABS} active={tab} onSelect={setTab} />
           <div class="tabpanel" role="tabpanel" id="tabpanel" aria-labelledby={`tab-${tab}`}>
-            {tab === "log" ? <LogView lines={s.log} /> : presets}
+            {tab === "log" ? <LogView lines={s.log} /> : tab === "eq" ? <EqGraph status={s.status} /> : presets}
           </div>
         </div>
       </div>

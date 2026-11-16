@@ -1,6 +1,6 @@
 # IR and filters (M5)
 
-The cab IR and the EQ that follow the model. Code: `daisy/src/dsp/convolver.h`, `daisy/src/dsp/filters.h`, `daisy/src/ir.h`; converter `editor/src/ir/`, `tools/ir_convert.ts`. Tests: `tests/convolver_test.cpp`, `tests/filters_test.cpp`, `tests/ir_test.cpp`, `editor/src/ir/convert.test.ts`.
+The cab IR and the EQ that follow the model. Code: `daisy/src/dsp/convolver.h`, `daisy/src/dsp/filters.h`, `daisy/src/ir.h`; converter `editor/src/ir/`, `tools/ir_convert.ts`; the editor's EQ response `editor/src/eqModel.ts`. Tests: `tests/convolver_test.cpp`, `tests/filters_test.cpp`, `tests/ir_test.cpp`, `editor/src/ir/convert.test.ts`, `editor/src/eqModel.test.ts`.
 
 ## Signal chain
 
@@ -115,6 +115,8 @@ A bell at 515 Hz, Q 1.0, constant-Q form: `A = 10^(dB/40)`, `k = 1/(Q·A)`, `m1 
 ### Tests
 
 `tests/filters_test.cpp`: the maps and the hysteresis; every slope at Q 0.707 and 2 for a 100 Hz low-cut and a 5 kHz high-cut at 4 frequencies each, and the mid bell, against the bilinear-exact prototypes (±0.05 dB above −40 dB); neutral settings bit-exact; 4 s of noise with both cutoffs and resonances swept and SW3 flipping every 100 ms stays finite and below 8; slope switches and the bypass engage add no step larger than 1.25× the steady signal's (a hard switch measures 32×).
+
+`editor/src/eqModel.ts` is the same responses in the editor (the EQ tab's graph): each section as its bilinear-exact prototype, from STATUS's knobs and toggles through the firmware's maps (`editor/src/controls.ts`). `editor/src/eqModel.test.ts` checks the maps, the gains at the cutoffs, the slopes and the mid bell. Against `dkdsp::Eq` and `OutputGain` on the host (sines at 12 frequencies, 5 control settings) it agreed within 0.0001 dB above −60 dB.
 
 ## Getting an IR onto the pedal
 

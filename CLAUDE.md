@@ -38,7 +38,7 @@ Cortex-M7 float performance (measured cost model, rules for DSP kernels, steerin
 - USB-MIDI supports unattended DFU flashing, and slot management while the pedal plays (`bun tools/pedal.ts list|info|upload|erase|rename|swap|status`)
 - Presets (NAM Model + optional IR) stored in QSPI Flash (8 × 64 KB slots at `0x90400000`, written slot by slot over USB-MIDI by `tools/pedal.ts`, or as a bank image by `tools/preset_bank.ts` over DFU) and parsed into SDRAM at boot and after each slot change; the last slot is remembered in a two-copy state record (`docs/FIRMWARE.md` "Preset store")
 - Up to 8 slots for presets, flash space permitting 
-- Browser editor (Preact, one self-contained `editor/dist/editor.html`; `make -C editor serve|html`): imports `.nam` + `.wav`, manages the 8 slots, shows stored slots' metadata (read back over USB-MIDI), the log, CPU load and the controls, and has a DFU button. Follows the conventions of bad_tape (`../bad_tape`)
+- Browser editor (Preact, one self-contained `editor/dist/editor.html`; `make -C editor serve|html`): imports `.nam` + `.wav`, manages the 8 slots, shows stored slots' metadata (read back over USB-MIDI), the log, CPU load, the controls and the EQ's response graph, and has a DFU button. Follows the conventions of bad_tape (`../bad_tape`)
 - Can be flashed as part of Switcharoo (`../switcharoo`) although do not directly reference this in code or docs 
 - More than one Seed may be attached: address Ducky's by USB path (`--port`, `DK_USB_PORT`) and check `--identity` reports `device 64` before flashing (`docs/FIRMWARE.md`)
 

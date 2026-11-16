@@ -2,7 +2,7 @@
    1px bevels, etched group boxes, Platinum tabs, lavender accent. System fonts only. */
 :root {
   color-scheme: dark;
-  /* The editor's scale: 125 % makes 1rem = 20px; every size is in rem, bevels stay 1px. */
+  /* The editor's scale: 125 % makes 1rem = 20px; every size outside the EQ graph is in rem, bevels stay 1px. */
   font-size: 125%;
   --rh-desk: #18181a;
   --rh-face: #38383c;
@@ -77,6 +77,7 @@ select,
 .cpu-bar,
 .statusbar,
 .log,
+.eq-graph svg,
 input[type="text"] {
   background: var(--rh-well);
   border: 1px solid var(--rh-edge);
@@ -674,6 +675,98 @@ dl.details dd {
   display: flex;
   justify-content: flex-end;
   padding: 0.25rem;
+}
+
+/* ---- EQ tab: the response graph (EqGraph) ---- */
+
+.badge {
+  padding: 0 0.1875rem;
+  border-radius: 0.125rem;
+  font-size: 0.5625rem;
+  font-weight: bold;
+  line-height: 0.8125rem;
+  background: var(--rh-accent-deep);
+  color: #fff;
+}
+.eq-graph svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 2px;
+  user-select: none;
+}
+.eq-grid {
+  stroke: color-mix(in srgb, var(--rh-dim) 25%, transparent);
+  stroke-width: 1;
+}
+.eq-zero {
+  stroke: color-mix(in srgb, var(--rh-dim) 60%, transparent);
+  stroke-width: 1.2;
+}
+.eq-grid-label {
+  font-family: var(--rh-mono);
+  font-size: 11px;
+  fill: var(--rh-dim);
+}
+.eq-curve-total {
+  fill: none;
+  stroke: var(--rh-text);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+}
+.eq-curve-total[data-off="true"] {
+  stroke-dasharray: 6 5;
+  opacity: 0.45;
+}
+.eq-fill-total {
+  fill: color-mix(in srgb, var(--rh-text) 12%, transparent);
+  stroke: none;
+}
+.eq-graph [data-section="low"] {
+  --section: #e8664f;
+}
+.eq-graph [data-section="mid"] {
+  --section: var(--rh-amber);
+}
+.eq-graph [data-section="high"] {
+  --section: #6fb7e0;
+}
+.eq-curve-section {
+  fill: none;
+  stroke: var(--section);
+  stroke-width: 1.3;
+  opacity: 0.85;
+}
+.eq-marker circle {
+  fill: var(--section);
+  stroke: #000;
+  stroke-width: 1.5;
+  fill-opacity: 0.9;
+}
+.eq-marker text {
+  font-family: var(--rh-ui);
+  font-size: 11px;
+  font-weight: 700;
+  fill: var(--rh-text);
+  pointer-events: none;
+}
+.eq-cursor {
+  stroke: color-mix(in srgb, var(--rh-text) 45%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  pointer-events: none;
+}
+.eq-readout,
+.eq-off-label {
+  font-family: var(--rh-mono);
+  font-size: 13px;
+  fill: var(--rh-text);
+  pointer-events: none;
+}
+.eq-off-label {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  fill: var(--rh-dim);
 }
 
 /* ---- Odds and ends ---- */
