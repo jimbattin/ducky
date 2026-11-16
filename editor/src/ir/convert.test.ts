@@ -75,7 +75,7 @@ test("decay.wav converts byte for byte to the committed decay.bin", async () => 
   expect(bin).toEqual(want);
 });
 
-test("48 kHz impulse is copied and normalised to unit energy", () => {
+test("48 kHz impulse is copied and normalised to 0 dB in the reference band", () => {
   const x = new Float32Array(100);
   x[0] = 0.5;
   const { bin, info } = convertIr(makeWav({ rate: 48000, channels: [x] }), "imp");
@@ -111,14 +111,26 @@ test("96 kHz and 44.1 kHz resample to the 48 kHz rendering", () => {
   }
 });
 
-test("long IRs are truncated with a fade to an exact zero, still unit energy", () => {
+test("the level does not depend on what the IR does above the reference band", () => {
+  const dry = new Float32Array(400);
+  dry[0] = 0.5;
+  const bright = dry.slice();
+  for (let i = 0; i < 64; i++) {
+    const hann = 0.5 - 0.5 * Math.cos((2 * Math.PI * (i + 0.5)) / 64);
+    bright[200 + i] = 0.5 * (i % 2 === 0 ? 1 : -1) * hann; // a burst near Nyquist, as loud as the impulse
+  }
+  const a = taps(convertIr(makeWav({ rate: 48000, channels: [dry] }), "a").bin);
+  const b = taps(convertIr(makeWav({ rate: 48000, channels: [bright] }), "b").bin);
+  expect(a[0]).toBe(1);
+  expect(Math.abs(b[0]! - 1)).toBeLessThan(1e-3);
+});
+
+test("long IRs are truncated with a fade to an exact zero", () => {
   const { bin, info } = convertIr(makeWav({ rate: 48000, channels: [xorshiftNoise(3000)] }), "n");
   expect(info.taps).toBe(2048);
   expect(info.truncated).toBe(true);
   const t = taps(bin);
   expect(t[2047]).toBe(0);
-  const e = t.reduce((s, v) => s + v * v, 0);
-  expect(Math.abs(e - 1)).toBeLessThan(1e-6);
 });
 
 test("stereo uses channel 0", () => {
@@ -143,6 +155,11 @@ test("rejections", () => {
   expect(rejection(makeWav({ rate: 48000, channels: [new Float32Array(0)] }))).toBe("empty");
   expect(rejection(makeWav({ rate: 48000, channels: [nan] }))).toBe("samples");
   expect(rejection(makeWav({ rate: 44100, channels: [new Float32Array(64)] }))).toBe("silent");
+  // Energy only near Nyquist: nothing in 80 Hz-5 kHz to normalise against.
+  const hiss = new Float32Array(256).map(
+    (_, i) => (i % 2 === 0 ? 1 : -1) * (0.5 - 0.5 * Math.cos((2 * Math.PI * (i + 0.5)) / 256)),
+  );
+  expect(rejection(makeWav({ rate: 48000, channels: [hiss] }))).toBe("silent");
 });
 
 test("names are stored as printable ASCII", () => {

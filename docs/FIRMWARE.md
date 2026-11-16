@@ -135,13 +135,13 @@ Other commands with this header log `link: unknown command CC`. Other devices' f
 ```
 ducky hothouse seed 1.2-pcm3060 sysclk 480 MHz audio 48000 Hz 24 bit block 48 06ea416        (boot / HELLO)
 model loudness -24.0 dB level +6.0 dB input +14.8 dBu cal -10.3 dB "A2"                       (boot / HELLO)
-ir taps 2048 src 48000 Hz gain -7.2 dB "YA FDMN 412 BLND Mix 01"                              (boot / HELLO)
+ir taps 2048 src 48000 Hz gain -15.1 dB "YA FDMN 412 BLND Mix 01"                             (boot / HELLO)
 ctl k 31 22 33 58 25 34 sw 2 0 1 fs 0 0                                                       (every second)
 load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS                   (every second)
 ```
 
 - **`model` line:** the compiled-in model's `loudness` and `input_level_dbu` (`none` without them), the level-match and input-calibration gains, in tenths of a dB, then its name, last because log lines stop at 120 characters. When the model does not parse it reads `model <status>` (`dkmodel::StatusName`) instead, repeated every second.
-- **`ir` line:** the compiled-in IR's tap count, source rate, the converter's unit-energy gain, and its name. `ir none` without an IR (`IR=` unset). When the IR does not parse it reads `ir <status>` (`dkir::StatusName`), or `ir fft` when the convolver's FFT does not initialise, repeated every second with the `model` line.
+- **`ir` line:** the compiled-in IR's tap count, source rate, the converter's normalisation gain (reference band at 0 dB, `docs/FILTERS.md` "Converter"), and its name. `ir none` without an IR (`IR=` unset). When the IR does not parse it reads `ir <status>` (`dkir::StatusName`), or `ir fft` when the convolver's FFT does not initialise, repeated every second with the `model` line.
 - **`ctl` line:**
   - `k`: knobs 1–6, in percent.
   - `sw`: SW1–SW3 after the 30 ms filter, as 2 up, 1 middle, 0 down.
@@ -187,7 +187,7 @@ load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS     
 | SRAM | 244 KB of 480 KB (the convolver 68 KB, the parsed `dkir::Ir` 8.3 KB, the embedded binary 8.1 KB) |
 | Image | 135,416 bytes |
 
-- **Level:** the IR's unit-energy normalisation makes a cab IR louder than no IR for an amp model: on `A2.bin` with `input.wav` the render's RMS rises 10.7 dB and its peak 11.9 dB (the FDMN mix peaks at +12.2 dB at 129 Hz). On the pedal at the same controls the `out` peak went from −9…−15 dBFS to −9…0 dBFS.
+- **Level:** the converter normalises an IR to 0 dB over 80 Hz–5 kHz, so a cab IR leaves an amp model's level close to where it was: on `A2.bin` with `input.wav` the FDMN mix adds 2.8 dB RMS, and on the pedal at the same controls the `out` peak was −8…−16 dBFS with the IR and −9…−15 without. The first M5 build normalised to unit energy, which added 10.7 dB and reached 0 dBFS (`docs/FILTERS.md`).
 
 ## Bench
 
@@ -207,7 +207,7 @@ bench model "A2" ok
 bench ir "decay" ok
 bench pass 1 budget 480000 cycles
 bench check samples 24000 max err 241e-9 limit 10000e-9 ok
-bench ir check samples 4800 max err 214e-9 limit 10000e-9 ok
+bench ir check samples 4800 max err 182e-9 limit 10000e-9 ok
 bench a2lite cycles avg 168369 max 168936 permille avg 350.7 max 351.9
 bench gate a2lite max 351.9 permille limit 450 go
 bench input cycles avg 1368 max 1381 permille avg 2.8 max 2.8
@@ -248,7 +248,7 @@ bench pass 1 done
 | Whole chain (`chain`) | 237,192 | 496.4 |
 
 - **Gate:** go, 496.4 permille against 550. With the convolver in D2 SRAM the chain measured 524.6.
-- **IR check:** max error 214e-9.
+- **IR check:** max error 182e-9.
 - **IR placement:** the convolver's 66 KB of spectra pass through the 16 KB D-cache every block; from AXI SRAM it costs 21 % less than from D2 SRAM, so the pedal keeps it in `.bss`.
 - **Image:** bench 299,728 bytes; SRAM 94.6 % (the second convolver and the IR check's buffers).
 

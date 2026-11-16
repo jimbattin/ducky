@@ -44,9 +44,6 @@ TEST(IrParse, DecayFixture) {
     EXPECT_EQ(ir->source_frames, 4410u);
     EXPECT_EQ(ir->source_channels, 1u);
     EXPECT_STREQ(ir->name, "decay");
-    double e = 0.0;
-    for (float t : ir->taps) e += double(t) * t;
-    EXPECT_NEAR(e, 1.0, 1e-5);
     EXPECT_EQ(ir->taps[2047], 0.0f);
 }
 

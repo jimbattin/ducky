@@ -36,7 +36,7 @@ struct Ir {
     uint32_t source_rate;
     uint32_t source_frames;
     uint16_t source_channels;
-    float gain;                  // the converter's unit-energy normalisation, already applied to taps
+    float gain;                  // the converter's normalisation (80 Hz-5 kHz at 0 dB), already applied to taps
     char name[kNameSize];        // NUL-terminated printable ASCII
     float taps[dkdsp::kIrTaps];  // at 48 kHz
 };

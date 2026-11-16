@@ -62,7 +62,9 @@ The IR stage exists only when an IR is compiled in (`IR=`, below). Every EQ sect
 1. **Read** (`ir/wav.ts`, the semantics of `tools/wav.h`): RIFF/WAVE chunks walked (unknown ones skipped, odd sizes padded, a truncated last chunk tolerated). PCM 16/24/32-bit scaled by 1/2^(bits−1), IEEE float 32-bit, and `WAVE_FORMAT_EXTENSIBLE` with PCM or float subformat. Channel 0 only; `ir_convert` warns when there are more.
 2. **Resample** to 48 kHz (`ir/resample.ts`) unless the source already is: direct windowed-sinc evaluation in float64. Lowpass at 0.95 × the lower Nyquist (`fc = 0.95 · min(rate, 48000) / 2`), Kaiser window β 8.6, 32 zero crossings each side. The output length is `ceil(frames · 48000 / rate)`.
 3. **Truncate** to 2048 taps. A longer IR is faded out over its last 64 taps with a raised cosine that ends at exactly 0.
-4. **Normalise** to unit energy (Σh² = 1) after resampling and truncation. The pedal plays the taps as stored.
+4. **Normalise** to 0 dB in the reference band, after resampling and truncation: the IR's power gain $|H(f)|^2$ is averaged over 144 log-spaced frequencies from 80 Hz to 5 kHz (24 per octave, so equal weight per octave: band-limited pink noise), and the taps are scaled so that average is 1. The pedal plays the taps as stored; the binary's gain field records the scale.
+
+   Why not unit energy (Σh² = 1): Σh² is the average of $|H|^2$ over the whole 0–24 kHz band, so it is level-neutral only for white noise. A cab passes about 100 Hz–5 kHz, 20 % of that band, and cuts the rest, so unit energy has to boost the passband to pay for the cut: the FDMN mix averaged +6.2 dB over 100 Hz–5 kHz (+12.2 dB at its 129 Hz peak) and made `A2.bin`'s output 10.7 dB louder. An amp model's output has 99.9 % of its energy below 5 kHz, which is where the reference band sits.
 
 Name: the fallback name (the file name without `.wav`) trimmed, non-printable characters replaced by `?`, cut at 63.
 
@@ -72,9 +74,18 @@ Name: the fallback name (the file name without `.wav`) trimmed, non-printable ch
 | `format` | a sample format other than the above, 0 channels, or a rate outside 8–384 kHz |
 | `empty` | no frames |
 | `samples` | a non-finite sample |
-| `silent` | zero (or non-finite) energy |
+| `silent` | zero (or non-finite) energy, or a reference band 60 dB or more below the IR's full-band average (an IR with nothing to normalise against would get a dangerous gain) |
 
-The York Audio packs in `irs/` (3,480 WAVs at 44.1, 48 and 96 kHz, 500 ms each, so every one is truncated) all convert. The 44.1 kHz and 48 kHz versions of the same IR land within 0.2 % of the peak tap of each other, at the same −7.2 dB gain.
+The York Audio packs in `irs/` (3,480 WAVs at 44.1, 48 and 96 kHz, 500 ms each, so every one is truncated) all convert. The 44.1 kHz and 48 kHz versions of the same IR land within 0.2 % of the peak tap of each other.
+
+Level change through the 1,160 48 kHz IRs, on `A2.bin`'s output for `input.wav` and on the raw `guitar_di.wav` stimulus:
+
+| Input | Median | 5 %…95 % | Min…max |
+|---|---|---|---|
+| `A2.bin` output | +2.3 dB | +0.8…+3.4 dB | −6.6…+4.1 dB |
+| Guitar DI | +2.1 dB | +1.1…+3.2 dB | −0.6…+3.8 dB |
+
+The few dB left are the cabs' low-mid resonances, where a guitar signal has more than pink noise's share of energy.
 
 ## Filters
 
@@ -127,6 +138,7 @@ Bench (`APP=bench`, `docs/FIRMWARE.md` "Bench"), cycles per 48-sample block of n
 | EQ (both cuts, mid; slope fades every 10 blocks) | 15,135 | 31.8 |
 | Whole chain (gate, limit 550) | 237,192 | 496.4 |
 
-- **IR check:** the convolver against a direct convolution in double on the device, 4,800 samples of `input.wav`: max error 214e-9 (limit 1e-5).
+- **IR check:** the convolver against a direct convolution in double on the device, 4,800 samples of `input.wav`: max error 182e-9 (limit 1e-5).
 - **Live** (`A2.bin`, `IR=irs/fdmn_blnd_mix01.bin`, 5 minutes): load avg 499, max 501 permille, 0 underruns (limit 600). Without `IR=`: avg 392, max 393. The load does not depend on the controls, since every section always runs.
-- **Level:** unit energy is a power-neutral gain for white noise, not for guitar: a cab IR passes 100 Hz–5 kHz and rejects the rest, so in its passband it gains. On `A2.bin` the FDMN mix adds about 11 dB (`docs/FIRMWARE.md` "Measured (M5)").
+- **Level:** with the reference-band normalisation the FDMN mix raises `A2.bin`'s render by 2.8 dB RMS (3.9 dB peak); on the pedal the `out` peak stayed at −8…−16 dBFS, against −9…−15 without an IR. Under the earlier unit-energy normalisation it was +10.7 dB and the output reached 0 dBFS.
+- **Knob ends:** on the pedal, Knob 5 fully counter-clockwise and Knob 4 fully clockwise bypass their filters (the 0.02/0.04 thresholds hold).

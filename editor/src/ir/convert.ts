@@ -43,12 +43,45 @@ export interface IrInfo {
   sourceChannels: number;
   taps: number; // stored tap count, min(resampled length, IR_TAPS)
   truncated: boolean; // the resampled IR was longer than IR_TAPS (faded out over the last IR_FADE taps)
-  gainDb: number; // the unit-energy normalisation applied
+  gainDb: number; // the normalisation applied (the reference band to 0 dB)
 }
 
 export interface ConvertedIr {
   bin: Uint8Array;
   info: IrInfo;
+}
+
+// The level reference: pink noise band-limited to REF_LOW_HZ..REF_HIGH_HZ, where an amp model's output has its energy.
+// The IR's power gain is averaged over REF_POINTS log-spaced frequencies (equal weight per octave, i.e. pink), and the
+// IR is scaled so that average is 1 (0 dB): a cab IR then leaves an amp's level about where it was, whatever it does
+// above 5 kHz. A full-band (unit-energy) normalisation would instead boost the passband to pay for the cut highs.
+const REF_LOW_HZ = 80;
+const REF_HIGH_HZ = 5000;
+const REF_POINTS = 144; // 24 per octave
+const SAMPLE_RATE = 48000;
+
+function referenceBandPower(taps: Float64Array): number {
+  let sum = 0;
+  for (let i = 0; i < REF_POINTS; i++) {
+    const f = REF_LOW_HZ * (REF_HIGH_HZ / REF_LOW_HZ) ** (i / (REF_POINTS - 1));
+    const w = (2 * Math.PI * f) / SAMPLE_RATE;
+    // H(f) = sum h[n] e^(-jwn), the phasor advanced by complex multiplication.
+    const cw = Math.cos(w);
+    const sw = Math.sin(w);
+    let pr = 1;
+    let pi = 0;
+    let re = 0;
+    let im = 0;
+    for (const v of taps) {
+      re += v * pr;
+      im += v * pi;
+      const t = pr * cw + pi * sw;
+      pi = pi * cw - pr * sw;
+      pr = t;
+    }
+    sum += re * re + im * im;
+  }
+  return sum / REF_POINTS;
 }
 
 export function convertIr(bytes: Uint8Array, fallbackName: string): ConvertedIr {
@@ -73,7 +106,12 @@ export function convertIr(bytes: Uint8Array, fallbackName: string): ConvertedIr 
   let energy = 0;
   for (const v of taps) energy += v * v;
   if (energy === 0 || !Number.isFinite(energy)) throw new IrRejected("silent", `energy is ${energy}`);
-  const gain = 1 / Math.sqrt(energy);
+  // The full-band average power gain is the energy (Parseval). An IR whose reference band sits 60 dB or more below it
+  // would get a dangerous gain: it is not a cab.
+  const band = referenceBandPower(taps);
+  if (!(band >= 1e-6 * energy))
+    throw new IrRejected("silent", `${REF_LOW_HZ}-${REF_HIGH_HZ} Hz is 60 dB or more below the IR's average`);
+  const gain = 1 / Math.sqrt(band);
 
   const info: IrInfo = {
     name: sanitiseName(fallbackName.trim()),
