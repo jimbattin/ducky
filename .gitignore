@@ -17,3 +17,5 @@ __pycache__/
 /editor/node_modules/
 /editor/dist/
 /models/*.nam
+compile_commands.json
+.cache/
