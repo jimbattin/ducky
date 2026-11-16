@@ -139,7 +139,7 @@ graph LR
 - **Measured (Seed 1.2):** all 8 slots uploaded, listed, renamed, swapped and erased from the command line while audio ran, with 0 underruns in every `load` and STATUS line; upload 0.3 s with an IR (0 retries over 16 uploads), flash 137–173 ms per upload, 188–215 ms per erase, 301–316 ms per swap; load unchanged (500/394/42 permille with an IR, without, dry). Details: `docs/FIRMWARE.md` "Measured (M7)".
 - **Docs:** `docs/MIDI.md` (generated); `docs/FIRMWARE.md` "Link protocol" (the CLI), "Preset store" ("Slot writes"), "Threads", "Memory", "Log lines", "Measured (M7)"; `docs/FILTERS.md` "Getting an IR onto the pedal".
 
-### M8: Editor
+### M8: Editor (done, `223964e`)
 - Bun + TypeScript + Preact, built to a single HTML file (`editor/dist/editor.html`).
 - Imports `.nam` files (checked with the M1 converter) and WAV IRs (resampled, trimmed, normalised).
 - Manages 8 slots and shows model metadata, including `input_level_dbu` and gear type.
