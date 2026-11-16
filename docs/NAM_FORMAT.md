@@ -93,7 +93,7 @@ The last layer's residual output `x_23` is unused. Each layer keeps `(K_l−1)·
 | Field | Where | Use |
 |---|---|---|
 | `name`, `gear_type`, `gear_make`, `gear_model`, `modeled_by` | top-level `metadata` | Shown in the editor. A `gear_type` that contains `cab` triggers the "already has a cab" warning when an IR is added. |
-| `input_level_dbu`, `output_level_dbu` | top-level `metadata` | Shown in the editor, not applied (ROADMAP "Input gain"). |
+| `input_level_dbu`, `output_level_dbu` | top-level `metadata` | `input_level_dbu` sets the input calibration (Knob 1 at noon, `docs/FIRMWARE.md` "Threads"); `output_level_dbu` is not kept. |
 | `loudness` (dB) | **the A2-Lite submodel's own** `model.metadata` | Output level-matching (Knob 2 at noon). The top-level `loudness` belongs to A2-Full, which is the one NAM's `apply_metadata` reads. The two values differ by about 0.1 dB in the development models. |
 | `head_scale` | the A2-Lite weight stream's last float | Part of the network. |
 
@@ -144,7 +144,7 @@ The converter (`editor/src/nam/convert.ts`, CLI `bun tools/nam_convert.ts IN.nam
 - **Floats:** each JSON double is rounded to float32.
 - **CRC-32:** IEEE 802.3 / zlib (reflected polynomial `0xEDB88320`, init and final XOR `0xFFFFFFFF`; check value `crc32("123456789") = 0xCBF43926`).
 - **Name:** the top-level `metadata.name`, trimmed, when it is a non-empty string, else the file's basename without `.nam`. Every code point outside U+0020–U+007E becomes `?`, then the name is cut to 63 characters. The pedal's LOG lines are printable ASCII.
-- **Flags:** without `FLAG_HAS_LOUDNESS` the model plays at unity (no level-matching). Without `FLAG_HAS_INPUT_LEVEL` the editor shows the input level as "unknown".
+- **Flags:** without `FLAG_HAS_LOUDNESS` the model plays at unity (no level-matching). Without `FLAG_HAS_INPUT_LEVEL` the editor shows the input level as "unknown", and the firmware assumes a +12 dBu capture for the input calibration.
 
 ### Reject reasons
 

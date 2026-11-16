@@ -17,6 +17,7 @@ This needs `arm-none-eabi-gcc` (tested with 13.3.rel1), `dfu-util`, `uv`, `g++`,
 ```sh
 make test                        # host GoogleTest: build/host/tests (tests/*.cpp); also builds build/host/render
 make -C daisy -j                 # daisy/build/hothouse/ducky.bin; the link prints the memory-usage table
+make -C daisy -j MODEL=models/fender_super_eob_with_cab.bin   # the same with another compiled-in model
 make -C daisy APP=bench -j       # daisy/build/hothouse-bench/ducky_bench.bin ("Bench" below)
 tools/flash_when_ready.sh [FILE.bin]    # sends DFU over USB-MIDI, waits for 0483:df11, flashes 0x90040000
 uv run tools/usb_log.py 10 --identity   # 10 s of log, preceded by the Identity Reply
@@ -26,6 +27,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 ```
 
 - **Build options:** `daisy/Makefile` takes `BOARD=hothouse` (the only board) and `APP=ducky` (default) or `APP=bench`. The build directory is `daisy/build/<BOARD>`, or `daisy/build/<BOARD>-bench` for the bench.
+- **Compiled-in model (`APP=ducky`):** `MODEL=FILE.bin` (a format-1 binary, `docs/NAM_FORMAT.md`), relative to the repo root or absolute; default the committed `tests/fixtures/nam/A2.bin`, so a clean clone builds. `ducky.cpp` `.incbin`s it through `DK_MODEL_PATH`. `build/<BOARD>/model_path` records the path, so switching `MODEL` rebuilds `ducky.o` even when the new file is older. A missing file stops the build with `MODEL not found: <path>`. M6 replaces the compiled-in model with the preset store.
 - **Optimisation flags:** `-O3 -fno-schedule-insns -fno-schedule-insns2`. With GCC's instruction scheduling off, the order of the DSP's statements is the order of its instructions, which the engine relies on (`docs/M7_PERFORMANCE.md`).
 - **Build id:** the build writes `build_id.c` with the short commit hash, plus `+dirty` when tracked files differ. Untracked files do not make it dirty.
 - **Flashing:** `flash_when_ready.sh [FILE.bin]` needs no button presses while Ducky is running. If the Seed runs other firmware, either send that firmware's own DFU command or hold BOOT, tap RESET, release BOOT. Then run the script.
@@ -37,7 +39,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 
 | Path | Contents | Host-portable |
 |---|---|---|
-| `daisy/src/ducky.cpp` | The pedal: `AudioCallback`, the main loop, the log lines. | no |
+| `daisy/src/ducky.cpp` | The pedal: the compiled-in model, `AudioCallback`, the main loop, the log lines. | no |
 | `daisy/src/bench.cpp` | `APP=bench`: the A2-Lite device check and cycle timing ("Bench"). | no |
 | `daisy/src/board.h` | `dkboard::Board`: the HotHouse pins, knobs, toggles, footswitches. `kBoardId` 1. | no |
 | `daisy/src/firmware.h` | `dkfw::Start` (flush-to-zero, board init, MPU) and `kBuildId`. | no |
@@ -46,6 +48,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `daisy/src/controls.h` | `dkctl::ToggleFilter` (30 ms toggle hysteresis). | yes |
 | `daisy/src/dsp/blocks.h` | `dkdsp::kSampleRate` (48 kHz), `kBlockSize` (48). | yes |
 | `daisy/src/dsp/mute.h` | `dkdsp::MuteRamp`: FS1's 5 ms linear mute. | yes |
+| `daisy/src/dsp/gain.h` | `dkdsp::InputGain` (Knob 1), `OutputGain` (Knob 2), `LevelMatchGain`, `Smoother` (one-pole), `GainRamp` (per-block linear gain ramp). | yes |
 | `daisy/src/dsp/a2lite.h` | `dkdsp::A2Lite`: the A2-Lite network (`docs/NAM_FORMAT.md` "Engine"); `dkdsp::a2` holds the shape and memory layout; `dkdsp::FpHere`. | yes |
 | `daisy/src/model.h` | `dkmodel::Parse`: validates and decodes a format-1 model binary; `Crc32`. | yes |
 | `daisy/src/memory.h/.cpp` | `DK_ITCM`, `DK_DTCM`, `DK_DTCM_BSS`, `DK_D2`, `DK_SDRAM` placement and the boot-time TCM copy. | yes (`.h`) |
@@ -63,26 +66,32 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 
 ## Threads
 
-- **`AudioCallback`** is the audio DMA interrupt at 48 kHz, in 48-sample blocks (1 ms). It runs from ITCM, and its state lives in DTCM. In order, it:
+- **`AudioCallback`** is the audio DMA interrupt at 48 kHz, in 48-sample blocks (1 ms). It runs from ITCM, and its state, the engine included, lives in DTCM. In order, it:
   1. reads the controls;
   2. toggles the mute on FS1;
   3. measures the input peak;
-  4. runs `MuteRamp` on the left input;
-  5. copies the left output to the right;
+  4. runs the chain on the left input, in place in the left output buffer:
+     - the input trim: the model's input calibration times Knob 1, smoothed (one-pole, 20 ms) and ramped linearly across the block, −12…+12 dB around the calibration, which is at noon;
+     - `A2Lite::Process`, also while muted, so the load stays constant and the model stays warm;
+     - the output gain: Knob 2 smoothed and ramped the same way, times the level match. Knob 2 is `(2k)^3` up to noon (off at fully CCW, about −18 dB at 9 o'clock, unity at noon), then dB-linear to +12 dB;
+     - `MuteRamp`;
+  5. copies the left output to the right and measures the output peak;
   6. drives the LEDs;
   7. measures the load and the underruns (a callback longer than one block period).
-- **Main loop** runs `dkusb::Serve(logBoot)` and the once-a-second log lines.
+- **Input calibration:** NeuralAmpModelerPlugin's: the input gain at noon is `kInputLevelDbu − input_level_dbu`, so a guitar drives the model as hard as it drove the captured amp. `kInputLevelDbu` is +4.5 dBu, the level at the input jack that reaches 0 dBFS, derived from the datasheets and not measured: the PCM3060 full scale is 0.6 VCC Vpp (VCC 4.5 V), behind the Seed's 3.6 kΩ series resistor into the codec's 10 kΩ input (3.67 Vpp), and the HotHouse input is a unity-gain buffer. A model captured at +15 dBu gets −10.5 dB. A model without `input_level_dbu` is assumed captured at +12 dBu, the plugin's default calibration level (−7.5 dB). Without calibration, noon drove the models about 10 dB harder than at capture, and they sounded distorted.
+- **Level match:** `LevelMatchGain` brings the model's A2-Lite `loudness` to −18 dB (NeuralAmpModelerPlugin's normalisation target); a model without `loudness` plays at unity. `loudness` is measured at the capture level, before the input calibration, so a clean model plays a little quieter than a driven one at noon (SSS vs Fender: 1.8 dB, `docs/ROADMAP.md` M4). At boot the input gain starts at the calibration and the output gain at 0, so the output fades in over the knob time constant.
+- **Main loop** runs `dkusb::Serve(logBoot)` and the once-a-second log lines. If the compiled-in model does not parse, audio never starts and the LEDs stay off; the main loop serves USB (DFU included) and logs `model <status>` once a second.
 - **Sharing:** the two threads share only relaxed `std::atomic`s, each with one writer:
-  - callback → main loop: `gKnob`, `gToggle`, `gFsHeld`, `gMutedPub`, `gUnderruns`, `gPeak`, `gLoadAvg`, `gLoadMax`;
+  - callback → main loop: `gKnob`, `gToggle`, `gFsHeld`, `gMutedPub`, `gUnderruns`, `gPeak`, `gOutPeak`, `gLoadAvg`, `gLoadMax`;
   - main loop → callback: `gPeakReset`, `gLoadReset`.
 
 ## Memory
 
 | Region | Size | Holds now | Reserved for |
 |---|---|---|---|
-| ITCM `0x00000000` | 64 KB | `AudioCallback` (1.2 KB); in the bench, the A2-Lite stages (4.0 KB) | |
-| DTCM `0x20000000` | 128 KB | Callback state; the 16 KB stack reserve at the top; in the bench, the engine (99,124 bytes in `.dtcm_bss`: history 90,600, weights 7,480) | The engine in the pedal (M4) |
-| AXI SRAM `0x24000000` | 480 KB | Code, `.data`, `.bss` (124 KB in total) | |
+| ITCM `0x00000000` | 64 KB | `AudioCallback` (2.3 KB, with the engine's other stages and the gains inlined), `A2Lite::RunLayer` (2.5 KB) | |
+| DTCM `0x20000000` | 128 KB | The engine (99,124 bytes in `.dtcm_bss`: history 90,600, weights 7,480); callback state; the 16 KB stack reserve at the top | |
+| AXI SRAM `0x24000000` | 480 KB | Code, `.data`, `.bss` (148 KB in total) | |
 | D2 SRAM `0x30008000` | 256 KB | — | IR partitions (M5) |
 | SDRAM `0xC0000000` | 64 MB | — | Preset buffers (M6) |
 | QSPI `0x90000000` | 8 MB | Image at `0x90040000` | Presets in the upper 4 MB (M6) |
@@ -112,10 +121,12 @@ Other commands with this header log `link: unknown command CC`. Other devices' f
 
 ```
 ducky hothouse seed 1.2-pcm3060 sysclk 480 MHz audio 48000 Hz 24 bit block 48 06ea416        (boot / HELLO)
+model loudness -24.0 dB level +6.0 dB input +14.8 dBu cal -10.3 dB "A2"                       (boot / HELLO)
 ctl k 31 22 33 58 25 34 sw 2 0 1 fs 0 0                                                       (every second)
-load avg 6 max 6 permille underruns 0 mute off in -84 dBFS                                    (every second)
+load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS                   (every second)
 ```
 
+- **`model` line:** the compiled-in model's `loudness` and `input_level_dbu` (`none` without them), the level-match and input-calibration gains, in tenths of a dB, then its name, last because log lines stop at 120 characters. When the model does not parse it reads `model <status>` (`dkmodel::StatusName`) instead, repeated every second.
 - **`ctl` line:**
   - `k`: knobs 1–6, in percent.
   - `sw`: SW1–SW3 after the 30 ms filter, as 2 up, 1 middle, 0 down.
@@ -125,6 +136,7 @@ load avg 6 max 6 permille underruns 0 mute off in -84 dBFS                      
   - `underruns`: the count since boot.
   - `mute`: FS1's state, which is not persisted.
   - `in`: the left-input peak over the last second, floored at −120 dBFS.
+  - `out`: the left-output peak over the last second, after the mute, floored at −120 dBFS. It does not reach −120 with no signal: the model has a DC offset at zero input (`A2.bin`: −60 dBFS, before the output gain).
 
 ## Measured (M0, Seed 1.2 / PCM3060)
 
@@ -137,9 +149,20 @@ load avg 6 max 6 permille underruns 0 mute off in -84 dBFS                      
 | SRAM | 124 KB of 480 KB |
 | Image | 96,796 bytes |
 
+## Measured (M4, Seed 1.2 / PCM3060, `A2.bin`)
+
+| | |
+|---|---|
+| Load | avg 361, max 363 permille |
+| Underruns | 0 |
+| DTCM | 115,704 bytes of 128 KB (engine 99,124, the 16 KB stack reserve) |
+| ITCM | 5,192 bytes of 64 KB |
+| SRAM | 148 KB of 480 KB (the parsed `dkmodel::Model` 7.5 KB, the embedded binary 7.5 KB) |
+| Image | 113,672 bytes |
+
 ## Bench (M3)
 
-`APP=bench` (`daisy/src/bench.cpp`) has no audio. It compiles in `tests/fixtures/nam/A2.bin` and a slice of `input.wav` and `A2.input.ref.wav` (`.incbin`; the Makefile rebuilds `bench.o` when they change). It places the engine like the pedal will: the object in DTCM, its stages and the timed blocks in ITCM. Each pass:
+`APP=bench` (`daisy/src/bench.cpp`) has no audio. It compiles in `tests/fixtures/nam/A2.bin` and a slice of `input.wav` and `A2.input.ref.wav` (`.incbin`; the Makefile rebuilds `bench.o` when they change). It places the engine like the pedal does: the object in DTCM, its stages and the timed blocks in ITCM. Each pass:
 
 1. **Check:** a reset engine runs `input.wav[48000, 72000)` (the file's first second is silence, so a reset engine is already in that state) against the reference render; limit 1e-5.
 2. **Model:** `A2Lite::Process` on 48-sample blocks of uniform noise (±0.5), timed with the DWT cycle counter: 200 warm-up blocks, then 2000 measured, interrupts masked inside each block. The gate is the maximum against 450 permille of the block period.
