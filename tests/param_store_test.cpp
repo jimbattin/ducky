@@ -7,14 +7,23 @@ using namespace dkparam;
 
 namespace {
 
-// A factory-layout store whose controls sit at noon and in the middle, after its first Update.
+// The cuts on Knobs 3-6 and SW1-SW2, eq_enable on SW3.
+Settings Layout() {
+    Settings s = FactorySettings();
+    const uint8_t assign[kControlSlots] = {kHighCutRes,  kHighCutFreq,  kLowCutFreq, kLowCutRes,
+                                           kLowCutSlope, kHighCutSlope, kEqEnable};
+    for (int c = 0; c < kControlSlots; ++c) s.assign[c] = assign[c];
+    return s;
+}
+
+// A Layout() store whose controls sit at noon and in the middle, after its first Update.
 struct Rig {
     Store store;
     float knobs[kKnobSlots] = {0.5f, 0.5f, 0.5f, 0.5f};
     uint8_t toggles[kSwitchSlots] = {1, 1, 1};
 
     Rig() {
-        store.Init(FactorySettings());
+        store.Init(Layout());
         Update();
     }
     void Update() { store.Update(knobs, toggles); }
@@ -25,9 +34,9 @@ struct Rig {
 
 }  // namespace
 
-TEST(Store, FactoryFirstUpdateFollowsControls) {
+TEST(Store, FirstUpdateFollowsControls) {
     Store s;
-    s.Init(FactorySettings());
+    s.Init(Layout());
     const float knobs[kKnobSlots] = {0.1f, 0.2f, 0.3f, 0.4f};
     const uint8_t toggles[kSwitchSlots] = {2, 0, 1};
     s.Update(knobs, toggles);
@@ -37,7 +46,7 @@ TEST(Store, FactoryFirstUpdateFollowsControls) {
     EXPECT_EQ(s.Value(kLowCutRes), 0.4f);
     EXPECT_EQ(s.Value(kLowCutSlope), 2.0f);
     EXPECT_EQ(s.Value(kHighCutSlope), 0.0f);
-    EXPECT_EQ(s.Value(kMid), 1.0f);
+    EXPECT_EQ(s.Value(kEqEnable), 0.0f);
     EXPECT_EQ(s.HeldBits(), 0);
 }
 
@@ -61,20 +70,20 @@ TEST(Store, SetIsQuantized) {
     Rig r;
     r.Set(kHighCutFreq, 1.5f);
     EXPECT_EQ(r.store.Value(kHighCutFreq), 1.0f);
-    r.Set(kMid, 1.6f);
-    EXPECT_EQ(r.store.Value(kMid), 2.0f);
+    r.Set(kHighCutSlope, 1.6f);
+    EXPECT_EQ(r.store.Value(kHighCutSlope), 2.0f);
 }
 
 TEST(Store, ToggleChangeBeatsSet) {
     Rig r;
-    r.Set(kMid, 0.0f);
+    r.Set(kLowCutSlope, 0.0f);
     r.Update();
-    EXPECT_EQ(r.store.Value(kMid), 0.0f);
-    EXPECT_TRUE(r.Held(6));
-    r.toggles[2] = 2;
+    EXPECT_EQ(r.store.Value(kLowCutSlope), 0.0f);
+    EXPECT_TRUE(r.Held(4));
+    r.toggles[0] = 2;
     r.Update();
-    EXPECT_EQ(r.store.Value(kMid), 2.0f);
-    EXPECT_FALSE(r.Held(6));
+    EXPECT_EQ(r.store.Value(kLowCutSlope), 2.0f);
+    EXPECT_FALSE(r.Held(4));
 }
 
 TEST(Store, AssignKeepsValueUntilMove) {
@@ -145,14 +154,14 @@ TEST(Store, NoneSlotDrivesNothing) {
 
 TEST(Store, ChoiceOnKnobAndSwitchFollowsTheLastMoved) {
     Rig r;
-    r.Assign(0, kMid);
+    r.Assign(0, kHighCutSlope);
     r.knobs[0] = 0.0f;
     r.Update();
-    EXPECT_EQ(r.store.Value(kMid), 0.0f);
-    EXPECT_TRUE(r.Held(6));
-    r.toggles[2] = 2;
+    EXPECT_EQ(r.store.Value(kHighCutSlope), 0.0f);
+    EXPECT_TRUE(r.Held(5));
+    r.toggles[1] = 2;
     r.Update();
-    EXPECT_EQ(r.store.Value(kMid), 2.0f);
+    EXPECT_EQ(r.store.Value(kHighCutSlope), 2.0f);
     EXPECT_TRUE(r.Held(0));
-    EXPECT_FALSE(r.Held(6));
+    EXPECT_FALSE(r.Held(5));
 }

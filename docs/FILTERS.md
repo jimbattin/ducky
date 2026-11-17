@@ -1,6 +1,6 @@
 # IR, filters and noise gate (M5)
 
-The cab IR and the EQ that follow the model, and the preset's noise gate. Code: `daisy/src/dsp/convolver.h`, `daisy/src/dsp/filters.h`, `daisy/src/dsp/noise_gate.h`, `daisy/src/ir.h`; converter `editor/src/ir/`, `tools/ir_convert.ts`; the editor's EQ response `editor/src/eqModel.ts`, its gate block `editor/src/preset/gate.ts` and gate sliders `editor/src/gateControls.ts`. Tests: `tests/convolver_test.cpp`, `tests/filters_test.cpp`, `tests/noise_gate_test.cpp`, `tests/ir_test.cpp`, `editor/src/ir/convert.test.ts`, `editor/src/eqModel.test.ts`.
+The cab IR and the EQ that follow the model, and the preset's noise gate. Code: `daisy/src/dsp/convolver.h`, `daisy/src/dsp/filters.h` (the cut filters and the bell), `daisy/src/dsp/eq.h` (the EQ stage), `daisy/src/dsp/noise_gate.h`, `daisy/src/ir.h`; converter `editor/src/ir/`, `tools/ir_convert.ts`; the editor's EQ response `editor/src/eqModel.ts`, its gate block `editor/src/preset/gate.ts` and gate sliders `editor/src/gateControls.ts`. Tests: `tests/convolver_test.cpp`, `tests/filters_test.cpp`, `tests/eq_test.cpp`, `tests/noise_gate_test.cpp`, `tests/ir_test.cpp`, `editor/src/ir/convert.test.ts`, `editor/src/eqModel.test.ts`. The EQ's specification (M10: low-cut, three bells, high-cut) is `docs/EQ.md`; this file keeps the cut filters' design.
 
 ## Signal chain
 
@@ -8,11 +8,11 @@ The cab IR and the EQ that follow the model, and the preset's noise gate. Code: 
 
 ```mermaid
 graph LR
-  IN[in gain] --> NAM[A2Lite] --> IR[IR convolver] --> LC[low-cut] --> MID[mid] --> HC[high-cut] --> OUT[out gain × level match × gate] --> M[mute] --> R[copy to R]
+  IN[in gain] --> NAM[A2Lite] --> IR[IR convolver] --> EQ[EQ: low-cut, bells 1-3, high-cut] --> OUT[out gain × level match × gate] --> M[mute] --> R[copy to R]
   JACK[input peak] --> G[noise gate] -.-> OUT
 ```
 
-The IR stage runs only when the current preset has an IR (`docs/FIRMWARE.md` "Preset store"). Every EQ section runs every block, whatever the knobs and switches, so the load does not depend on the controls. The EQ's seven settings are parameters (`daisy/src/params.h`, `docs/MIDI.md` "Parameters"): any of Knobs 3–6 and SW1–SW3, or the link, can drive each one, and the controls named below are the factory layout's.
+The IR stage runs only when the current preset has an IR (`docs/FIRMWARE.md` "Preset store"). The EQ's sixteen settings are parameters (`daisy/src/params.h`, `docs/MIDI.md` "Parameters", `docs/EQ.md`): the editor, the link or any of Knobs 3–6 and SW1–SW3 assigned to one sets each of them.
 
 ## IR convolver
 
@@ -90,34 +90,31 @@ The few dB left are the cabs' low-mid resonances, where a guitar signal has more
 
 ## Filters
 
-`daisy/src/dsp/filters.h`. Every section is a trapezoidal (TPT, Zavalishin/Simper) one-pole or state-variable filter: bilinear-exact responses, with coefficients recomputed every block from the smoothed knobs (one-pole smoothing, 20 ms, at the block rate). `g = tan(π f / 48000)`.
+`daisy/src/dsp/filters.h`: the EQ's cut filters (`CutFilter`); its bells and the stage are in `docs/EQ.md`. Every section is a trapezoidal (TPT, Zavalishin/Simper) one-pole or state-variable filter: bilinear-exact responses, with coefficients recomputed every control tick (24 samples, counted in samples so the output does not depend on the caller's block split) from the smoothed parameters (one-pole smoothing, 20 ms, at the tick rate). `g = tan(π f / 48000)`.
 
 - **One-pole:** `G = g/(1+g)`; `v = (x − s)·G`, `lp = v + s`, `s = lp + v`, `hp = x − lp`.
 - **SVF:** `k = 1/Q`, `a1 = 1/(1 + g(g + k))`, `a2 = g·a1`, `a3 = g·a2`; per sample `v3 = x − ic2`, `v1 = a1·ic1 + a2·v3`, `v2 = ic2 + a2·ic1 + a3·v3`, `ic1 = 2v1 − ic1`, `ic2 = 2v2 − ic2`. LP `v2`, HP `x − k·v1 − v2`, bell `x + m1·v1`.
 
 ### Low-cut and high-cut
 
-| Parameter (factory control) | Map |
+| Parameter | Map |
 |---|---|
-| `low_cut_freq` (Knob 5) | 20…500 Hz, log (`20 · 25^k`), k the parameter's value 0..1: a knob's position |
-| `high_cut_freq` (Knob 4) | 1.5…20 kHz, log |
-| `low_cut_res`, `high_cut_res` (Knobs 6, 3) | Q 0.5…2, log; 1.0 at noon |
-| `low_cut_slope`, `high_cut_slope` (SW1, SW2) | index 2 (up) 6 dB/oct, 1 (middle) 12 dB/oct, 0 (down) 24 dB/oct |
+| `low_cut_freq` | 20…500 Hz, log (`20 · 25^k`), k the parameter's value 0..1 |
+| `high_cut_freq` | 1.5…20 kHz, log |
+| `low_cut_res`, `high_cut_res` | Q 0.5…2, log; 1.0 at the middle |
+| `low_cut_slope`, `high_cut_slope` | index 2 6 dB/oct, 1 12 dB/oct, 0 24 dB/oct (on a switch: up, middle, down) |
 
-- **Slopes:** 6 dB a one-pole (no resonance); 12 dB an SVF at the knob's Q; 24 dB a Butterworth SVF (Q 0.7071) into an SVF at the knob's Q. At Q 0.7071 on the knob the 24 dB cascade is two Butterworth sections (a Linkwitz–Riley knee, −6 dB at the cutoff); a higher Q peaks it.
-- **All slopes run every block,** whatever the switch, with their states warm. A switch crossfades linearly from the current slope weights to the new slope over 5 ms (240 samples); a change mid-fade starts from where the weights are. Once a fade completes the weights are exactly one-hot, and the output is bit-identical to a filter that ran in the new slope all along.
-- **Off end:** with the smoothed frequency knob within 0.02 of the end that turns the filter off (low-cut fully CCW, high-cut fully CW), the filter crossfades to dry over 5 ms, and comes back beyond 0.04 (hysteresis). At mix 0 the output is the input bit for bit.
+- **Slopes:** 6 dB a one-pole (no resonance); 12 dB an SVF at the resonance's Q; 24 dB a Butterworth SVF (Q 0.7071) into an SVF at the resonance's Q. At Q 0.7071 the 24 dB cascade is two Butterworth sections (a Linkwitz–Riley knee, −6 dB at the cutoff); a higher Q peaks it.
+- **All slopes run every tick,** whatever the slope, with their states warm. A slope change crossfades linearly from the current slope weights to the new slope over 5 ms (240 samples, 10 ticks); a change mid-fade starts from where the weights are. Once a fade completes the weights are exactly one-hot, and the output is bit-identical to a filter that ran in the new slope all along.
+- **Off end:** with the smoothed frequency within 0.02 of the end that turns the filter off (the low-cut's bottom, the high-cut's top), the filter crossfades to dry over 5 ms, and comes back beyond 0.04 (hysteresis). At mix 0 the output is the input bit for bit.
 - **Statement order:** the per-sample loop interleaves the one-pole, the 12 dB SVF and the 24 dB Butterworth stage so their latencies overlap (`docs/M7_PERFORMANCE.md` "Recursive filters"); the 24 dB second stage follows.
-
-### Mid
-
-A bell at 515 Hz, Q 1.0, constant-Q form: `A = 10^(dB/40)`, `k = 1/(Q·A)`, `m1 = k(A² − 1)`. The `mid` parameter (factory: SW3): index 2 **(up) is +5 dB (boost), 1 (middle) bypass, 0 (down) −7 dB (scoop)**. The gain is smoothed in dB (20 ms), so a flip glides; at 0 dB (`|dB| < 1e-3`) `m1` is exactly 0 and the output is the input bit for bit.
+- **Control and run:** `Control(freq, res, slope)` at each tick's start steps the smoothers and sets the tick's coefficients, slope-weight ramps and mix ramp; `Run(x, m, at)` filters m samples starting `at` samples into the tick, each ramp evaluated as `w0 + dw·t` with t counted from the tick's start.
 
 ### Tests
 
-`tests/filters_test.cpp`: the maps and the hysteresis; every slope at Q 0.707 and 2 for a 100 Hz low-cut and a 5 kHz high-cut at 4 frequencies each, and the mid bell, against the bilinear-exact prototypes (±0.05 dB above −40 dB); neutral settings bit-exact; 4 s of noise with both cutoffs and resonances swept and SW3 flipping every 100 ms stays finite and below 8; slope switches and the bypass engage add no step larger than 1.25× the steady signal's (a hard switch measures 32×).
+`tests/filters_test.cpp`: the maps and the hysteresis; every slope at Q 0.707 and 2 for a 100 Hz low-cut and a 5 kHz high-cut at 4 frequencies each against the bilinear-exact prototypes (±0.05 dB above −40 dB); slope switches and the bypass engage add no step larger than 1.25× the steady signal's (a hard switch measures 32×). The whole EQ (bells, identity, no-click jumps, block-size independence): `tests/eq_test.cpp`, `docs/EQ.md` section 4.
 
-`editor/src/eqModel.ts` is the same responses in the editor (the EQ tab's graph): each section as its bilinear-exact prototype, from STATUS's knobs and toggles through the firmware's maps (`editor/src/controls.ts`). `editor/src/eqModel.test.ts` checks the maps, the gains at the cutoffs, the slopes and the mid bell. Against `dkdsp::Eq` and `OutputGain` on the host (sines at 12 frequencies, 5 control settings) it agreed within 0.0001 dB above −60 dB.
+`editor/src/eqModel.ts` is the same responses in the editor (the EQ tab's graph): each section as its bilinear-exact prototype, from the parameters' codes. `editor/src/eqModel.test.ts` checks the gains at the cutoffs, the bells and setting A (`docs/EQ.md` section 3).
 
 ## Noise gate
 
@@ -169,13 +166,16 @@ Bench (`APP=bench`, `docs/FIRMWARE.md` "Bench"), cycles per block of noise, maxi
 | A2-Lite | 87,334 | 366.9 | 168,561 | 352.4 |
 | IR convolver, AXI SRAM (the pedal's) | 44,230 | 189.4 | 51,735 | 109.8 |
 | IR convolver, D2 SRAM | 57,844 | 248.4 | 64,440 | 138.2 |
-| EQ (both cuts, mid; slope fades every 10 blocks) | 8,652 | 36.2 | 15,135 | 31.8 |
+| EQ (M10: both cuts with slope fades, three bells gliding every block; `docs/EQ.md`) | 15,564 | 65.0 | — | — |
+| EQ (M5: both cuts, mid; slope fades every 10 blocks) | 8,652 | 36.2 | 15,135 | 31.8 |
 | Noise gate (enabled, 100 ms hold: the longest scan) | 832 | 3.5 | — | — |
 | Whole chain (gate, limit 850; 550 at M5): before the noise gate | 141,648 | 594.7 | 237,192 | 496.4 |
-| Whole chain with the noise gate | 142,057 | 597.6 | — | — |
+| Whole chain with the noise gate (M9) | 142,057 | 597.6 | — | — |
+| Whole chain with the noise gate and the M10 EQ | 149,278 | 626.9 | — | — |
 
 - **24-sample blocks:** the convolver's per-block work is the same as at 48 (86 × 32 against 43 × 64 complex multiply-adds, the same 66 KB of spectra through the D-cache) and runs twice as often, so its share of the block period nearly doubles. The model's per-sample cost barely moves. The chain missed the M5 gate (550) and is within the 850 ceiling that replaced it. Live without an IR the pedal measured load avg 415, max 419 permille, 0 underruns (394 at 48 samples); live with an IR is not yet measured.
 - **IR check:** the convolver against a direct convolution in double on the device, 4,800 samples of `input.wav`: max error 146e-9 at 24 samples, 182e-9 at 48 (limit 1e-5).
-- **Live, 48 samples** (`A2.bin`, `IR=irs/fdmn_blnd_mix01.bin`, 5 minutes): load avg 499, max 501 permille, 0 underruns (limit 600). Without `IR=`: avg 392, max 393. The load does not depend on the controls, since every section always runs.
+- **Live, 48 samples** (`A2.bin`, `IR=irs/fdmn_blnd_mix01.bin`, 5 minutes): load avg 499, max 501 permille, 0 underruns (limit 600). Without `IR=`: avg 392, max 393. The load did not depend on the controls, since every M5 section always ran.
+- **M10 EQ:** the cuts still run every tick, so the load does not depend on their settings; a bell runs only while its gain is not 0 dB (and for 100 ms after), and `eq_enable` off stops the whole stage. Live on a model without an IR: load avg 415, max 418 permille at the EQ's defaults (417, 420 at M9); 423, 427 with both cuts on and all three bells at ±6 dB; 381, 385 with `eq_enable` off; 0 underruns. The bench's 65.0 permille is the worst case, every bell gliding.
 - **Level:** with the reference-band normalisation the FDMN mix raises `A2.bin`'s render by 2.8 dB RMS (3.9 dB peak); on the pedal the `out` peak stayed at −8…−16 dBFS, against −9…−15 without an IR. Under the earlier unit-energy normalisation it was +10.7 dB and the output reached 0 dBFS.
-- **Knob ends:** on the pedal, Knob 5 fully counter-clockwise and Knob 4 fully clockwise bypass their filters (the 0.02/0.04 thresholds hold).
+- **Knob ends:** on the pedal (M5 factory layout), Knob 5 fully counter-clockwise and Knob 4 fully clockwise bypass their filters (the 0.02/0.04 thresholds hold).

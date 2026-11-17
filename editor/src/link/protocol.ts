@@ -282,12 +282,13 @@ export interface DataMessage {
 /** One row of the pedal's parameter table (params.h ParamDef; docs/MIDI.md "Parameters"). */
 export interface ParamInfo {
   id: number;
-  /** log: continuous, min at code 0 to max at code 16383; choice: the code is an index 0..max. */
-  taper: "log" | "choice";
+  /**
+   * log: continuous, min at code 0 to max at code 16383 logarithmically; linear: the same, linearly; choice: the code
+   * is an index 0..max.
+   */
+  taper: "log" | "choice" | "linear";
   /** The end at which the parameter's filter is bypassed. */
   off: "none" | "min" | "max";
-  /** The control (0-6) holding it in the factory layout. */
-  factory: number | null;
   /** The default value's code. */
   defCode: number;
   min: number;
@@ -323,8 +324,8 @@ export type PedalMessage =
   | ValuesMessage;
 
 const CONTROL_COUNT = 7;
-const PARAM_HEAD = 16;
-const TAPERS = ["log", "choice"] as const;
+const PARAM_HEAD = 15;
+const TAPERS = ["log", "choice", "linear"] as const;
 const OFF_ENDS = ["none", "min", "max"] as const;
 /** The float32 whose bits are the u32 at p[at] (5 septets). */
 function f32At(p: Uint8Array, at: number): number {
@@ -400,10 +401,9 @@ export function parseMessage(msg: Uint8Array): PedalMessage | null {
           id: p[0]!,
           taper,
           off,
-          factory: p[3] === NO_PARAM ? null : p[3]!,
-          defCode: fromSeptets(p, 4, 2),
-          min: f32At(p, 6),
-          max: f32At(p, 11),
+          defCode: fromSeptets(p, 3, 2),
+          min: f32At(p, 5),
+          max: f32At(p, 10),
           name: text[0]!,
           label: text[1]!,
           unit: text[2]!,

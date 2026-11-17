@@ -753,6 +753,7 @@ dl.details dd {
   width: 100%;
   height: auto;
   border-radius: 2px;
+  touch-action: none;
   user-select: none;
 }
 .eq-grid {
@@ -782,33 +783,58 @@ dl.details dd {
   fill: color-mix(in srgb, var(--rh-text) 12%, transparent);
   stroke: none;
 }
-.eq-graph [data-section="low"] {
-  --section: #e8664f;
+.eq-graph [data-band="low"] {
+  --band: #e8664f;
 }
-.eq-graph [data-section="mid"] {
-  --section: var(--rh-amber);
+.eq-graph [data-band="bell1"] {
+  --band: var(--rh-amber);
 }
-.eq-graph [data-section="high"] {
-  --section: #6fb7e0;
+.eq-graph [data-band="bell2"] {
+  --band: #8fd06a;
 }
-.eq-curve-section {
+.eq-graph [data-band="bell3"] {
+  --band: #c58be8;
+}
+.eq-graph [data-band="high"] {
+  --band: #6fb7e0;
+}
+.eq-curve-band {
   fill: none;
-  stroke: var(--section);
+  stroke: var(--band);
   stroke-width: 1.3;
   opacity: 0.85;
 }
-.eq-marker circle {
-  fill: var(--section);
+.eq-handle circle {
+  fill: var(--band);
   stroke: #000;
   stroke-width: 1.5;
   fill-opacity: 0.9;
 }
-.eq-marker text {
+.eq-handle text {
   font-family: var(--rh-ui);
   font-size: 11px;
   font-weight: 700;
   fill: var(--rh-text);
   pointer-events: none;
+}
+.eq-handle[data-enabled="true"] {
+  cursor: grab;
+}
+.eq-handle[data-enabled="true"]:active {
+  cursor: grabbing;
+}
+.eq-handle[data-enabled="false"] {
+  opacity: 0.5;
+}
+.eq-handle[data-off="true"] {
+  opacity: 0.4;
+}
+.eq-handle:focus {
+  outline: none;
+}
+.eq-handle:focus-visible circle {
+  stroke: var(--rh-accent);
+  stroke-width: 3;
 }
 .eq-cursor {
   stroke: color-mix(in srgb, var(--rh-text) 45%, transparent);

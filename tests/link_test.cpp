@@ -233,8 +233,8 @@ TEST(Slot, NamesSeparatedCutAndPrintable) {
 TEST(Param, Bytes) {
     TxBuffer t;
     ASSERT_TRUE(t.AppendParam(dkparam::kParams[dkparam::kLowCutFreq]));
-    // id 0, log, off at min, factory control 2 (Knob 5), default code 0, min 20.0f (41A00000), max 500.0f (43FA0000).
-    std::vector<uint8_t> want = {0xF0, 0x7D, 0x64, 0x01, kParam, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00,
+    // id 1, log, off at min, default code 0, min 20.0f (41A00000), max 500.0f (43FA0000).
+    std::vector<uint8_t> want = {0xF0, 0x7D, 0x64, 0x01, kParam, 0x01, 0x00, 0x01, 0x00, 0x00,
                                  0x04, 0x0D, 0x00, 0x00, 0x00, 0x04, 0x1F, 0x68, 0x00, 0x00};
     for (char c : std::string("low_cut_freq")) want.push_back(uint8_t(c));
     want.push_back(0x00);
@@ -249,11 +249,23 @@ TEST(Param, Bytes) {
 
 TEST(Param, ChoiceDefaultIsItsIndex) {
     TxBuffer t;
-    ASSERT_TRUE(t.AppendParam(dkparam::kParams[dkparam::kMid]));
+    ASSERT_TRUE(t.AppendParam(dkparam::kParams[dkparam::kHighCutSlope]));
     const std::vector<uint8_t> got = Unpack(t);
-    // id 6, choice, no off end, factory control 6 (SW3), default code 1, min 0.0f, max 2.0f (40000000).
-    const std::vector<uint8_t> head = {0x06, 0x01, 0x00, 0x06, 0x00, 0x01, 0x00, 0x00,
-                                       0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00};
+    // id 15, choice, no off end, default code 1, min 0.0f, max 2.0f (40000000).
+    const std::vector<uint8_t> head = {0x0F, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                                       0x00, 0x04, 0x00, 0x00, 0x00, 0x00};
+    ASSERT_GE(got.size(), 5 + head.size());
+    EXPECT_EQ(std::vector<uint8_t>(got.begin() + 5, got.begin() + 5 + head.size()), head);
+}
+
+// The same bytes parse in editor/src/link/protocol.test.ts ("PARAM parses a linear row").
+TEST(Param, LinearRow) {
+    TxBuffer t;
+    ASSERT_TRUE(t.AppendParam(dkparam::kParams[dkparam::kBell1Gain]));
+    const std::vector<uint8_t> got = Unpack(t);
+    // id 4, linear, no off end, default code 8192 (0 dB), min -12.0f (C1400000), max 12.0f (41400000).
+    const std::vector<uint8_t> head = {0x04, 0x02, 0x00, 0x40, 0x00, 0x0C, 0x0A, 0x00, 0x00,
+                                       0x00, 0x04, 0x0A, 0x00, 0x00, 0x00};
     ASSERT_GE(got.size(), 5 + head.size());
     EXPECT_EQ(std::vector<uint8_t>(got.begin() + 5, got.begin() + 5 + head.size()), head);
 }
@@ -261,13 +273,16 @@ TEST(Param, ChoiceDefaultIsItsIndex) {
 // The same bytes parse in editor/src/link/protocol.test.ts ("VALUES parses").
 TEST(Values, Bytes) {
     ValuesFrame v{};
-    for (int c = 0; c < dkparam::kControlSlots; ++c) v.assign[c] = dkparam::FactoryParam(c);
+    for (int c = 0; c < dkparam::kControlSlots; ++c) v.assign[c] = dkparam::kNoParam;
     v.held = 0b0000101;
-    const uint16_t codes[dkparam::kParamCount] = {0, 8192, 1, 16383, 8192, 1, 1};
+    const uint16_t codes[dkparam::kParamCount] = {1, 0, 8192, 1, 8192, 16383, 0, 8192,
+                                                  8192, 0, 8192, 8192, 0, 16383, 8192, 1};
     std::copy(codes, codes + dkparam::kParamCount, v.code);
     TxBuffer t;
     ASSERT_TRUE(t.AppendValues(v));
-    EXPECT_EQ(Unpack(t), (std::vector<uint8_t>{0xF0, 0x7D, 0x64, 0x01, kValues, 0x04, 0x03, 0x00, 0x01, 0x02, 0x05,
-                                               0x06, 0x05, 0x07, 0x00, 0x00, 0x40, 0x00, 0x00, 0x01, 0x7F, 0x7F,
-                                               0x40, 0x00, 0x00, 0x01, 0x00, 0x01, 0xF7}));
+    EXPECT_EQ(Unpack(t),
+              (std::vector<uint8_t>{0xF0, 0x7D, 0x64, 0x01, kValues, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F,
+                                    0x05, 0x10, 0x00, 0x01, 0x00, 0x00, 0x40, 0x00, 0x00, 0x01, 0x40, 0x00,
+                                    0x7F, 0x7F, 0x00, 0x00, 0x40, 0x00, 0x40, 0x00, 0x00, 0x00, 0x40, 0x00,
+                                    0x40, 0x00, 0x00, 0x00, 0x7F, 0x7F, 0x40, 0x00, 0x00, 0x01, 0xF7}));
 }

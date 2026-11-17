@@ -29,7 +29,7 @@ constexpr size_t kMaxPayload = 200;   // a pedal -> host payload (LOG, SLOT, RES
 constexpr size_t kStatusBytes = 30;   // a STATUS payload
 constexpr size_t kGatePayload = 8;    // a GATE or GATE TRY payload: the slot, then ParseGate's 7 bytes
 constexpr uint32_t kWatchPeriodMs = 100;
-constexpr size_t kParamHead = 16;     // a PARAM payload before its text
+constexpr size_t kParamHead = 15;     // a PARAM payload before its text
 
 // Pack7's output size for n bytes: one header byte per group of up to 7.
 constexpr size_t Packed7Size(size_t n) { return n + (n + 6) / 7; }
@@ -195,13 +195,12 @@ public:
         p[0] = d.id & 0x7F;
         p[1] = uint8_t(d.taper);
         p[2] = uint8_t(d.off);
-        p[3] = d.factory & 0x7F;
-        PutSeptets(p + 4, dkparam::ToCode(d, d.def), 2);
+        PutSeptets(p + 3, dkparam::ToCode(d, d.def), 2);
         uint32_t bits;
         std::memcpy(&bits, &d.min, sizeof bits);
-        PutSeptets(p + 6, bits, 5);
+        PutSeptets(p + 5, bits, 5);
         std::memcpy(&bits, &d.max, sizeof bits);
-        PutSeptets(p + 11, bits, 5);
+        PutSeptets(p + 10, bits, 5);
         size_t n = kParamHead;
         const char* text[4] = {d.name, d.label, d.unit, d.group};
         for (int k = 0; k < 4; ++k) {
@@ -412,14 +411,14 @@ inline constexpr CommandDoc kCommands[] = {
     {kData, Dir::kToHost, "DATA", "`<slot 0-7> <offset u21> <crc32 u32> <Pack7 data>` (1-160 bytes unpacked)",
      "Answers READ: the image bytes at offset and the CRC-32 of the unpacked bytes. Comes before READ's RESULT."},
     {kParam, Dir::kToHost, "PARAM",
-     "`<id> <taper> <off end> <factory control> <default u14> <min f32 as u32> <max f32 as u32> <name> 00 <label> "
-     "00 <unit> 00 <group>`",
+     "`<id> <taper> <off end> <default u14> <min f32 as u32> <max f32 as u32> <name> 00 <label> 00 <unit> 00 "
+     "<group>`",
      "One parameter (Parameters), answering DUMP. Taper: 0 log (continuous: the value runs from min at code 0 to "
-     "max at code 16383, logarithmically), 1 choice (the value is an index 0 to max). Off end: 0 none, 1 the "
-     "parameter's filter is bypassed within 2 % of min, 2 within 2 % of max. Factory control: the control (0-6) "
-     "holding it in the factory layout, or 7F. Default: the value's code. Min and max: IEEE 754 single-precision "
-     "bits. The strings are printable ASCII: the name is the log's and `tools/pedal.ts`'s, the label the editor's; "
-     "a choice's unit is its labels, comma-separated, in index order."},
+     "max at code 16383, logarithmically), 1 choice (the value is an index 0 to max), 2 linear (the value runs from "
+     "min at code 0 to max at code 16383, linearly). Off end: 0 none, 1 the parameter's filter is bypassed within 2 "
+     "% of min, 2 within 2 % of max. Default: the value's code. Min and max: IEEE 754 single-precision bits. The "
+     "strings are printable ASCII: the name is the log's and `tools/pedal.ts`'s, the label the editor's; a choice's "
+     "unit is its labels, comma-separated, in index order."},
     {kValues, Dir::kToHost, "VALUES", "`<control 0-6 assignments: 7 bytes> <held bits> <N> <code u14 x N>`",
      "The live assignments (7F none), bit s set while control s is held, and each parameter's code. After DUMP's "
      "PARAMs, and with every STATUS while WATCH is on."},

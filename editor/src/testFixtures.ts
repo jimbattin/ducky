@@ -9,40 +9,39 @@ export const readFixture = async (rel: string): Promise<Uint8Array> =>
 export const readFixtureText = (rel: string): Promise<string> => Bun.file(`${FIXTURES}/${rel}`).text();
 
 const SLOPES = "24 dB/oct,12 dB/oct,6 dB/oct";
-const Q = { taper: "log", off: "none", defCode: 8192, min: 0.5, max: 2, unit: "Q", group: "EQ" } as const;
-const CHOICE = { taper: "choice", off: "none", defCode: 1, min: 0, max: 2, group: "EQ" } as const;
+const EQ = { off: "none", group: "EQ" } as const;
+const RES = { ...EQ, taper: "log", defCode: 8192, min: 0.5, max: 2, unit: "Q" } as const;
+const SLOPE = { ...EQ, taper: "choice", defCode: 1, min: 0, max: 2, unit: SLOPES } as const;
+const GAIN = { ...EQ, taper: "linear", defCode: 8192, min: -12, max: 12, unit: "dB" } as const;
+/** The bells' Q: 0.4 as the pedal's float32 sends it. */
+const BELL_Q = { ...EQ, taper: "log", defCode: 5011, min: Math.fround(0.4), max: 8, unit: "Q" } as const;
+const HZ = { ...EQ, taper: "log", unit: "Hz" } as const;
 
 /** The pedal's parameter table as DUMP sends it (daisy/src/params.h kParams; docs/MIDI.md "Parameters"). */
-export const FACTORY_PARAMS: ParamInfo[] = [
+export const PARAMS: ParamInfo[] = [
+  { ...EQ, id: 0, name: "eq_enable", label: "EQ", taper: "choice", defCode: 1, min: 0, max: 1, unit: "off,on" },
+  { ...HZ, id: 1, name: "low_cut_freq", label: "Low-cut frequency", off: "min", defCode: 0, min: 20, max: 500 },
+  { ...RES, id: 2, name: "low_cut_res", label: "Low-cut resonance" },
+  { ...SLOPE, id: 3, name: "low_cut_slope", label: "Low-cut slope" },
+  { ...GAIN, id: 4, name: "bell1_gain", label: "Bell 1 gain" },
+  { ...HZ, id: 5, name: "bell1_freq", label: "Bell 1 frequency", defCode: 10022, min: 40, max: 800 },
+  { ...BELL_Q, id: 6, name: "bell1_q", label: "Bell 1 Q" },
+  { ...GAIN, id: 7, name: "bell2_gain", label: "Bell 2 gain" },
+  { ...HZ, id: 8, name: "bell2_freq", label: "Bell 2 frequency", defCode: 8192, min: 200, max: 5000 },
+  { ...BELL_Q, id: 9, name: "bell2_q", label: "Bell 2 Q" },
+  { ...GAIN, id: 10, name: "bell3_gain", label: "Bell 3 gain" },
+  { ...HZ, id: 11, name: "bell3_freq", label: "Bell 3 frequency", defCode: 7996, min: 800, max: 12000 },
+  { ...BELL_Q, id: 12, name: "bell3_q", label: "Bell 3 Q" },
   {
-    id: 0,
-    name: "low_cut_freq",
-    label: "Low-cut frequency",
-    factory: 2,
-    taper: "log",
-    off: "min",
-    defCode: 0,
-    min: 20,
-    max: 500,
-    unit: "Hz",
-    group: "EQ",
-  },
-  { id: 1, name: "low_cut_res", label: "Low-cut resonance", factory: 3, ...Q },
-  { id: 2, name: "low_cut_slope", label: "Low-cut slope", factory: 4, unit: SLOPES, ...CHOICE },
-  {
-    id: 3,
+    ...HZ,
+    id: 13,
     name: "high_cut_freq",
     label: "High-cut frequency",
-    factory: 1,
-    taper: "log",
     off: "max",
     defCode: 16383,
     min: 1500,
     max: 20000,
-    unit: "Hz",
-    group: "EQ",
   },
-  { id: 4, name: "high_cut_res", label: "High-cut resonance", factory: 0, ...Q },
-  { id: 5, name: "high_cut_slope", label: "High-cut slope", factory: 5, unit: SLOPES, ...CHOICE },
-  { id: 6, name: "mid", label: "Mid 515 Hz", factory: 6, unit: "-7 dB,off,+5 dB", ...CHOICE },
+  { ...RES, id: 14, name: "high_cut_res", label: "High-cut resonance" },
+  { ...SLOPE, id: 15, name: "high_cut_slope", label: "High-cut slope" },
 ];

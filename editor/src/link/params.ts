@@ -2,7 +2,7 @@
 // "Controls"): a parameter's wire code as its value, its units and its readout, and which control takes which
 // parameter. Pure TypeScript: shared by the editor and tools/pedal.ts. The table itself comes from the pedal (DUMP).
 
-import { fmtHz } from "../format";
+import { fmtHz, signedDb } from "../format";
 import type { ParamInfo } from "./protocol";
 
 /** A continuous parameter's top code (params.h kCodeMax). */
@@ -29,7 +29,7 @@ export const CONTROLS: readonly Control[] = [
   { id: "SW3", key: "sw3", knob: false },
 ];
 
-/** The value of a code: a log parameter's position 0..1 along its taper, a choice's index. */
+/** The value of a code: a continuous parameter's position 0..1 along its taper, a choice's index. */
 export const paramValue = (p: ParamInfo, code: number): number =>
   p.taper === "choice" ? Math.min(code, p.max) : Math.min(code, CODE_MAX) / CODE_MAX;
 
@@ -39,8 +39,16 @@ export const codeOf = (p: ParamInfo, value: number): number =>
     ? Math.round(Math.min(Math.max(value, 0), p.max))
     : Math.round(Math.min(Math.max(value, 0), 1) * CODE_MAX);
 
-/** A log parameter at position norm (0..1), in its unit. */
-export const unitsOf = (p: ParamInfo, norm: number): number => p.min * (p.max / p.min) ** norm;
+/** A continuous parameter at position norm (0..1), in its unit: log or linear from min to max. */
+export const unitsOf = (p: ParamInfo, norm: number): number =>
+  p.taper === "linear" ? p.min + norm * (p.max - p.min) : p.min * (p.max / p.min) ** norm;
+
+/** unitsOf's inverse as a code: units clamped to min..max, rounded to a code 0..CODE_MAX. */
+export const codeOfUnits = (p: ParamInfo, units: number): number => {
+  const u = Math.min(Math.max(units, p.min), p.max);
+  const norm = p.taper === "linear" ? (u - p.min) / (p.max - p.min) : Math.log(u / p.min) / Math.log(p.max / p.min);
+  return codeOf(p, norm);
+};
 
 /** The parameter's filter is bypassed at this code: within BYPASS of its off end. */
 export function isOff(p: ParamInfo, code: number): boolean {
@@ -52,13 +60,14 @@ export function isOff(p: ParamInfo, code: number): boolean {
 /** A choice's labels, in index order. */
 export const choiceLabels = (p: ParamInfo): string[] => p.unit.split(",");
 
-/** The readout of a code: "Off", a choice's label, "100 Hz", "Q 1.00". */
+/** The readout of a code: "Off", a choice's label, "100 Hz", "Q 1.00", "+3.0 dB". */
 export function formatParam(p: ParamInfo, code: number): string {
   if (isOff(p, code)) return "Off";
   if (p.taper === "choice") return choiceLabels(p)[paramValue(p, code)] ?? String(code);
   const units = unitsOf(p, paramValue(p, code));
   if (p.unit === "Hz") return fmtHz(units);
   if (p.unit === "Q") return `Q ${units.toFixed(2)}`;
+  if (p.unit === "dB") return signedDb(units);
   return `${units.toFixed(2)} ${p.unit}`;
 }
 
@@ -75,16 +84,12 @@ export function switchLabels(p: ParamInfo): [string, string, string] {
   return l.length >= 3 ? [l[2]!, l[1]!, l[0]!] : [l[1] ?? "", l[0] ?? "", l[1] ?? ""];
 }
 
-/** The factory layout: per control, the id of the parameter whose factory control it is, or null. */
-export const factoryAssign = (params: readonly ParamInfo[]): (number | null)[] =>
-  CONTROLS.map((_, c) => params.find((p) => p.factory === c)?.id ?? null);
-
 const labelKey = (text: string): string => text.toLowerCase().replaceAll(" ", "").replaceAll("−", "-");
 
 /**
  * The code a typed value means, or null when it is not one of p's. A choice: its index or its label (case, spaces
- * and the minus sign's form ignored). A log parameter: a number in its unit within min..max, or "off" when it has an
- * off end.
+ * and the minus sign's form ignored). A continuous parameter: a number in its unit within min..max (as the pedal's
+ * single-precision ends), or "off" when it has an off end.
  */
 export function parseParamValue(p: ParamInfo, text: string): number | null {
   const t = text.trim();
@@ -94,7 +99,7 @@ export function parseParamValue(p: ParamInfo, text: string): number | null {
     return i < 0 ? null : i;
   }
   if (t.toLowerCase() === "off") return p.off === "min" ? 0 : p.off === "max" ? CODE_MAX : null;
-  const v = Number(t);
-  if (t === "" || !Number.isFinite(v) || v < p.min || v > p.max) return null;
-  return Math.round((Math.log(v / p.min) / Math.log(p.max / p.min)) * CODE_MAX);
+  const v = Number(t.replace(/^−/, "-"));
+  if (t === "" || !Number.isFinite(v) || Math.fround(v) < p.min || Math.fround(v) > p.max) return null;
+  return codeOfUnits(p, v);
 }

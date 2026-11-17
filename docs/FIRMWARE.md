@@ -54,7 +54,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `daisy/src/link.h` | `dklink`: the SysEx wire format, the septet and Pack7 codecs, `TxBuffer` (LOG, SLOT, RESULT, STATUS, DATA, PARAM, VALUES, Identity), `SysExAssembler`, `PedalCommand`, and the protocol tables `kCommands`/`kResults` that `docs/MIDI.md` is generated from. The protocol reference. | yes |
 | `daisy/src/upload.h` | `dklink::Upload`: UPLOAD BEGIN/CHUNK staging (CRC per chunk, resends, gaps). | yes |
 | `daisy/src/controls.h` | `dkctl::ToggleFilter` (30 ms toggle hysteresis), `dkctl::Blinker` (LED2's N blinks, repeated after 5 s dark). | yes |
-| `daisy/src/params.h` | `dkparam`: the parameter table (`kParams`, `ParamDef`), the control slots (`Accepts`, `FactoryParam`), what a knob or a toggle gives a parameter (`FromKnob`, `FromToggle`), the wire codes (`ToCode`, `FromCode`). `docs/MIDI.md` "Parameters" is printed from it. | yes |
+| `daisy/src/params.h` | `dkparam`: the parameter table (`kParams`, `ParamDef`, `Units`), the control slots (`Accepts`), what a knob or a toggle gives a parameter (`FromKnob`, `FromToggle`), the wire codes (`ToCode`, `FromCode`). `docs/MIDI.md` "Parameters" is printed from it. | yes |
 | `daisy/src/param_store.h` | `dkparam::Store`: the live values and assignments and the arbitration between the controls and the link's SET and ASSIGN (pickup, last control wins). | yes |
 | `daisy/src/settings.h` | `dkparam`: the settings record (`BuildSettings`, `SettingsValid`, `NewestSettings`, `DecodeSettings`, `FactorySettings`) and its QSPI sectors ("Settings record"). | yes |
 | `daisy/src/dsp/blocks.h` | `dkdsp::kSampleRate` (48 kHz), `kBlockSize` (24), `kBlockRate`, `kBlocksPerMs`, `kIrTaps` (2048); `Peak` (a block's peak) and `FpHere` (`docs/M7_PERFORMANCE.md`). | yes |
@@ -63,7 +63,8 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `daisy/src/dsp/gain.h` | `dkdsp::InputGain` (Knob 1), `OutputGain` (Knob 2), `LevelMatchGain`, `Smoother` (one-pole), `GainRamp` (per-block linear gain ramp). | yes |
 | `daisy/src/dsp/a2lite.h` | `dkdsp::A2Lite`: the A2-Lite network (`docs/NAM_FORMAT.md` "Engine"); `dkdsp::a2` holds the shape and memory layout. | yes |
 | `daisy/src/dsp/convolver.h` | `dkdsp::IrConvolver`: the partitioned FFT IR convolver (`docs/FILTERS.md`). | yes |
-| `daisy/src/dsp/filters.h` | `dkdsp::Eq` (`CutFilter` ×2, `MidFilter`), `EdgeBypass`, the knob and toggle maps (`docs/FILTERS.md`). | yes |
+| `daisy/src/dsp/filters.h` | The EQ's sections: `dkdsp::CutFilter` (with `EdgeBypass`, the cut maps), `DesignBell` and `Bell` (`docs/FILTERS.md`, `docs/EQ.md`). | yes |
+| `daisy/src/dsp/eq.h` | `dkdsp::Eq`: the EQ stage, low-cut, bells 1–3, high-cut, driven by the parameters' values (`docs/EQ.md`). | yes |
 | `daisy/src/model.h` | `dkmodel::Parse`: validates and decodes a format-2 model binary. | yes |
 | `daisy/src/ir.h` | `dkir::Parse`: validates and decodes a format-1 IR binary. | yes |
 | `daisy/src/preset.h` | `dkpreset`: the slot format (`Parse`, `PutGate`/`GetGate`/`SetGate` for its gate block), the state record (`StateValid`, `NewestState`, `BuildState`), slot stepping (`NextFilled`, `BootSlot`), the QSPI layout ("Preset store"). | yes |
@@ -104,7 +105,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
      - while a switch is parked, silence instead of the engine and the IR; otherwise, with a preset loaded:
        - `A2Lite::Process`, also while muted, so the load stays constant and the model stays warm;
        - `IrConvolver::Process` when the preset has an IR;
-     - `Eq::Process` on the EQ's seven parameters (step 3): low-cut, the mid, high-cut; every section runs every block (`docs/FILTERS.md`). In the factory layout each parameter is its knob's or toggle's reading (low-cut: Knob 5, Knob 6, SW1; mid: SW3; high-cut: Knob 4, Knob 3, SW2), as before the table;
+     - `Eq::Process` on the EQ's sixteen parameters (step 3): low-cut, bells 1–3, high-cut, after the IR (`docs/EQ.md`). The cuts run every block; a bell runs while its gain is not 0 dB (and for 100 ms after); `eq_enable` off stops the stage;
      - the output gain: Knob 2 smoothed and ramped the same way, times the level match and the gate's gain (so the gate rides the same ramp, `docs/FILTERS.md` "Noise gate"). Knob 2 is `(2k)^3` up to noon (off at fully CCW, about −18 dB at 9 o'clock, unity at noon), then dB-linear to +12 dB;
      - `MuteRamp` (FS1), then the preset fade (`gSwapFade`, another `MuteRamp`);
   7. copies the left output to the right, measures the output peak and accumulates the gate's level and largest cut for STATUS;
@@ -130,7 +131,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 
 | Region | Size | Holds now | Reserved for |
 |---|---|---|---|
-| ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages, the convolver, the noise gate, the mid, the gains and the parameter store inlined), `A2Lite::RunLayer`, `CutFilter::Process` (about 11.7 KB in all) | |
+| ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages, the convolver, the noise gate, the EQ's sample loops, the gains and the parameter store inlined), `A2Lite::RunLayer`, `Eq::Control` (about 15.2 KB in all) | |
 | DTCM `0x20000000` | 128 KB | The engine (92,116 bytes in `.dtcm_bss`: history 83,976, weights 7,480); callback state, the parameter store included; the 16 KB stack reserve at the top | |
 | AXI SRAM `0x24000000` | 480 KB | Code (CMSIS-DSP's FFT included), `.data`, `.bss` with the IR convolver (68 KB): 238 KB in total | |
 | D2 SRAM `0x30008000` | 256 KB | — (the convolver measured slower here than in AXI SRAM, `docs/FILTERS.md`) | |
@@ -196,7 +197,7 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 |---|---|
 | 0 | magic `DKSG` |
 | 4 | u32 seq |
-| 8 | u8 version (1) |
+| 8 | u8 version (2) |
 | 9 | u8 control slots (7) |
 | 10 | u8 parameter count N |
 | 11 | u8 0 |
@@ -206,9 +207,9 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 | 20 + 4N | CRC-32 of bytes [0, 20 + 4N) |
 
 - **Two copies,** as for the state record: each of the two 4 KB sectors holds one record at its start. The valid record with the higher seq is the newest. SAVE (the link's command) erases and writes the other sector, then reads it back through the memory-mapped QSPI (`settings seq S T ms`, or `settings write failed` and RESULT `flash`), so a torn write leaves the previous record readable. Nothing else writes it: ASSIGN and SET change only the running pedal.
-- **At boot** the newest record sets the assignments and the values (`settings seq S`); with none the factory layout and the defaults apply (`settings factory`). The first audio block then writes every parameter on a control from that control, so a saved value matters only for a parameter on no control.
+- **At boot** the newest record sets the assignments and the values (`settings seq S`); with none, no control is assigned and every parameter is at its default (`settings factory`). The first audio block then writes every parameter on a control from that control, so a saved value matters only for a parameter on no control.
 - **Decoding is defensive:** a stored value is clamped into its range, a choice rounded to an index, and a non-finite value replaced by the default; an assignment its slot does not accept (an unknown id, a continuous parameter on a switch) becomes none.
-- **Across firmware versions:** parameter ids are append-only. A record with fewer parameters than the firmware leaves the later ones at their defaults; one with more has the extra values ignored. SAVE always writes the running firmware's count.
+- **Across firmware versions:** parameter ids are append-only within a version. A record with fewer parameters than the firmware leaves the later ones at their defaults; one with more has the extra values ignored. SAVE always writes the running firmware's count. A table whose ids change bumps the version, and a record of another version is ignored: version 2 is M10's EQ table (16 parameters); a version-1 record (M9's cuts and 515 Hz mid) reads as no record.
 
 ## Link protocol
 
@@ -223,9 +224,9 @@ erase N | rename N NAME | swap A B       # each prints the flash time
 gate N on|off [THRESHOLD_DB ATTACK_MS HOLD_MS RELEASE_MS RATIO]  # e.g. gate 1 on -55 0.5 20 100 4; on|off alone keeps the stored settings
 info N                                   # READs the preset's metadata: name; model, gear type/make/model, modeled by; loudness, input level; IR taps, source, gain; gate
 param list | param get NAME              # each parameter: its name, value and controls (`low_cut_freq    106 Hz        K5`), ` (held)` on a control waiting to move
-param set NAME VALUE                     # VALUE in the parameter's unit (Hz, Q), a choice's label or index, or `off`: `param set high_cut_freq 3000`, `param set mid "+5 dB"`
-param assign CONTROL NAME|none           # CONTROL k3-k6 or sw1-sw3: `param assign k3 low_cut_slope`; a switch takes only choice parameters
-param save                               # SAVE: the layout and the values for the next power-up; prints the flash time
+param set NAME VALUE                     # VALUE in the parameter's unit (Hz, Q, dB), a choice's label or index, or `off`: `param set high_cut_freq 3000`, `param set bell2_gain -3`
+param assign CONTROL NAME|none           # CONTROL k3-k6 or sw1-sw3: `param assign k3 bell2_freq`; a switch takes only choice parameters
+param save                               # SAVE: the assignments and the values for the next power-up; prints the flash time
 status [SECONDS]                         # WATCH: a STATUS line every 100 ms (with `gate in … dBFS cut … dB`) and the LOG lines, for SECONDS (5) or until Ctrl-C
 ```
 
@@ -249,7 +250,7 @@ model loudness -15.9 dB level -2.1 dB input +15.0 dBu cal -10.5 dB "FNDR BFSR VB
 ir taps 2048 src 48000 Hz gain -15.1 dB "YA FDMN 412 BLND Mix 01"                             (boot / HELLO)
 gate on thr -55 dBFS atk 0.5 ms hold 20 ms rel 100 ms ratio 4.0                              (boot / HELLO, after a switch)
 settings seq 5                                                                                (boot / HELLO)
-layout k3 high_cut_res k4 high_cut_freq k5 low_cut_freq k6 low_cut_res sw1 low_cut_slope sw2 high_cut_slope sw3 mid  (boot / HELLO)
+layout k3 bell2_freq k4 high_cut_freq k5 low_cut_freq k6 none sw1 low_cut_slope sw2 none sw3 eq_enable  (boot / HELLO)
 preset 4 "A2" load 138 us                                                                     (after a switch, with model and ir)
 state slot 4 seq 12 85 ms                                                                     (2 s after a switch)
 upload slot 8 "A2" 167 ms                                                                     (link: UPLOAD COMMIT, then the slots line)
@@ -396,7 +397,7 @@ Preset 4 (no IR), factory layout, audio running throughout; over the link with `
 2. **IR check:** the reset convolver runs `input.wav[48000, 52800)` against a direct convolution computed on the device in double; limit 1e-5.
 3. **Model:** `A2Lite::Process` on `kBlockSize` blocks of uniform noise (±0.5), timed with the DWT cycle counter: 200 ms of warm-up blocks, then 2 s measured, interrupts masked inside each block. The M3 gate is the maximum against 450 permille of the block period.
 4. **Layers:** the same blocks, each stage (`BeginChunk`, `RunLayer` per layer, `EndChunk`) timed separately.
-5. **IR, EQ, noise gate, chain:** the same way, the convolver from D2 and from AXI SRAM; the EQ at mid-travel knobs, top resonance, SW3 up, with SW1/SW2 flipping between 24 and 12 dB every 10 blocks so slope fades are in the maximum; the noise gate enabled with the longest hold (100 ms, the longest detector scan), fed each block's input peak; and the pedal's whole chain (the gate, input gain, engine, IR, EQ, output gain with the gate's gain, mute). The chain gate is its maximum against 850 permille, the load ceiling (`docs/ROADMAP.md` "Decisions"; 550 until the 24-sample blocks).
+5. **IR, EQ, noise gate, chain:** the same way, the convolver from D2 and from AXI SRAM; the EQ at its worst case: enabled, both cuts at mid-travel with the top resonance and their slopes flipping between 24 and 12 dB every 10 blocks (slope fades), every bell flipping between −12 dB at a quarter and +12 dB at three quarters of its frequency range every 10 blocks, so every glide and coefficient ramp runs on every block; the noise gate enabled with the longest hold (100 ms, the longest detector scan), fed each block's input peak; and the pedal's whole chain (the gate, input gain, engine, IR, EQ, output gain with the gate's gain, mute). The chain gate is its maximum against 850 permille, the load ceiling (`docs/ROADMAP.md` "Decisions"; 550 until the 24-sample blocks). M10's figures: `docs/EQ.md` "As built".
 
 Passes repeat every 2 s; the DFU command works between stages, so `flash_when_ready.sh` returns to the pedal with no button presses.
 

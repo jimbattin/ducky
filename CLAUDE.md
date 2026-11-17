@@ -9,7 +9,7 @@ It supports 8 presets. Each preset contains a NAM Model, an optional IR block an
 
 ## Signal chain
 
-L INPUT -> Input trim -> [Preset: NAM Model -> IR] -> EQ -> Output volume × [Preset: noise gate gain, detected from L INPUT before the trim] -> Mute -> L/R Out
+L INPUT -> Input trim -> [Preset: NAM Model -> IR] -> EQ (low-cut, 3 bells, high-cut) -> Output volume × [Preset: noise gate gain, detected from L INPUT before the trim] -> Mute -> L/R Out
 
 Presets contain the NAM Model, optional IR and noise gate settings. They do not track Input/Output gain or EQ settings: those are global. A parameter on a control is "What you see is what you get" on the pedal; the editor can set one, and it holds until its control moves
 
@@ -18,21 +18,15 @@ Presets contain the NAM Model, optional IR and noise gate settings. They do not 
 - FS2: Next preset (skips empty slots, wraps). LED2 blinks N times for slot N, repeating after 5 s dark
 - Knob 1: Input Gain trim, relative (Noon is the model's input calibration from `input_level_dbu`, ±12 dB). Fixed
 - Knob 2: Output Volume (Noon is unity). Fixed
-- Knobs 3-6 and SW1-SW3 are assignable: each drives one parameter of the table (`daisy/src/params.h`) or none, chosen in the editor's Controls tab or with `tools/pedal.ts param assign`, and kept across power cycles by an explicit save (the settings record). A switch takes only choice parameters. The factory layout:
-  - Knob 3: High-cut resonance
-  - Knob 4: High-cut frequency
-  - Knob 5: Low-cut frequency
-  - Knob 6: Low-cut resonance
-  - SW1: low-cut slope (up 6, middle 12, down 24db)
-  - SW 2: high-cut slope (up 6, middle 12, down 24db)
-  - SW 3: Mid at 515hz (up +5db boost, middle bypass, down -7db scoop)
+- Knobs 3-6 and SW1-SW3 are assignable: each drives one parameter of the table (`daisy/src/params.h`) or none, chosen in the editor's Controls tab or with `tools/pedal.ts param assign`, and kept across power cycles by an explicit save (the settings record). A switch takes only choice parameters. Every control is unassigned by default; the EQ is set from the editor's EQ tab (a draggable response graph and a row per parameter) or `tools/pedal.ts param set`
 
 Roadmap, decisions, and milestones: `docs/ROADMAP.md`
 Firmware build/flash/log, source layout, memory map, preset store, settings record, log lines, bench (`APP=bench`): `docs/FIRMWARE.md`
-Browser editor (running it, each tab with screenshots, link and sync, drafts and saving, gate audition, the Controls tab, source layout, conventions): `docs/EDITOR.md`
+Browser editor (running it, each tab with screenshots, link and sync, drafts and saving, gate audition, the Controls and EQ tabs, source layout, conventions): `docs/EDITOR.md`
 USB-MIDI SysEx link (commands, the parameter table, the controls and their pickup rule, upload, slot read-back, status stream, playback rules), generated from `daisy/src/link.h` and `daisy/src/params.h` by `make midi-doc`: `docs/MIDI.md`
 NAM A2 format, A2-Lite shape check, weight order, forward pass, Ducky model binary, converter, reference renders, engine: `docs/NAM_FORMAT.md`
-IR convolver, cut/mid filters, noise gate, IR binary, `.wav` converter, getting an IR onto the pedal: `docs/FILTERS.md`
+IR convolver, cut filters, noise gate, IR binary, `.wav` converter, getting an IR onto the pedal: `docs/FILTERS.md`
+The EQ (low-cut, three bells, high-cut: controls and ranges, the model, setting A's reference response, required behaviour, as built and its cost): `docs/EQ.md`
 Cortex-M7 float performance (measured cost model, rules for DSP kernels, steering GCC, how to measure). Read before writing or optimising DSP code: `docs/M7_PERFORMANCE.md`
 Compressor research, nothing in the firmware (Dinosaural OTC-201 / Aion Convex circuit analysis, VTL5C4 vactrol model, SPICE predictions and netlist, the reduced DSP model with its constants, Python reference implementation and agreement with SPICE, test targets, open questions): `docs/compressor-spec.md`
 
@@ -41,8 +35,8 @@ Compressor research, nothing in the firmware (Dinosaural OTC-201 / Aion Convex c
 - USB-MIDI supports unattended DFU flashing, and slot and parameter management while the pedal plays (`bun tools/pedal.ts list|info|upload|erase|rename|swap|gate|param|status`)
 - Presets (NAM Model + optional IR + noise gate) stored in QSPI Flash (8 × 64 KB slots at `0x90400000`, written slot by slot over USB-MIDI by `tools/pedal.ts`, or as a bank image by `tools/preset_bank.ts` over DFU) and parsed into SDRAM at boot and after each slot change; the last slot is remembered in a two-copy state record (`docs/FIRMWARE.md` "Preset store")
 - Up to 8 slots for presets, flash space permitting 
-- Parameters (the EQ's seven so far) live in one table (`daisy/src/params.h`) that the link sends to hosts; the control assignments and the values are global and saved in a two-copy settings record in QSPI (`docs/FIRMWARE.md` "Settings record")
-- Browser editor (Preact, one self-contained `editor/dist/editor.html`; `make -C editor serve|html`): imports `.nam` + `.wav`, manages the 8 slots and each preset's noise gate (sliders auditioned live, a meter), assigns Knobs 3-6 and SW1-SW3 and sets parameters (Controls tab), shows stored slots' metadata (read back over USB-MIDI), the log, CPU load, the controls and the EQ's response graph, and has a DFU button. Follows the conventions of bad_tape (`../bad_tape`)
+- Parameters (the EQ's sixteen) live in one table (`daisy/src/params.h`) that the link sends to hosts; the control assignments and the values are global and saved in a two-copy settings record in QSPI (`docs/FIRMWARE.md` "Settings record")
+- Browser editor (Preact, one self-contained `editor/dist/editor.html`; `make -C editor serve|html`): imports `.nam` + `.wav`, manages the 8 slots and each preset's noise gate (sliders auditioned live, a meter), assigns Knobs 3-6 and SW1-SW3 (Controls tab), sets the EQ with a draggable response graph and parameter rows (EQ tab), shows stored slots' metadata (read back over USB-MIDI), the log, CPU load and the controls, and has a DFU button. Follows the conventions of bad_tape (`../bad_tape`)
 - Can be flashed as part of Switcharoo (`../switcharoo`) although do not directly reference this in code or docs 
 - More than one Seed may be attached: address Ducky's by USB path (`--port`, `DK_USB_PORT`) and check `--identity` reports `device 64` before flashing (`docs/FIRMWARE.md`)
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { ControlsTab } from "./components/ControlsTab";
-import { EqGraph } from "./components/EqGraph";
+import { EqTab } from "./components/EqTab";
 import { FrontPanel } from "./components/FrontPanel";
 import { GateEditor } from "./components/GateEditor";
 import { LogView } from "./components/LogView";
@@ -11,7 +11,7 @@ import { type NavTab, TabNav } from "./components/TabNav";
 import { Toolbar } from "./components/Toolbar";
 import { baseDraft, type Draft, type Drafts, draftProblem, isEdited, saveDraft, slotView } from "./draft";
 import { errorText } from "./format";
-import { CONTROLS, factoryAssign } from "./link/params";
+import { CONTROLS } from "./link/params";
 import { dfuMsg, SLOT_STATUS, type SlotMessage } from "./link/protocol";
 import type { PedalSession } from "./link/session";
 import { GATE_DEFAULT, type GateSettings, gateEqual } from "./preset/gate";
@@ -163,19 +163,6 @@ export function App() {
         return `${CONTROLS[control]!.id}: ${s.params?.find((p) => p.id === id)?.label ?? "None"}`;
       }),
     );
-  const onFactoryLayout = () =>
-    void act("FACTORY LAYOUT…", () =>
-      serial(async (session) => {
-        const { params, values } = s;
-        if (params === null || values === null) return "Factory layout";
-        for (const [c, id] of factoryAssign(params).entries()) {
-          if (id === values.assign[c]) continue;
-          await session.assign(c, id);
-          dispatch({ type: "settingsEdited", edited: true });
-        }
-        return "Factory layout";
-      }),
-    );
   const onSaveSettings = () =>
     void act("SAVING CONTROLS…", () =>
       serial(async (session) => {
@@ -259,10 +246,20 @@ export function App() {
           <div class="tabpanel" role="tabpanel" id="tabpanel" aria-labelledby={`tab-${tab}`}>
             {tab === "log" ? (
               <LogView lines={s.log} />
-            ) : tab === "eq" ? (
-              <EqGraph status={s.status} params={s.params} values={s.values} />
-            ) : tab === "controls" && !linked ? (
+            ) : (tab === "eq" || tab === "controls") && !linked ? (
               <p class="tab-empty">Waiting for the pedal.</p>
+            ) : tab === "eq" ? (
+              <EqTab
+                status={s.status}
+                params={s.params}
+                paramsError={s.paramsError}
+                values={s.values}
+                shownCode={shownCode}
+                enabled={ready}
+                edited={s.settingsEdited}
+                onSet={setParam}
+                onSave={onSaveSettings}
+              />
             ) : tab === "controls" ? (
               <ControlsTab
                 params={s.params}
@@ -272,8 +269,6 @@ export function App() {
                 enabled={ready}
                 edited={s.settingsEdited}
                 onAssign={onAssign}
-                onSet={setParam}
-                onFactoryLayout={onFactoryLayout}
                 onSave={onSaveSettings}
               />
             ) : (

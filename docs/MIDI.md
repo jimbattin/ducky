@@ -40,7 +40,7 @@ Ducky talks to a host over the Seed's USB MIDI port with SysEx only: no notes, C
 |pedal to host|`14` RESULT|`<cmd> <code> <value u21>`|The outcome of a request (Results). Every request except HELLO and DFU gets exactly one RESULT, and it comes last.|
 |pedal to host|`15` STATUS|`<load avg u14> <load max u14> <underruns u28> <slot> <mute> <knob 1-6: 6 x u14> <SW1> <SW2> <SW3> <footswitches> <gate level u14> <gate cut u14>` (30 bytes)|Sent every 100 ms while WATCH is on. Load in permille, as the last once-a-second `load` line reported it (0 before the first); underruns since boot, clamped at 2^28 - 1; slot 0-7, or 7F when dry; mute 0/1; knobs in permille (0-1000); SW1-SW3 0 down, 1 middle, 2 up; footswitches held: bit 0 FS1, bit 1 FS2. Gate level: the highest level the gate's detector saw at the input (before Knob 1) since the previous STATUS, in tenths of a dB below full scale (0-1200, 1200 for silence); gate cut: the largest gain reduction the gate applied since the previous STATUS, in tenths of a dB (0-1200, 1200 closed).|
 |pedal to host|`16` DATA|`<slot 0-7> <offset u21> <crc32 u32> <Pack7 data>` (1-160 bytes unpacked)|Answers READ: the image bytes at offset and the CRC-32 of the unpacked bytes. Comes before READ's RESULT.|
-|pedal to host|`17` PARAM|`<id> <taper> <off end> <factory control> <default u14> <min f32 as u32> <max f32 as u32> <name> 00 <label> 00 <unit> 00 <group>`|One parameter (Parameters), answering DUMP. Taper: 0 log (continuous: the value runs from min at code 0 to max at code 16383, logarithmically), 1 choice (the value is an index 0 to max). Off end: 0 none, 1 the parameter's filter is bypassed within 2 % of min, 2 within 2 % of max. Factory control: the control (0-6) holding it in the factory layout, or 7F. Default: the value's code. Min and max: IEEE 754 single-precision bits. The strings are printable ASCII: the name is the log's and `tools/pedal.ts`'s, the label the editor's; a choice's unit is its labels, comma-separated, in index order.|
+|pedal to host|`17` PARAM|`<id> <taper> <off end> <default u14> <min f32 as u32> <max f32 as u32> <name> 00 <label> 00 <unit> 00 <group>`|One parameter (Parameters), answering DUMP. Taper: 0 log (continuous: the value runs from min at code 0 to max at code 16383, logarithmically), 1 choice (the value is an index 0 to max), 2 linear (the value runs from min at code 0 to max at code 16383, linearly). Off end: 0 none, 1 the parameter's filter is bypassed within 2 % of min, 2 within 2 % of max. Default: the value's code. Min and max: IEEE 754 single-precision bits. The strings are printable ASCII: the name is the log's and `tools/pedal.ts`'s, the label the editor's; a choice's unit is its labels, comma-separated, in index order.|
 |pedal to host|`18` VALUES|`<control 0-6 assignments: 7 bytes> <held bits> <N> <code u14 x N>`|The live assignments (7F none), bit s set while control s is held, and each parameter's code. After DUMP's PARAMs, and with every STATUS while WATCH is on.|
 
 ## Results
@@ -76,17 +76,26 @@ SLOT's status byte and an `invalid` COMMIT's value: the slot parser's verdict (d
 
 ## Parameters
 
-The table DUMP sends (daisy/src/params.h); ids are append-only. A continuous (log) parameter's value is `min * (max / min) ^ (code / 16383)`; a choice's code is its index.
+The table DUMP sends (daisy/src/params.h); ids are append-only. A continuous parameter's value is `min * (max / min) ^ (code / 16383)` for a log one, and a linear one's is `min + (max - min) * code / 16383`; a choice's code is its index.
 
-|Id|Name|Label|Taper|Range|Off end|Default code|Factory control|Group|
-|---|---|---|---|---|---|---|---|---|
-|0|`low_cut_freq`|Low-cut frequency|log|20-500 Hz|min|0|K5|EQ|
-|1|`low_cut_res`|Low-cut resonance|log|0.5-2 Q|-|8192|K6|EQ|
-|2|`low_cut_slope`|Low-cut slope|choice|0 24 dB/oct, 1 12 dB/oct, 2 6 dB/oct|-|1|SW1|EQ|
-|3|`high_cut_freq`|High-cut frequency|log|1500-20000 Hz|max|16383|K4|EQ|
-|4|`high_cut_res`|High-cut resonance|log|0.5-2 Q|-|8192|K3|EQ|
-|5|`high_cut_slope`|High-cut slope|choice|0 24 dB/oct, 1 12 dB/oct, 2 6 dB/oct|-|1|SW2|EQ|
-|6|`mid`|Mid 515 Hz|choice|0 -7 dB, 1 off, 2 +5 dB|-|1|SW3|EQ|
+|Id|Name|Label|Taper|Range|Off end|Default code|Group|
+|---|---|---|---|---|---|---|---|
+|0|`eq_enable`|EQ|choice|0 off, 1 on|-|1|EQ|
+|1|`low_cut_freq`|Low-cut frequency|log|20 to 500 Hz|min|0|EQ|
+|2|`low_cut_res`|Low-cut resonance|log|0.5 to 2 Q|-|8192|EQ|
+|3|`low_cut_slope`|Low-cut slope|choice|0 24 dB/oct, 1 12 dB/oct, 2 6 dB/oct|-|1|EQ|
+|4|`bell1_gain`|Bell 1 gain|linear|-12 to 12 dB|-|8192|EQ|
+|5|`bell1_freq`|Bell 1 frequency|log|40 to 800 Hz|-|10022|EQ|
+|6|`bell1_q`|Bell 1 Q|log|0.4 to 8 Q|-|5011|EQ|
+|7|`bell2_gain`|Bell 2 gain|linear|-12 to 12 dB|-|8192|EQ|
+|8|`bell2_freq`|Bell 2 frequency|log|200 to 5000 Hz|-|8192|EQ|
+|9|`bell2_q`|Bell 2 Q|log|0.4 to 8 Q|-|5011|EQ|
+|10|`bell3_gain`|Bell 3 gain|linear|-12 to 12 dB|-|8192|EQ|
+|11|`bell3_freq`|Bell 3 frequency|log|800 to 12000 Hz|-|7996|EQ|
+|12|`bell3_q`|Bell 3 Q|log|0.4 to 8 Q|-|5011|EQ|
+|13|`high_cut_freq`|High-cut frequency|log|1500 to 20000 Hz|max|16383|EQ|
+|14|`high_cut_res`|High-cut resonance|log|0.5 to 2 Q|-|8192|EQ|
+|15|`high_cut_slope`|High-cut slope|choice|0 24 dB/oct, 1 12 dB/oct, 2 6 dB/oct|-|1|EQ|
 
 ## Controls
 
@@ -95,7 +104,7 @@ The table DUMP sends (daisy/src/params.h); ids are append-only. A continuous (lo
 - A switch takes choice parameters only. A three-value parameter's index is the position: 0 down, 1 middle, 2 up. A two-value one is 0 in the middle and 1 up or down.
 - Pickup: a control writes its parameter when it moves. SET, and ASSIGN of a control, hold the control: the parameter keeps its value until a knob has moved more than 3 % of its travel from where it was, or a switch changes position. When a parameter is on several controls, the one moved last has it and the others are held. VALUES' held bits show the held controls.
 - At power-up every parameter on a control takes its control's position (with several controls on it, one of theirs); one on no control takes its saved value.
-- ASSIGN and SET act at once but are lost at power-off. SAVE writes the assignments and the values to the settings record (docs/FIRMWARE.md "Settings record"); with no record the pedal starts with the factory layout above. The settings are global: presets hold neither assignments nor values.
+- ASSIGN and SET act at once but are lost at power-off. SAVE writes the assignments and the values to the settings record (docs/FIRMWARE.md "Settings record"); with no record the pedal starts with no control assigned and every parameter at its default. The settings are global: presets hold neither assignments nor values.
 
 ## Upload
 

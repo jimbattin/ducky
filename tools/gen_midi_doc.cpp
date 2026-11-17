@@ -1,6 +1,5 @@
 // Prints docs/MIDI.md (markdown) from the link's protocol tables (daisy/src/link.h kCommands, kResults), the parameter
 // table (daisy/src/params.h) and the preset store's constants (daisy/src/preset.h): `make midi-doc`.
-#include <cctype>
 #include <cstdio>
 #include <cstring>
 
@@ -11,11 +10,6 @@
 using namespace dklink;
 
 namespace {
-
-// "K3" ... "SW3" for control slot c: kControlNames in capitals.
-void printControl(int c) {
-    for (const char* s = dkparam::kControlNames[c]; *s; ++s) std::putchar(std::toupper(*s));
-}
 
 // A choice's labels with their indexes: "0 A, 1 B, 2 C" from the unit "A,B,C".
 void printChoices(const char* unit) {
@@ -90,25 +84,23 @@ int main() {
     std::printf("\n");
 
     std::printf("## Parameters\n\n");
-    std::printf("The table DUMP sends (daisy/src/params.h); ids are append-only. A continuous (log) parameter's "
-                "value is `min * (max / min) ^ (code / %u)`; a choice's code is its index.\n\n",
-                unsigned(dkparam::kCodeMax));
-    std::printf("|Id|Name|Label|Taper|Range|Off end|Default code|Factory control|Group|\n"
-                "|---|---|---|---|---|---|---|---|---|\n");
+    std::printf("The table DUMP sends (daisy/src/params.h); ids are append-only. A continuous parameter's value is "
+                "`min * (max / min) ^ (code / %u)` for a log one, and a linear one's is "
+                "`min + (max - min) * code / %u`; a choice's code is its index.\n\n",
+                unsigned(dkparam::kCodeMax), unsigned(dkparam::kCodeMax));
+    std::printf("|Id|Name|Label|Taper|Range|Off end|Default code|Group|\n"
+                "|---|---|---|---|---|---|---|---|\n");
     for (const dkparam::ParamDef& d : dkparam::kParams) {
         const bool choice = d.taper == dkparam::Taper::kChoice;
-        std::printf("|%d|`%s`|%s|%s|", d.id, d.name, d.label, choice ? "choice" : "log");
+        std::printf("|%d|`%s`|%s|%s|", d.id, d.name, d.label,
+                    choice ? "choice" : d.taper == dkparam::Taper::kLinear ? "linear" : "log");
         if (choice)
             printChoices(d.unit);
         else
-            std::printf("%g-%g %s", double(d.min), double(d.max), d.unit);
-        std::printf("|%s|%u|", d.off == dkparam::OffEnd::kMin ? "min" : d.off == dkparam::OffEnd::kMax ? "max" : "-",
-                    unsigned(dkparam::ToCode(d, d.def)));
-        if (d.factory != dkparam::kNoParam)
-            printControl(d.factory);
-        else
-            std::printf("-");
-        std::printf("|%s|\n", d.group);
+            std::printf("%g to %g %s", double(d.min), double(d.max), d.unit);
+        std::printf("|%s|%u|%s|\n",
+                    d.off == dkparam::OffEnd::kMin ? "min" : d.off == dkparam::OffEnd::kMax ? "max" : "-",
+                    unsigned(dkparam::ToCode(d, d.def)), d.group);
     }
     std::printf("\n");
 
@@ -130,7 +122,8 @@ int main() {
                 "it, one of theirs); one on no control takes its saved value.\n");
     std::printf("- ASSIGN and SET act at once but are lost at power-off. SAVE writes the assignments and the values "
                 "to the settings record (docs/FIRMWARE.md \"Settings record\"); with no record the pedal starts with "
-                "the factory layout above. The settings are global: presets hold neither assignments nor values.\n\n");
+                "no control assigned and every parameter at its default. The settings are global: presets hold "
+                "neither assignments nor values.\n\n");
 
     std::printf("## Upload\n\n");
     std::printf("An image is a complete format-3 preset slot (docs/FIRMWARE.md \"Preset store\"): %zu bytes without "

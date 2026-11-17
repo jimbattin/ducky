@@ -1,5 +1,5 @@
-// daisy/src/dsp/filters.h: the knob and toggle maps, the cut and mid responses against their bilinear-exact
-// prototypes, bit-exact neutral settings, stability under modulation, and click-free slope and bypass changes.
+// daisy/src/dsp/filters.h: the cut filters' maps, their responses against the bilinear-exact prototypes, and
+// click-free slope and bypass changes. The bell and the EQ stage: tests/eq_test.cpp.
 #include "dsp/filters.h"
 
 #include <gtest/gtest.h>
@@ -12,10 +12,7 @@
 
 using dkdsp::CutFilter;
 using dkdsp::EdgeBypass;
-using dkdsp::Eq;
-using dkdsp::EqControls;
 using dkdsp::kBlockSize;
-using dkdsp::MidFilter;
 using dkdsp::Slope;
 using dkdsp::SlopeFromToggle;
 
@@ -33,16 +30,12 @@ std::vector<float> Sine(double hz, size_t n) {
     return x;
 }
 
-std::vector<float> Noise(size_t n) {
-    std::vector<float> v(n);
-    uint32_t s = 0x9E3779B9u;
-    for (float& x : v) {
-        s ^= s << 13;
-        s ^= s >> 17;
-        s ^= s << 5;
-        x = float(s) / 4294967296.0f - 0.5f;
+// Runs f over x[0, n) whole control ticks from a tick's start: Control at each tick, then Run.
+void RunCut(CutFilter& f, float* x, size_t n, float freq, float res, uint8_t slope) {
+    for (size_t i = 0; i < n; i += kBlockSize) {
+        f.Control(freq, res, slope);
+        f.Run(x + i, std::min(kBlockSize, n - i), 0);
     }
-    return v;
 }
 
 // Runs `block(x, n, block_index)` in place over x in kBlockSize blocks.
@@ -114,9 +107,6 @@ TEST(FilterMaps, Toggles) {
     EXPECT_EQ(SlopeFromToggle(kUp), Slope::k6);
     EXPECT_EQ(SlopeFromToggle(kMiddle), Slope::k12);
     EXPECT_EQ(SlopeFromToggle(kDown), Slope::k24);
-    EXPECT_EQ(dkdsp::MidGainDb(kUp), 5.0f);
-    EXPECT_EQ(dkdsp::MidGainDb(kMiddle), 0.0f);
-    EXPECT_EQ(dkdsp::MidGainDb(kDown), -7.0f);
 }
 
 TEST(FilterMaps, BypassHysteresis) {
@@ -153,67 +143,13 @@ TEST(CutFilterResponse, MatchesPrototype) {
                 for (double hz : c.hz) {
                     CutFilter f;
                     f.Init(c.hp, fk, rk, ToggleFor(slope));
-                    const double got = MeasuredGain(hz, [&](float* x, size_t n) { f.Process(x, n, fk, rk, ToggleFor(slope)); });
+                    const double got = MeasuredGain(hz, [&](float* x, size_t n) { RunCut(f, x, n, fk, rk, ToggleFor(slope)); });
                     ExpectGain(got, Expected(slope, c.hp, hz, fc, q),
                                (c.hp ? "low-cut " : "high-cut ") + std::to_string(int(slope)) + " q " +
                                    std::to_string(q) + " at " + std::to_string(hz));
                 }
             }
         }
-    }
-}
-
-TEST(MidFilterResponse, BoostAndScoop) {
-    for (uint8_t pos : {kUp, kDown}) {
-        MidFilter f;
-        f.Init(pos);
-        const double got = MeasuredGain(516.0, [&](float* x, size_t n) { f.Process(x, n, pos); });
-        EXPECT_NEAR(20.0 * std::log10(got), pos == kUp ? 5.0 : -7.0, 0.05);
-        // The whole bell, against (1 - W^2 + j W k A^2) / (1 - W^2 + j W k).
-        for (double hz : {100.0, 300.0, 1000.0, 3000.0}) {
-            MidFilter g;
-            g.Init(pos);
-            const double meas = MeasuredGain(hz, [&](float* x, size_t n) { g.Process(x, n, pos); });
-            const double A = std::pow(10.0, dkdsp::MidGainDb(pos) / 40.0), k = 1.0 / (dkdsp::kMidQ * A);
-            const double w = Omega(hz, dkdsp::kMidHz);
-            ExpectGain(meas, std::abs(cd(1.0 - w * w, w * k * A * A) / cd(1.0 - w * w, w * k)), std::to_string(hz));
-        }
-    }
-}
-
-TEST(Eq, NeutralIsBitExact) {
-    const EqControls c{0.0f, 0.5f, 1.0f, 0.5f, kMiddle, kMiddle, kMiddle};
-    Eq eq;
-    eq.Init(c);
-    const std::vector<float> in = Noise(48000);
-    std::vector<float> y = in;
-    Blocks(y, [&](float* x, size_t n, size_t) { eq.Process(x, n, c); });
-    for (size_t i = 0; i < y.size(); ++i) ASSERT_EQ(y[i], in[i]) << i;
-}
-
-TEST(Eq, StableUnderModulation) {
-    for (uint8_t slope : {kDown, kMiddle, kUp}) {
-        const size_t blocks = 4 * 48000 / kBlockSize;
-        EqControls c{0.0f, 0.0f, 0.0f, 0.0f, slope, slope, kMiddle};
-        Eq eq;
-        eq.Init(c);
-        std::vector<float> y = Noise(blocks * kBlockSize);
-        double peak = 0.0;
-        bool finite = true;
-        Blocks(y, [&](float* x, size_t n, size_t b) {
-            const float t = float(b) / float(blocks);
-            const float tri = t < 0.5f ? 2.0f * t : 2.0f - 2.0f * t;
-            c.low_cut = c.high_cut = tri;
-            c.low_res = c.high_res = t;
-            c.sw3 = uint8_t((b / 100) % 3);
-            eq.Process(x, n, c);
-            for (size_t i = 0; i < n; ++i) {
-                finite = finite && std::isfinite(x[i]);
-                peak = std::max(peak, double(std::fabs(x[i])));
-            }
-        });
-        EXPECT_TRUE(finite) << int(slope);
-        EXPECT_LT(peak, 8.0) << int(slope);
     }
 }
 
@@ -226,7 +162,7 @@ TEST(CutFilterSwitching, SlopeChangeIsClickFree) {
     CutFilter f;
     f.Init(true, fk, rk, toggles[0]);
     std::vector<float> y = in;
-    Blocks(y, [&](float* x, size_t n, size_t b) { f.Process(x, n, fk, rk, toggles[b * kBlockSize / seg]); });
+    Blocks(y, [&](float* x, size_t n, size_t b) { RunCut(f, x, n, fk, rk, toggles[b * kBlockSize / seg]); });
 
     double steady = 0.0;
     for (size_t s = 0; s < 3; ++s) steady = std::max(steady, MaxStep(y, s * seg + seg / 2, (s + 1) * seg));
@@ -237,7 +173,7 @@ TEST(CutFilterSwitching, SlopeChangeIsClickFree) {
         CutFilter ref;
         ref.Init(true, fk, rk, toggles[s]);
         std::vector<float> r = in;
-        Blocks(r, [&](float* x, size_t n, size_t) { ref.Process(x, n, fk, rk, toggles[s]); });
+        Blocks(r, [&](float* x, size_t n, size_t) { RunCut(ref, x, n, fk, rk, toggles[s]); });
         for (size_t i = s * seg + dkdsp::kFadeSamples; i < (s + 1) * seg; ++i) ASSERT_EQ(y[i], r[i]) << s << " " << i;
     }
 }
@@ -250,7 +186,7 @@ TEST(CutFilterSwitching, BypassEngageIsClickFree) {
     CutFilter f;
     f.Init(true, 0.1f, rk, kDown);
     std::vector<float> y = in;
-    Blocks(y, [&](float* x, size_t n, size_t b) { f.Process(x, n, b * kBlockSize < seg ? 0.1f : 0.0f, rk, kDown); });
+    Blocks(y, [&](float* x, size_t n, size_t b) { RunCut(f, x, n, b * kBlockSize < seg ? 0.1f : 0.0f, rk, kDown); });
 
     const double steady = std::max(MaxStep(y, seg / 2, seg), MaxStep(y, seg + seg / 2, 2 * seg));
     EXPECT_LE(MaxStep(y, 1, y.size()), 1.25 * steady);

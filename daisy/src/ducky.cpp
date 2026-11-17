@@ -1,13 +1,14 @@
 // Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). The left input goes through Knob 1's input trim,
 // the current preset's A2-Lite model (dsp/a2lite.h) and cab IR when it has one (dsp/convolver.h), the EQ
-// (dsp/filters.h, driven by the parameters assigned to the control slots, Knobs 3-6 and SW1-SW3: params.h,
-// param_store.h; the assignments and values are kept in the settings record, settings.h), and Knob 2's output
-// volume times the model's level match and the preset's noise gate (dsp/gain.h, dsp/noise_gate.h: the gate listens to
-// the input before the trim), then FS1's mute ramp and the preset switch's fade, and is copied to both outputs (dual
-// mono). Presets live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU, or slot by slot over the
-// link: docs/MIDI.md) and are parsed into SDRAM at boot and after every slot change; corrupt or empty slots are
-// skipped. With no valid slot the pedal plays dry (trim, EQ, volume, mute; no gate). If the IR convolver's FFT does
-// not initialise, audio never starts: the pedal serves USB (DFU included) and logs "ir fft" once a second.
+// (dsp/eq.h: low-cut, three bells, high-cut, driven by the parameters, set over the link or by the controls assigned
+// to them, Knobs 3-6 and SW1-SW3: params.h, param_store.h; the assignments and values are kept in the settings record,
+// settings.h), and Knob 2's output volume times the model's level match and the preset's noise gate (dsp/gain.h,
+// dsp/noise_gate.h: the gate listens to the input before the trim), then FS1's mute ramp and the preset switch's
+// fade, and is copied to both outputs (dual mono). Presets live in QSPI (preset.h: 8 slots, written by
+// tools/preset_bank.ts over DFU, or slot by slot over the link: docs/MIDI.md) and are parsed into SDRAM at boot and
+// after every slot change; corrupt or empty slots are skipped. With no valid slot the pedal plays dry (trim, EQ,
+// volume, mute; no gate). If the IR convolver's FFT does not initialise, audio never starts: the pedal serves USB
+// (DFU included) and logs "ir fft" once a second.
 //
 // Two threads of control:
 // - AudioCallback (the audio DMA interrupt, 48 kHz, 24-sample blocks): reads and publishes the controls (30 ms toggle
@@ -44,7 +45,7 @@
 #include "dsp/a2lite.h"
 #include "dsp/blocks.h"
 #include "dsp/convolver.h"
-#include "dsp/filters.h"
+#include "dsp/eq.h"
 #include "dsp/gain.h"
 #include "dsp/mute.h"
 #include "dsp/noise_gate.h"
@@ -506,11 +507,8 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
         gEngine.Process(out[0], out[0], size);
         if (gIrOn) gIr.Process(out[0], out[0]);  // size is kBlockSize: dkfw::Start sets the block size
     }
-    // The EQ's controls are parameters (stepParams); in the factory layout each is its knob's or toggle's reading.
-    const float* v = gStore.Values();
-    gEq.Process(out[0], size,
-                {v[dkparam::kLowCutFreq], v[dkparam::kLowCutRes], v[dkparam::kHighCutFreq], v[dkparam::kHighCutRes],
-                 uint8_t(v[dkparam::kLowCutSlope]), uint8_t(v[dkparam::kHighCutSlope]), uint8_t(v[dkparam::kMid])});
+    // The EQ's controls are parameters (stepParams).
+    gEq.Process(out[0], size, gStore.Values());
     const float outTarget = gLevel * dkdsp::OutputGain(gOutKnob.Process(hw.Knob(1))) * gate;
     gOutGain.Process(out[0], out[0], size, outTarget);
     gMute.Process(out[0], out[0], size);
@@ -1095,8 +1093,8 @@ int main() {
     gLoad.Init(hw.seed.AudioSampleRate(), hw.seed.AudioBlockSize());
     gBlockTicks = uint32_t(uint64_t(System::GetTickFreq()) * dkdsp::kBlockSize / uint32_t(dkdsp::kSampleRate));
     for (dkctl::ToggleFilter& f : gToggleFilter) f.Init(1);
-    // Neutral-ish; the EQ settles on the real controls within ~100 ms, while the output fades in.
-    gEq.Init({0.5f, 0.5f, 0.5f, 0.5f, 1, 1, 1});
+    // The EQ starts settled at the parameters' values; a control's first reading reaches it through the smoothing.
+    gEq.Init(gStore.Values());
     hw.seed.adc.Start();
     hw.seed.StartAudio(AudioCallback);
 

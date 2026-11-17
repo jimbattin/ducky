@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { crc32 } from "../crc32";
-import { FACTORY_PARAMS } from "../testFixtures";
-import { CONTROLS, choiceLabels, factoryAssign } from "./params";
+import { PARAMS } from "../testFixtures";
+import { choiceLabels } from "./params";
 import {
   assignMsg,
   CMD,
@@ -194,28 +194,33 @@ test("RESULT_NAMES match docs/MIDI.md's Results table", () => {
 test("PARAM parses", () => {
   // tests/link_test.cpp Param.Bytes.
   const text = Array.from("low_cut_freq\0Low-cut frequency\0Hz\0EQ", (c) => c.charCodeAt(0));
-  const head = [0x00, 0x00, 0x01, 0x02, 0x00, 0x00, 0x04, 0x0d, 0x00, 0x00, 0x00, 0x04, 0x1f, 0x68, 0x00, 0x00];
-  expect(parseMessage(pedalMsg(CMD.param, [...head, ...text]))).toEqual({ type: "param", info: FACTORY_PARAMS[0]! });
+  const head = [0x01, 0x00, 0x01, 0x00, 0x00, 0x04, 0x0d, 0x00, 0x00, 0x00, 0x04, 0x1f, 0x68, 0x00, 0x00];
+  expect(parseMessage(pedalMsg(CMD.param, [...head, ...text]))).toEqual({ type: "param", info: PARAMS[1]! });
   expect(parseMessage(pedalMsg(CMD.param, [...head, ...text.slice(0, 12)]))).toBeNull();
-  expect(parseMessage(pedalMsg(CMD.param, [0x00, 0x02, ...head.slice(2), ...text]))).toBeNull();
+  expect(parseMessage(pedalMsg(CMD.param, [0x01, 0x03, ...head.slice(2), ...text]))).toBeNull();
+});
+
+test("PARAM parses a linear row", () => {
+  // tests/link_test.cpp Param.LinearRow.
+  const text = Array.from("bell1_gain\0Bell 1 gain\0dB\0EQ", (c) => c.charCodeAt(0));
+  const head = [0x04, 0x02, 0x00, 0x40, 0x00, 0x0c, 0x0a, 0x00, 0x00, 0x00, 0x04, 0x0a, 0x00, 0x00, 0x00];
+  expect(parseMessage(pedalMsg(CMD.param, [...head, ...text]))).toEqual({ type: "param", info: PARAMS[4]! });
 });
 
 test("VALUES parses", () => {
   // tests/link_test.cpp Values.Bytes.
-  const p = [
-    ...[0x04, 0x03, 0x00, 0x01, 0x02, 0x05, 0x06, 0x05, 0x07],
-    ...[0x00, 0x00, 0x40, 0x00, 0x00, 0x01, 0x7f, 0x7f, 0x40, 0x00, 0x00, 0x01, 0x00, 0x01],
-  ];
+  const codes = [1, 0, 8192, 1, 8192, 16383, 0, 8192, 8192, 0, 8192, 8192, 0, 16383, 8192, 1];
+  const p = [...Array<number>(7).fill(0x7f), 0x05, 0x10, ...codes.flatMap((c) => [c >> 7, c & 0x7f])];
   expect(parseMessage(pedalMsg(CMD.values, p))).toEqual({
     type: "values",
-    assign: factoryAssign(FACTORY_PARAMS),
+    assign: Array(7).fill(null),
     held: [true, false, true, false, false, false, false],
-    codes: [0, 8192, 1, 16383, 8192, 1, 1],
+    codes,
   });
   expect(parseMessage(pedalMsg(CMD.values, p.slice(0, -1)))).toBeNull();
-  const none = [...p];
-  none[3] = 0x7f;
-  expect(parseMessage(pedalMsg(CMD.values, none))).toMatchObject({ assign: [4, 3, 0, null, 2, 5, 6] });
+  const some = [...p];
+  some[3] = 0x04;
+  expect(parseMessage(pedalMsg(CMD.values, some))).toMatchObject({ assign: [null, null, null, 4, null, null, null] });
 });
 
 test("setMsg and assignMsg frames", () => {
@@ -224,9 +229,11 @@ test("setMsg and assignMsg frames", () => {
   expect([...assignMsg(0, null)]).toEqual([0xf0, 0x7d, 0x64, 0x01, 0x10, 0x00, 0x7f, 0xf7]);
 });
 
-test("FACTORY_PARAMS match docs/MIDI.md's Parameters table", () => {
+test("PARAMS match docs/MIDI.md's Parameters table", () => {
+  // The table prints floats as C's %g: six significant digits.
+  const g = (x: number): string => String(Number(x.toPrecision(6)));
   expect(tableRows("Parameters")).toEqual(
-    FACTORY_PARAMS.map((p) => [
+    PARAMS.map((p) => [
       String(p.id),
       `\`${p.name}\``,
       p.label,
@@ -235,10 +242,9 @@ test("FACTORY_PARAMS match docs/MIDI.md's Parameters table", () => {
         ? choiceLabels(p)
             .map((l, i) => `${i} ${l}`)
             .join(", ")
-        : `${p.min}-${p.max} ${p.unit}`,
+        : `${g(p.min)} to ${g(p.max)} ${p.unit}`,
       p.off === "none" ? "-" : p.off,
       String(p.defCode),
-      CONTROLS[p.factory!]!.id,
       p.group,
     ]),
   );

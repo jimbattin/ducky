@@ -9,7 +9,8 @@
 //   200 ms of warm-up blocks, then 2 s of measured ones, interrupts masked inside each measured block; the M3 gate is
 //   its maximum against kGatePermille of the block period;
 // - the layers: the same blocks, each stage of Process (BeginChunk, RunLayer per layer, EndChunk) timed separately;
-// - the IR convolver with its state in D2 SRAM and in AXI SRAM, the EQ (its slope switches fading every 10 blocks),
+// - the IR convolver with its state in D2 SRAM and in AXI SRAM, the EQ (its slopes, bell gains and bell frequencies
+//   flipping every 10 blocks, so every glide and coefficient ramp runs on every block),
 //   the noise gate (enabled, the longest hold: the longest detector scan), and the pedal's whole chain (gate, trim,
 //   engine, IR, EQ, output gain with the gate's gain, mute), timed the same way; the chain gate is its maximum
 //   against kChainGatePermille, the load ceiling (docs/ROADMAP.md "Decisions").
@@ -38,7 +39,7 @@
 #include "dsp/a2lite.h"
 #include "dsp/blocks.h"
 #include "dsp/convolver.h"
-#include "dsp/filters.h"
+#include "dsp/eq.h"
 #include "dsp/gain.h"
 #include "dsp/mute.h"
 #include "dsp/noise_gate.h"
@@ -122,7 +123,8 @@ dkir::Ir gIrData;
 DK_D2 dkdsp::IrConvolver gIrD2;  // D2 SRAM, for comparison
 dkdsp::IrConvolver gIrAxi;       // AXI SRAM (.bss): the pedal's placement
 DK_DTCM dkdsp::Eq gEq;
-DK_DTCM uint32_t gEqBlocks;  // counts the EQ's blocks: its slope switches flip every 10
+DK_DTCM uint32_t gEqBlocks;                      // counts the EQ's blocks: its settings flip every 10
+DK_DTCM float gEqValues[dkparam::kParamCount];  // the EQ's parameter values (eqValues)
 DK_DTCM dkdsp::GainRamp gInGain, gOutGain;
 DK_DTCM dkdsp::MuteRamp gMute;
 DK_DTCM dkdsp::NoiseGate gGate;
@@ -213,16 +215,28 @@ DK_ITCM void blockModel(const float* in) { gEngine.Process(in, gOut, kBlockSize)
 DK_ITCM void blockIrD2(const float* in) { gIrD2.Process(in, gOut); }
 DK_ITCM void blockIrAxi(const float* in) { gIrAxi.Process(in, gOut); }
 
-// Knobs mid-travel and resonance at the top; SW1/SW2 flip between 24 and 12 dB every 10 blocks, so the maximum
-// includes slope fades; SW3 up (the boost).
-DK_ITCM dkdsp::EqControls eqControls() {
-    const uint8_t sw = uint8_t((gEqBlocks++ / 10) % 2);
-    return {0.5f, 1.0f, 0.5f, 1.0f, sw, sw, 2};
+// The EQ's worst case: enabled, both cuts mid-travel at the top resonance, their slopes flipping between 24 and
+// 12 dB every 10 blocks (slope fades), every bell flipping between -12 dB at 0.25 and +12 dB at 0.75 of its
+// frequency range: with a 20 ms glide and a flip every 5 ms, every glide and ramp runs on every block.
+DK_ITCM const float* eqValues() {
+    using namespace dkparam;
+    const bool flip = (gEqBlocks++ / 10) % 2 != 0;
+    float* v = gEqValues;
+    v[kEqEnable] = 1.0f;
+    v[kLowCutFreq] = v[kHighCutFreq] = 0.5f;
+    v[kLowCutRes] = v[kHighCutRes] = 1.0f;
+    v[kLowCutSlope] = v[kHighCutSlope] = flip ? 1.0f : 0.0f;
+    for (int b = 0; b < 3; ++b) {
+        v[kBell1Gain + 3 * b] = flip ? 1.0f : 0.0f;
+        v[kBell1Freq + 3 * b] = flip ? 0.75f : 0.25f;
+        v[kBell1Q + 3 * b] = 0.5f;
+    }
+    return v;
 }
 
 DK_ITCM void blockEq(const float* in) {
     std::memcpy(gOut, in, sizeof gOut);
-    gEq.Process(gOut, kBlockSize, eqControls());
+    gEq.Process(gOut, kBlockSize, eqValues());
 }
 
 // The gate's detector input is the block's input peak, as in the pedal's AudioCallback.
@@ -234,7 +248,7 @@ DK_ITCM void blockChain(const float* in) {
     gInGain.Process(in, gOut, kBlockSize, 1.0f);
     gEngine.Process(gOut, gOut, kBlockSize);
     gIrAxi.Process(gOut, gOut);
-    gEq.Process(gOut, kBlockSize, eqControls());
+    gEq.Process(gOut, kBlockSize, eqValues());
     gOutGain.Process(gOut, gOut, kBlockSize, gate);
     gMute.Process(gOut, gOut, kBlockSize);
 }
@@ -376,7 +390,7 @@ int main() {
     dkusb::Log("bench ir \"%s\" ok", gIrData.name);
     gIrD2.Load(gIrData.taps);
     gIrAxi.Load(gIrData.taps);
-    gEq.Init({0.5f, 1.0f, 0.5f, 1.0f, 0, 0, 2});
+    gEq.Init(eqValues());
     gInGain.Init(1.0f);
     gOutGain.Init(1.0f);
     gMute.Init(false);

@@ -17,8 +17,6 @@ const TRIM_DB = 12;
 const LEVEL_TARGET_DB = -18;
 const INPUT_LEVEL_DBU = 4.5;
 export const DEFAULT_MODEL_INPUT_DBU = 12;
-/** filters.h kMidHz: the mid bell's frequency. */
-export const MID_HZ = 515;
 
 /** Knob i's position 0..1 from STATUS's knobs (permille); 0 when absent. */
 export const knobPosition = (knobs: readonly number[], i: number): number => (knobs[i] ?? 0) / 1000;

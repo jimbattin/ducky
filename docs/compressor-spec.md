@@ -499,10 +499,10 @@ Eichas and Zölzer's approach for a similar circuit: a generic feed-forward comp
 - **Calibration:** the model works in volts, and Ducky knows its input scale only from datasheets (+4.5 dBu at 0 dBFS, not measured). An error there moves every threshold by the same number of dB.
 - **Levels into the amp model:** a compressed signal sits at 0.5–1.0 V peak (−11 to −5 dBFS) whatever the guitar, and quiet playing arrives up to 20 dB hotter. Knob 1 follows the compressor and can trim it.
 - **Noise:** up to +20 dB on everything below threshold, the input noise included (−84 dBFS with nothing plugged in, `docs/ROADMAP.md` M4), ahead of a high-gain model.
-- **Controls:** all 6 knobs, 3 toggles and both footswitches are taken in the factory layout. The settings ("Settings (proposal)") become global parameters (`docs/ROADMAP.md` M9), set from the editor and `tools/pedal.ts` or from a knob or switch assigned to them (Knobs 3–6, SW1–SW3); no slot format bump.
+- **Controls:** Knobs 1 and 2 and both footswitches are fixed; Knobs 3–6 and SW1–SW3 start unassigned (M10). The settings ("Settings (proposal)") become global parameters (`docs/ROADMAP.md` M9), set from the editor and `tools/pedal.ts` or from a knob or switch assigned to them; no slot format bump.
 - **Which controls to keep:** Level duplicates a gain Ducky does not otherwise have ahead of the compressor, so it matters. Sustain's linear-pot law puts half the range in the first quarter turn; a setting in dB of gain may serve better. Balance's taper is unresolved in the sources.
-- **CPU:** the bench chain with an IR and the gate is at 597.6 permille against the 850 ceiling (`docs/FILTERS.md` "Measured", `docs/ROADMAP.md` "Decisions"), so the 10–20 permille guessed under "Cost" fits.
-- **Off state:** bit-exact bypass, as the gate's disabled state is, or running always so the load does not depend on the setting, as the EQ does.
+- **CPU:** the bench chain with an IR, the gate and the EQ at its worst (M10) is at 626.9 permille against the 850 ceiling (`docs/FILTERS.md` "Measured", `docs/ROADMAP.md` "Decisions"), so the 10–20 permille guessed under "Cost" fits.
+- **Off state:** bit-exact bypass, as the gate's disabled state and the EQ's bells at 0 dB are, or running always so the load does not depend on the setting, as the EQ's cut filters do.
 - **Latency:** none; nothing in the model looks ahead.
 
 ## Validation plan

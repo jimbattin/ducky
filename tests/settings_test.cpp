@@ -14,11 +14,13 @@ namespace {
 Settings Sample() {
     Settings s = FactorySettings();
     s.assign[0] = kLowCutSlope;
-    s.assign[3] = kNoParam;
+    s.assign[1] = kBell2Freq;
+    s.assign[6] = kEqEnable;
+    s.value[kEqEnable] = 0.0f;
     s.value[kLowCutFreq] = 0.25f;
     s.value[kHighCutFreq] = 0.75f;
     s.value[kLowCutSlope] = 2.0f;
-    s.value[kMid] = 0.0f;
+    s.value[kBell1Gain] = 0.75f;
     return s;
 }
 
@@ -41,6 +43,21 @@ void Seal(std::vector<uint8_t>& r, size_t n) {
 }
 
 }  // namespace
+
+TEST(Settings, FactoryAssignsNothing) {
+    const Settings s = FactorySettings();
+    for (int c = 0; c < kControlSlots; ++c) EXPECT_EQ(s.assign[c], kNoParam) << c;
+    for (int i = 0; i < kParamCount; ++i) EXPECT_EQ(s.value[i], kParams[i].def) << i;
+}
+
+// A record of the first table's layout (version 1) is ignored: its ids mean other parameters.
+TEST(Settings, VersionOneIsInvalid) {
+    std::vector<uint8_t> r = Record(3, Sample());
+    r[8] = 1;
+    Seal(r, kParamCount);
+    uint32_t seq = 0;
+    EXPECT_FALSE(SettingsValid(r.data(), seq));
+}
 
 TEST(Settings, RoundTrip) {
     const Settings s = Sample();
@@ -83,14 +100,15 @@ TEST(Settings, NewestPicksHigherSeqOrTheOnlyValid) {
 
 TEST(Settings, FewerParametersKeepTheLaterDefaults) {
     std::vector<uint8_t> r = Record(2, Sample());
-    r[10] = 3;
-    Seal(r, 3);
+    r[10] = 4;
+    Seal(r, 4);
     uint32_t seq = 0;
     ASSERT_TRUE(SettingsValid(r.data(), seq));
     const Settings d = DecodeSettings(r.data());
+    EXPECT_EQ(d.value[kEqEnable], 0.0f);
     EXPECT_EQ(d.value[kLowCutFreq], 0.25f);
     EXPECT_EQ(d.value[kLowCutSlope], 2.0f);
-    for (int i = 3; i < kParamCount; ++i) EXPECT_EQ(d.value[i], kParams[i].def) << i;
+    for (int i = 4; i < kParamCount; ++i) EXPECT_EQ(d.value[i], kParams[i].def) << i;
 }
 
 TEST(Settings, NanValueDecodesToTheDefault) {
@@ -112,5 +130,5 @@ TEST(Settings, ContinuousParameterOnASwitchDecodesToNone) {
     const Settings d = DecodeSettings(r.data());
     EXPECT_EQ(d.assign[4], kNoParam);
     EXPECT_EQ(d.assign[5], kNoParam);
-    EXPECT_EQ(d.assign[6], kMid);
+    EXPECT_EQ(d.assign[6], kEqEnable);
 }

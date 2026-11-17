@@ -3,7 +3,8 @@
 // Host-portable (no libDaisy, no allocation), covered by tests/params_test.cpp.
 //
 // A parameter's value:
-// - continuous (Taper::kLog): its position 0..1 along the taper from min to max, what a knob at that position gives;
+// - continuous (Taper::kLog, Taper::kLinear): its position 0..1 along the taper from min to max, what a knob at that
+//   position gives (Units() converts it);
 // - choice (Taper::kChoice): its index 0..max (max 1 or 2). A three-value choice's index is the toggle position
 //   (controls.h: 0 down, 1 middle, 2 up); a two-value one is 0 with the toggle in the middle and 1 up or down.
 // On the wire a value is a u14 code: lround(value * kCodeMax) for a continuous parameter, the index for a choice.
@@ -20,17 +21,26 @@
 namespace dkparam {
 
 enum ParamId : uint8_t {
+    kEqEnable,
     kLowCutFreq,
     kLowCutRes,
     kLowCutSlope,
+    kBell1Gain,
+    kBell1Freq,
+    kBell1Q,
+    kBell2Gain,
+    kBell2Freq,
+    kBell2Q,
+    kBell3Gain,
+    kBell3Freq,
+    kBell3Q,
     kHighCutFreq,
     kHighCutRes,
     kHighCutSlope,
-    kMid,
     kParamCount
 };
-enum class Taper : uint8_t { kLog = 0, kChoice = 1 };            // wire values
-enum class OffEnd : uint8_t { kNone = 0, kMin = 1, kMax = 2 };   // wire values
+enum class Taper : uint8_t { kLog = 0, kChoice = 1, kLinear = 2 };  // wire values
+enum class OffEnd : uint8_t { kNone = 0, kMin = 1, kMax = 2 };      // wire values
 
 constexpr uint8_t kNoParam = 0x7F;  // a control slot driving nothing
 constexpr uint16_t kCodeMax = 16383;
@@ -50,23 +60,42 @@ struct ParamDef {
     float def;          // a value
     Taper taper;
     OffEnd off;         // display only: the end within dkdsp::kBypassEnter of which the filter is bypassed
-    uint8_t factory;    // the control slot of the factory layout, or kNoParam
 };
 
+inline constexpr const char* kSlopeLabels = "24 dB/oct,12 dB/oct,6 dB/oct";  // the cut slopes' choice labels
+// The bells' default positions: 250 Hz, 1 kHz and 3 kHz, Q 1.
 inline constexpr ParamDef kParams[kParamCount] = {
+    {kEqEnable, "eq_enable", "EQ", "off,on", "EQ", 0.0f, 1.0f, 1.0f, Taper::kChoice, OffEnd::kNone},
     {kLowCutFreq, "low_cut_freq", "Low-cut frequency", "Hz", "EQ", dkdsp::kLowCutMinHz, dkdsp::kLowCutMaxHz, 0.0f,
-     Taper::kLog, OffEnd::kMin, 2},
+     Taper::kLog, OffEnd::kMin},
     {kLowCutRes, "low_cut_res", "Low-cut resonance", "Q", "EQ", dkdsp::kResMinQ, dkdsp::kResMaxQ, 0.5f, Taper::kLog,
-     OffEnd::kNone, 3},
-    {kLowCutSlope, "low_cut_slope", "Low-cut slope", "24 dB/oct,12 dB/oct,6 dB/oct", "EQ", 0.0f, 2.0f, 1.0f,
-     Taper::kChoice, OffEnd::kNone, 4},
+     OffEnd::kNone},
+    {kLowCutSlope, "low_cut_slope", "Low-cut slope", kSlopeLabels, "EQ", 0.0f, 2.0f, 1.0f, Taper::kChoice,
+     OffEnd::kNone},
+    {kBell1Gain, "bell1_gain", "Bell 1 gain", "dB", "EQ", -dkdsp::kBellGainDb, dkdsp::kBellGainDb, 0.5f,
+     Taper::kLinear, OffEnd::kNone},
+    {kBell1Freq, "bell1_freq", "Bell 1 frequency", "Hz", "EQ", dkdsp::kBellMinHz[0], dkdsp::kBellMaxHz[0], 0.61175f,
+     Taper::kLog, OffEnd::kNone},
+    {kBell1Q, "bell1_q", "Bell 1 Q", "Q", "EQ", dkdsp::kBellQMin, dkdsp::kBellQMax, 0.30587f, Taper::kLog,
+     OffEnd::kNone},
+    {kBell2Gain, "bell2_gain", "Bell 2 gain", "dB", "EQ", -dkdsp::kBellGainDb, dkdsp::kBellGainDb, 0.5f,
+     Taper::kLinear, OffEnd::kNone},
+    {kBell2Freq, "bell2_freq", "Bell 2 frequency", "Hz", "EQ", dkdsp::kBellMinHz[1], dkdsp::kBellMaxHz[1], 0.5f,
+     Taper::kLog, OffEnd::kNone},
+    {kBell2Q, "bell2_q", "Bell 2 Q", "Q", "EQ", dkdsp::kBellQMin, dkdsp::kBellQMax, 0.30587f, Taper::kLog,
+     OffEnd::kNone},
+    {kBell3Gain, "bell3_gain", "Bell 3 gain", "dB", "EQ", -dkdsp::kBellGainDb, dkdsp::kBellGainDb, 0.5f,
+     Taper::kLinear, OffEnd::kNone},
+    {kBell3Freq, "bell3_freq", "Bell 3 frequency", "Hz", "EQ", dkdsp::kBellMinHz[2], dkdsp::kBellMaxHz[2], 0.48809f,
+     Taper::kLog, OffEnd::kNone},
+    {kBell3Q, "bell3_q", "Bell 3 Q", "Q", "EQ", dkdsp::kBellQMin, dkdsp::kBellQMax, 0.30587f, Taper::kLog,
+     OffEnd::kNone},
     {kHighCutFreq, "high_cut_freq", "High-cut frequency", "Hz", "EQ", dkdsp::kHighCutMinHz, dkdsp::kHighCutMaxHz,
-     1.0f, Taper::kLog, OffEnd::kMax, 1},
+     1.0f, Taper::kLog, OffEnd::kMax},
     {kHighCutRes, "high_cut_res", "High-cut resonance", "Q", "EQ", dkdsp::kResMinQ, dkdsp::kResMaxQ, 0.5f,
-     Taper::kLog, OffEnd::kNone, 0},
-    {kHighCutSlope, "high_cut_slope", "High-cut slope", "24 dB/oct,12 dB/oct,6 dB/oct", "EQ", 0.0f, 2.0f, 1.0f,
-     Taper::kChoice, OffEnd::kNone, 5},
-    {kMid, "mid", "Mid 515 Hz", "-7 dB,off,+5 dB", "EQ", 0.0f, 2.0f, 1.0f, Taper::kChoice, OffEnd::kNone, 6},
+     Taper::kLog, OffEnd::kNone},
+    {kHighCutSlope, "high_cut_slope", "High-cut slope", kSlopeLabels, "EQ", 0.0f, 2.0f, 1.0f, Taper::kChoice,
+     OffEnd::kNone},
 };
 
 constexpr bool TableValid() {
@@ -75,20 +104,23 @@ constexpr bool TableValid() {
         if (d.id != i) return false;
         if (d.taper == Taper::kChoice) {
             if (d.min != 0.0f || (d.max != 1.0f && d.max != 2.0f)) return false;
-        } else if (!(0.0f < d.min && d.min < d.max && 0.0f <= d.def && d.def <= 1.0f)) {
+        } else if (!(d.min < d.max && 0.0f <= d.def && d.def <= 1.0f) ||
+                   (d.taper == Taper::kLog && !(0.0f < d.min))) {
             return false;
         }
-        if (d.factory == kNoParam) continue;
-        if (d.factory >= kControlSlots) return false;
-        if (d.factory >= kKnobSlots && d.taper != Taper::kChoice) return false;
-        for (int j = 0; j < i; ++j)
-            if (kParams[j].factory == d.factory) return false;
     }
     return true;
 }
-static_assert(TableValid(), "kParams: ids in order, valid ranges, one parameter per factory slot");
+static_assert(TableValid(), "kParams: ids in order, valid ranges");
 static_assert(kParamCount < kNoParam, "kNoParam is no parameter's id");
 static_assert(kKnobSlots + kSwitchSlots == kControlSlots, "the knob slots, then the switch slots");
+
+// A continuous value v of d in d's units: min (max / min)^v for a log taper, min + v (max - min) for a linear one.
+// Not for a choice.
+inline float Units(const ParamDef& d, float v) {
+    if (d.taper == Taper::kLinear) return d.min + v * (d.max - d.min);
+    return d.min * std::pow(d.max / d.min, v);
+}
 
 // Control slot `slot` may drive parameter id: any slot takes kNoParam, a knob any parameter, a switch a choice.
 inline bool Accepts(int slot, uint8_t id) {
@@ -129,13 +161,6 @@ inline uint16_t ToCode(const ParamDef& d, float v) {
 inline float FromCode(const ParamDef& d, uint32_t code) {
     if (d.taper == Taper::kChoice) return float(code < uint32_t(d.max) ? code : uint32_t(d.max));
     return float(code < kCodeMax ? code : kCodeMax) / float(kCodeMax);
-}
-
-// The parameter the factory layout puts on control slot `slot`, or kNoParam.
-inline uint8_t FactoryParam(int slot) {
-    for (const ParamDef& d : kParams)
-        if (d.factory == slot) return d.id;
-    return kNoParam;
 }
 
 }  // namespace dkparam
