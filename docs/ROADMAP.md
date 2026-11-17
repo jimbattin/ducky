@@ -173,7 +173,7 @@ graph LR
 - **Not yet checked:** an FS2 switch away and back re-auditioning an unsaved gate in the editor (needs the footswitch).
 - **Docs:** `docs/FILTERS.md` "Noise gate"; `docs/MIDI.md` (GATE, GATE TRY, STATUS); `docs/EDITOR.md`; `docs/FIRMWARE.md` "Threads", "Preset store", "Link protocol", "Log lines", "Bench".
 
-### M9: Parameter table and assignable controls (done)
+### M9: Parameter table and assignable controls (done, `77fd765`)
 Knobs 1 and 2 stay fixed (input trim, output volume). Knobs 3–6 and SW1–SW3 drive parameters chosen in the editor, after bad_tape's knob slots (`../bad_tape/daisy/src/params.h`, `param_store.h`, `saved_store.h`, the editor's Knobs tab, `AssignSelect.tsx`).
 
 - **Starting point:** Ducky had no parameter table. Every control was hard-wired in `daisy/src/ducky.cpp` and `controls.h`, and the gate was the only edited setting (in the slot). Most of M9 is the infrastructure M10–M12 add parameters to.
