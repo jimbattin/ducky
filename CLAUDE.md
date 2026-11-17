@@ -33,6 +33,7 @@ USB-MIDI SysEx link (commands, upload, slot read-back, status stream, playback r
 NAM A2 format, A2-Lite shape check, weight order, forward pass, Ducky model binary, converter, reference renders, engine: `docs/NAM_FORMAT.md`
 IR convolver, cut/mid filters, noise gate, IR binary, `.wav` converter, getting an IR onto the pedal: `docs/FILTERS.md`
 Cortex-M7 float performance (measured cost model, rules for DSP kernels, steering GCC, how to measure). Read before writing or optimising DSP code: `docs/M7_PERFORMANCE.md`
+Compressor research, nothing in the firmware (Dinosaural OTC-201 / Aion Convex circuit analysis, VTL5C4 vactrol model, SPICE predictions and netlist, the reduced DSP model with its constants, Python reference implementation and agreement with SPICE, test targets, open questions): `docs/compressor-spec.md`
 
 ## Technology
 - Supports NAM A2-lite models
