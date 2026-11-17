@@ -1,16 +1,16 @@
 import { expect, test } from "bun:test";
 import { convertIr } from "../ir/convert";
 import { convertNam } from "../nam/convert";
+import { readFixture, readFixtureText } from "../testFixtures";
 import { buildSlot } from "./bank";
 import { GATE_DEFAULT } from "./gate";
 import { infoRanges, type SlotInfo, slotInfo } from "./info";
 
-const FIXTURES = `${import.meta.dir}/../../../tests/fixtures`;
-const root = JSON.parse(await Bun.file(`${FIXTURES}/nam/A2.nam`).text());
+const root = JSON.parse(await readFixtureText("nam/A2.nam"));
 root.metadata.gear_type = "amp";
 root.metadata.gear_make = "Fender";
 const model = convertNam(JSON.stringify(root), "A2");
-const ir = convertIr(new Uint8Array(await Bun.file(`${FIXTURES}/ir/decay.wav`).arrayBuffer()), "decay");
+const ir = convertIr(await readFixture("ir/decay.wav"), "decay");
 
 function expectMatches(info: SlotInfo, withIr: boolean): void {
   const m = model.info;

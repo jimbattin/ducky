@@ -1,5 +1,5 @@
 import type { PedalLoad } from "../state";
-import { Lamp } from "./Lamp";
+import { Meter } from "./Meter";
 
 interface Props {
   /** null = no status line yet. */
@@ -17,28 +17,24 @@ export function CpuMeter({ load, xrun }: Props) {
   const max = Math.min((load?.max ?? 0) / FULL_PERMILLE, 1);
   const overload = xrun || (load?.max ?? 0) >= FULL_PERMILLE;
   return (
-    <div class="cpu">
-      {/* biome-ignore lint/a11y/useSemanticElements: <meter> cannot show the peak marker */}
-      <div
-        class="cpu-bar"
-        role="meter"
-        aria-label="Pedal CPU load"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={load ? Math.round(avg * 100) : 0}
-        aria-valuetext={load ? `${percent(load.avg)}% average, ${percent(load.max)}% peak` : "no data yet"}
-      >
-        <div class="cpu-fill" data-hot={avg >= 0.8} style={{ width: `${avg * 100}%` }} />
-        {load && <div class="cpu-peak" style={{ left: `calc(${max * 100}% - 0.125rem)` }} />}
-      </div>
-      <div class="cpu-line">
-        <Lamp color={overload ? "red" : null} />
-        <span>Overload</span>
-        {overload && <span class="visually-hidden"> (dropouts)</span>}
-        <span class="cpu-readout">
-          {load ? `avg ${percent(load.avg)} %  max ${percent(load.max)} %  underruns ${load.underruns}` : "—"}
-        </span>
-      </div>
-    </div>
+    <Meter
+      class="cpu"
+      label="Pedal CPU load"
+      min={0}
+      max={100}
+      now={load ? Math.round(avg * 100) : 0}
+      valueText={load ? `${percent(load.avg)}% average, ${percent(load.max)}% peak` : "no data yet"}
+      fill={avg}
+      hot={avg >= 0.8}
+      marks={load ? [{ at: max, title: "Peak" }] : []}
+      lamp={overload ? "red" : null}
+      state={
+        <>
+          <span>Overload</span>
+          {overload && <span class="visually-hidden"> (dropouts)</span>}
+        </>
+      }
+      readout={load ? `avg ${percent(load.avg)} %  max ${percent(load.max)} %  underruns ${load.underruns}` : "—"}
+    />
   );
 }

@@ -2,14 +2,11 @@
 // the pedal, removed, or replaced. Save turns a draft into an ERASE, a GATE or an UPLOAD (saveDraft).
 
 import type { ConvertedIr } from "./ir/convert";
-import { IMAGE_SIZES, SLOT_STATUS_NAMES, type SlotMessage } from "./link/protocol";
+import { IMAGE_SIZES, SLOT_STATUS, SLOT_STATUS_NAMES, type SlotMessage } from "./link/protocol";
 import type { PedalSession } from "./link/session";
 import type { ConvertedModel } from "./nam/convert";
 import { buildSlot, OFF_GATE, type SlotParts, splitSlot } from "./preset/bank";
 import { decodeGate, GATE_DEFAULT, GATE_SIZE, type GateSettings } from "./preset/gate";
-
-const OK = 0;
-const EMPTY = 1;
 
 /** A preset part: what the slot stores, nothing, or a newly converted file. */
 export type Part<T> = { kind: "stored" } | { kind: "none" } | { kind: "new"; value: T };
@@ -25,9 +22,12 @@ export interface Draft {
   gate: GateSettings | null;
 }
 
+/** Unsaved drafts by slot. */
+export type Drafts = Readonly<Partial<Record<number, Draft>>>;
+
 /** The draft that changes nothing: the slot as the pedal holds it (a corrupt slot drafts as empty). */
 export function baseDraft(s: SlotMessage): Draft {
-  if (s.status !== OK) return { name: "", model: { kind: "none" }, ir: { kind: "none" }, gate: null };
+  if (s.status !== SLOT_STATUS.ok) return { name: "", model: { kind: "none" }, ir: { kind: "none" }, gate: null };
   return { name: s.name, model: { kind: "stored" }, ir: { kind: s.hasIr ? "stored" : "none" }, gate: null };
 }
 
@@ -46,15 +46,14 @@ export function draftProblem(d: Draft): string | null {
   return d.name.trim() === "" ? "A preset needs a name" : null;
 }
 
+const partName = (p: Part<{ info: { name: string } }>, stored: string): string | null =>
+  p.kind === "new" ? p.value.info.name : p.kind === "stored" ? stored : null;
+
 /** The draft's model name: the new file's, the stored one's, or null. */
-export function modelName(d: Draft, s: SlotMessage): string | null {
-  return d.model.kind === "new" ? d.model.value.info.name : d.model.kind === "stored" ? s.model : null;
-}
+export const modelName = (d: Draft, s: SlotMessage): string | null => partName(d.model, s.model);
 
 /** The draft's IR name: the new file's, the stored one's, or null. */
-export function irName(d: Draft, s: SlotMessage): string | null {
-  return d.ir.kind === "new" ? d.ir.value.info.name : d.ir.kind === "stored" ? s.ir : null;
-}
+export const irName = (d: Draft, s: SlotMessage): string | null => partName(d.ir, s.ir);
 
 /** A new model replaces the old one; the name follows it unless the user typed their own. */
 export function withModel(d: Draft, s: SlotMessage, model: ConvertedModel): Draft {
@@ -74,8 +73,9 @@ export interface SlotView {
 
 export function slotView(s: SlotMessage, d: Draft | undefined): SlotView {
   if (d === undefined || !isEdited(d, s)) {
-    if (s.status === OK) return { state: "ok", name: s.name, model: s.model, ir: s.hasIr ? s.ir : "—", edited: false };
-    if (s.status === EMPTY) return { state: "empty", name: "Empty", model: "", ir: "", edited: false };
+    if (s.status === SLOT_STATUS.ok)
+      return { state: "ok", name: s.name, model: s.model, ir: s.hasIr ? s.ir : "—", edited: false };
+    if (s.status === SLOT_STATUS.empty) return { state: "empty", name: "Empty", model: "", ir: "", edited: false };
     const why = SLOT_STATUS_NAMES[s.status] ?? String(s.status);
     return { state: "corrupt", name: `Corrupt (${why})`, model: "", ir: "", edited: false };
   }
@@ -129,14 +129,14 @@ export async function saveDraft(
   }
   let stored: SlotParts | null = null;
   if (d.model.kind === "stored" || d.ir.kind === "stored") {
-    if (s.status !== OK || (d.ir.kind === "stored" && !s.hasIr))
+    if (s.status !== SLOT_STATUS.ok || (d.ir.kind === "stored" && !s.hasIr))
       throw new Error(`Slot ${s.slot + 1} changed on the pedal: revert it and edit again`);
     stored = splitSlot(await session.read(s.slot, 0, IMAGE_SIZES[s.hasIr ? 1 : 0]));
   }
   const gate =
     d.gate ??
     stored?.gate ??
-    (s.status === OK ? decodeGate(await session.read(s.slot, OFF_GATE, GATE_SIZE)) : GATE_DEFAULT);
+    (s.status === SLOT_STATUS.ok ? decodeGate(await session.read(s.slot, OFF_GATE, GATE_SIZE)) : GATE_DEFAULT);
   await session.upload(s.slot, composeSlot(d, stored, gate), (sent, size) => onProgress(sent / size));
   return "saved";
 }

@@ -1,6 +1,8 @@
 // The pedal link's lifecycle: the reducer state it feeds, the sync on (re)link with its retries, and the one-at-a-time
 // queue every request goes through.
 import { useEffect, useReducer, useRef, useState } from "preact/hooks";
+import { errorText } from "./format";
+import { SLOT_STATUS } from "./link/protocol";
 import type { PedalSession } from "./link/session";
 import { PedalLink } from "./midi";
 import { type Action, initial, reducer, type State } from "./state";
@@ -11,8 +13,6 @@ const RETRY_MS = 3000;
 const SYNC_GAP_MS = 500;
 /** The pedal's boot line, also HELLO's first answer: after a restart its WATCH is off and its slots may differ. */
 const BOOT_LINE = /^ducky /;
-
-export const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 export interface Pedal {
   s: State;
@@ -46,7 +46,7 @@ function makeOps(link: PedalLink, dispatch: (a: Action) => void): Ops {
     const slots = await session.list();
     dispatch({ type: "slots", slots });
     for (const s of slots)
-      if (s.status === 0) dispatch({ type: "info", slot: s.slot, info: await session.readInfo(s.slot) });
+      if (s.status === SLOT_STATUS.ok) dispatch({ type: "info", slot: s.slot, info: await session.readInfo(s.slot) });
   };
   const sync = (): void => {
     if (syncing) return;

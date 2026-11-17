@@ -1,10 +1,10 @@
 // The editor's view of the pedal: what its messages and the sync leave behind (App's reducer).
 import type { IdentityMessage, PedalMessage, SlotMessage, StatusMessage } from "./link/protocol";
 import { type LinkSnapshot, NO_LINK } from "./midi";
+import { SLOT_COUNT } from "./preset/bank";
 import type { SlotInfo } from "./preset/info";
 
 const LOG_LINES = 1000;
-const SLOTS = 8;
 
 export interface LogLine {
   t: number;
@@ -44,7 +44,7 @@ export type Action =
   | { type: "synced" }
   | { type: "syncError"; text: string };
 
-const NO_INFOS: readonly (SlotInfo | null)[] = Array(SLOTS).fill(null);
+const NO_INFOS: readonly (SlotInfo | null)[] = Array(SLOT_COUNT).fill(null);
 
 export const initial: State = {
   link: NO_LINK,

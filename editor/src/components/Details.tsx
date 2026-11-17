@@ -1,5 +1,6 @@
 import { Fragment } from "preact";
-import { inputCalDb, levelMatchDb, signedDb } from "../controls";
+import { DEFAULT_MODEL_INPUT_DBU, inputCalDb, levelMatchDb } from "../controls";
+import { signedDb, tapsMs } from "../format";
 import type { StoredIr, StoredModel } from "../preset/info";
 
 interface Props {
@@ -8,7 +9,6 @@ interface Props {
 }
 
 const orDash = (s: string | null): string => s ?? "—";
-const signedDbu = (x: number): string => `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(1)} dBu`;
 
 /** A model's and an IR's metadata, with what the pedal makes of them (level match, input calibration). */
 export function Details({ model, ir }: Props) {
@@ -21,13 +21,18 @@ export function Details({ model, ir }: Props) {
     ["Modeled by", orDash(model.modeledBy)],
     ["Loudness", model.loudness === null ? "none" : signedDb(model.loudness)],
     ["Level match", match === null ? "unity (no loudness)" : signedDb(match)],
-    ["Input level", model.inputLevelDbu === null ? "none (assumed +12.0 dBu)" : signedDbu(model.inputLevelDbu)],
+    [
+      "Input level",
+      model.inputLevelDbu === null
+        ? `none (assumed ${signedDb(DEFAULT_MODEL_INPUT_DBU, "dBu")})`
+        : signedDb(model.inputLevelDbu, "dBu"),
+    ],
     ["Input calibration", signedDb(inputCalDb(model.inputLevelDbu))],
     ["IR", ir === null ? "none" : ir.name],
   ];
   if (ir !== null)
     rows.push(
-      ["IR taps", `${ir.taps} (${(ir.taps / 48).toFixed(1)} ms)`],
+      ["IR taps", `${ir.taps} (${tapsMs(ir.taps)} ms)`],
       ["IR source", `${ir.sourceRate} Hz, ${ir.sourceChannels} ch, ${ir.sourceFrames} frames`],
       ["IR gain", signedDb(ir.gainDb)],
     );

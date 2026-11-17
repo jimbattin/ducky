@@ -1,6 +1,7 @@
 import { Fragment } from "preact";
+import { GATE_PARAMS, gateNorm, gateStep, gateValue } from "../gateControls";
 import type { StatusMessage } from "../link/protocol";
-import { GATE_DEFAULT, GATE_PARAMS, type GateSettings, gateNorm, gateStep, gateValue } from "../preset/gate";
+import { GATE_DEFAULT, type GateSettings } from "../preset/gate";
 import { GateMeter } from "./GateMeter";
 import { GroupBox } from "./GroupBox";
 import { Slider } from "./Slider";
@@ -18,9 +19,6 @@ interface Props {
   status: StatusMessage | null;
   onChange: (g: GateSettings) => void;
 }
-
-/** Arrow keys step a setting by its resolution: Slider's 1 % position step rounds back to the same value on a log taper. */
-const ARROWS: Readonly<Record<string, 1 | -1>> = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 };
 
 /** The selected preset's noise gate: on/off, its five settings and the meter. */
 export function GateEditor({ slotNumber, gate, edited, enabled, playing, status, onChange }: Props) {
@@ -47,22 +45,14 @@ export function GateEditor({ slotNumber, gate, edited, enabled, playing, status,
             {GATE_PARAMS.map((p) => (
               <Fragment key={p.key}>
                 <span>{p.label}</span>
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: catches the slider's arrow keys before it handles them */}
-                <div
-                  onKeyDownCapture={(e) => {
-                    const dir = ARROWS[e.key];
-                    if (dir === undefined || !enabled) return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onChange({ ...gate, [p.key]: gateStep(p, gate[p.key], dir) });
-                  }}
-                >
+                <div>
                   <Slider
                     label={p.label}
                     norm={gateNorm(p, gate[p.key])}
                     text={p.format(gate[p.key])}
                     disabled={!enabled}
                     onNorm={(n) => onChange({ ...gate, [p.key]: gateValue(p, n) })}
+                    onArrow={(dir) => onChange({ ...gate, [p.key]: gateStep(p, gate[p.key], dir) })}
                     onReset={() => onChange({ ...gate, [p.key]: GATE_DEFAULT[p.key] })}
                   />
                   <output class="gate-value">{p.format(gate[p.key])}</output>

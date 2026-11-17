@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFixture } from "../testFixtures";
 import { convertIr, IrRejected, type IrRejectReason } from "./convert";
-
-const FIXTURES = `${import.meta.dir}/../../../tests/fixtures/ir`;
 
 interface WavSpec {
   rate: number;
@@ -68,8 +67,8 @@ function rejection(bytes: Uint8Array): IrRejectReason {
 }
 
 test("decay.wav converts byte for byte to the committed decay.bin", async () => {
-  const wav = new Uint8Array(await Bun.file(`${FIXTURES}/decay.wav`).arrayBuffer());
-  const want = new Uint8Array(await Bun.file(`${FIXTURES}/decay.bin`).arrayBuffer());
+  const wav = await readFixture("ir/decay.wav");
+  const want = await readFixture("ir/decay.bin");
   const { bin, info } = convertIr(wav, "decay");
   expect(info).toMatchObject({ sourceRate: 44100, sourceFrames: 4410, taps: 2048, truncated: true });
   expect(bin).toEqual(want);

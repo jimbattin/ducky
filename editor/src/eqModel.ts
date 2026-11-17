@@ -5,6 +5,7 @@
 import {
   highCutHz,
   highCutOff,
+  knobPosition,
   lowCutHz,
   lowCutOff,
   MID_HZ,
@@ -14,9 +15,8 @@ import {
   type Slope,
   slopeOf,
 } from "./controls";
+import { SAMPLE_RATE } from "./device";
 
-/** blocks.h kSampleRate. */
-const FS = 48000;
 /** filters.h kButterworthQ: the 24 dB slope's first stage. */
 const BUTTERWORTH_Q = Math.SQRT1_2;
 /** filters.h kMidQ. */
@@ -42,7 +42,7 @@ export interface EqSettings {
 
 /** The settings from STATUS's knobs (permille, Knobs 1-6) and toggles (SW1-SW3). */
 export function readEqSettings(knobs: readonly number[], toggles: readonly number[]): EqSettings {
-  const k = (i: number): number => (knobs[i] ?? 0) / 1000;
+  const k = (i: number): number => knobPosition(knobs, i);
   const t = (i: number): number => toggles[i] ?? 1;
   return {
     lowCut: lowCutOff(k(4)) ? null : { hz: lowCutHz(k(4)), q: resonanceQ(k(5)), slope: slopeOf(t(0)) },
@@ -53,7 +53,8 @@ export function readEqSettings(knobs: readonly number[], toggles: readonly numbe
 }
 
 /** u: the frequency f relative to fc, prewarped. */
-const ratio = (f: number, fc: number): number => Math.tan((Math.PI * f) / FS) / Math.tan((Math.PI * fc) / FS);
+const ratio = (f: number, fc: number): number =>
+  Math.tan((Math.PI * f) / SAMPLE_RATE) / Math.tan((Math.PI * fc) / SAMPLE_RATE);
 /** |a s^2 + b s + c|^2 at s = ju. */
 const quad2 = (a: number, b: number, c: number, u: number): number => (c - a * u * u) ** 2 + (b * u) ** 2;
 /** A one-pole's power gain at u. */

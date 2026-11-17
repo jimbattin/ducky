@@ -1,3 +1,5 @@
+import { SliderTrack } from "./Slider";
+
 interface Props {
   /** The accessible name. */
   label: string;
@@ -22,10 +24,7 @@ export function KnobGauge({ label, norm, text }: Props) {
       aria-valuenow={Math.round(norm * 100)}
       aria-valuetext={text}
     >
-      <div class="slider-track">
-        <div class="slider-fill" style={{ width: `${norm * 100}%` }} />
-        <div class="slider-thumb" style={{ left: `calc(${norm} * (100% - var(--thumb-w)))` }} />
-      </div>
+      <SliderTrack norm={norm} />
       <div class="slider-ticks" aria-hidden="true">
         {TICKS.map((i) => (
           <i key={i} style={{ left: `${i * 10}%` }} />

@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { crc32 } from "../crc32";
+import { readFixture, readFixtureText } from "../testFixtures";
 import { convertNam, DILATIONS, KERNEL_SIZES, ModelRejected, type RejectReason } from "./convert";
-import { crc32 } from "./crc32";
 
-const FIXTURES = `${import.meta.dir}/../../../tests/fixtures/nam`;
 const MODELS = `${import.meta.dir}/../../../models`;
 
-const a2Text = await Bun.file(`${FIXTURES}/A2.nam`).text();
+const a2Text = await readFixtureText("nam/A2.nam");
 
 // The A2.nam fields the mutations touch (the fixture is known-good, so JSON.parse is cast to this view).
 interface Layer {
@@ -89,7 +89,7 @@ test("A2.nam converts to the format-2 layout", () => {
 });
 
 test("A2.nam converts to the committed A2.bin", async () => {
-  const committed = new Uint8Array(await Bun.file(`${FIXTURES}/A2.bin`).arrayBuffer());
+  const committed = await readFixture("nam/A2.bin");
   expect(convertNam(a2Text, "A2").bin).toEqual(committed);
 });
 
@@ -119,8 +119,8 @@ function padded(s: string): Uint8Array {
 describe("rejections", () => {
   const cases: [string, () => string | Promise<string>, RejectReason, string?][] = [
     ["truncated JSON", () => "{", "not-json"],
-    ["slimmable_container.nam", () => Bun.file(`${FIXTURES}/slimmable_container.nam`).text(), "no-lite-submodel"],
-    ["wavenet_a2_feature_test.nam", () => Bun.file(`${FIXTURES}/wavenet_a2_feature_test.nam`).text(), "not-container"],
+    ["slimmable_container.nam", () => readFixtureText("nam/slimmable_container.nam"), "no-lite-submodel"],
+    ["wavenet_a2_feature_test.nam", () => readFixtureText("nam/wavenet_a2_feature_test.nam"), "not-container"],
     ["A2-Full only", () => mutateA2((root) => root.config.submodels.shift()), "no-lite-submodel"],
     [
       "bare A2-Full WaveNet",

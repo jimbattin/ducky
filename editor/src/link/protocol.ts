@@ -1,9 +1,10 @@
 // The pedal's SysEx link (daisy/src/link.h; docs/MIDI.md is the reference): message builders, the septet and Pack7
 // codecs, SysEx reassembly and parsing. Pure TypeScript (no DOM, no Bun APIs): shared by the editor and tools/pedal.ts.
 
+import { crc32 } from "../crc32";
+import { sanitiseName } from "../device";
 import { IR_BIN_SIZE } from "../ir/convert";
 import { MODEL_BIN_SIZE } from "../nam/convert";
-import { crc32 } from "../nam/crc32";
 import { PRESET_HEADER_SIZE } from "../preset/bank";
 import { encodeGate, type GateSettings } from "../preset/gate";
 
@@ -80,11 +81,12 @@ export const RESULT = {
 
 /** SLOT's status byte (preset.h Status); the index is the value. */
 export const SLOT_STATUS_NAMES = ["ok", "empty", "magic", "version", "size", "crc", "model", "ir"] as const;
+/** The SLOT statuses the editor and tools tell apart; any other is corrupt (SLOT_STATUS_NAMES says why). */
+export const SLOT_STATUS = { ok: 0, empty: 1 } as const;
 
 export const CHUNK_BYTES = 256;
 /** A DATA's bytes, at most. */
 export const READ_BYTES = 160;
-export const MAX_NAME = 63;
 /** The two preset image sizes: without and with an IR. */
 export const IMAGE_SIZES = [
   PRESET_HEADER_SIZE + MODEL_BIN_SIZE + 4,
@@ -146,9 +148,9 @@ export const helloMsg = (): Uint8Array => pedalMsg(CMD.hello);
 export const dfuMsg = (): Uint8Array => pedalMsg(CMD.dfu);
 export const listMsg = (): Uint8Array => pedalMsg(CMD.list);
 export const eraseMsg = (slot: number): Uint8Array => pedalMsg(CMD.erase, [slot]);
-/** name: printable ASCII; other characters become '?'. */
+/** name as sanitiseName stores it: printable ASCII, '?' for anything else, at most NAME_MAX. */
 export const renameMsg = (slot: number, name: string): Uint8Array =>
-  pedalMsg(CMD.rename, [slot, ...Array.from(name, (c) => (c >= " " && c <= "~" ? c.charCodeAt(0) : 0x3f))]);
+  pedalMsg(CMD.rename, [slot, ...Array.from(sanitiseName(name), (c) => c.charCodeAt(0))]);
 export const swapMsg = (a: number, b: number): Uint8Array => pedalMsg(CMD.swap, [a, b]);
 export const watchMsg = (on: boolean): Uint8Array => pedalMsg(CMD.watch, [on ? 1 : 0]);
 export const uploadBeginMsg = (slot: number, size: number): Uint8Array =>

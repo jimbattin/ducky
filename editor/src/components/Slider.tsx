@@ -8,16 +8,16 @@ interface Props {
   /** The readout, as the slider's value text. */
   text: string;
   disabled?: boolean;
-  /** 11 ticks under the track (the pedal's knobs). */
-  ticks?: boolean;
   onNorm: (n: number) => void;
+  /** Arrow keys call this instead of stepping 1 %. */
+  onArrow?: (dir: 1 | -1) => void;
   /** Double-click: back to the default. */
   onReset?: () => void;
 }
 
 const FINE = 10; // Shift divides the speed by this
 const KEY_STEP = 0.01;
-const TICKS = Array.from({ length: 11 }, (_, i) => i);
+const ARROWS: Readonly<Record<string, 1 | -1>> = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 };
 const clamp01 = (n: number): number => Math.min(Math.max(n, 0), 1);
 
 /** The position a key moves to from norm, or null for a key the slider ignores. */
@@ -42,18 +42,29 @@ function keyTarget(key: string, norm: number): number | null {
   }
 }
 
+/** A Platinum slider's track: the fill up to norm (0..1) and the thumb. */
+export function SliderTrack({ norm }: { norm: number }) {
+  return (
+    <div class="slider-track">
+      <div class="slider-fill" style={{ width: `${norm * 100}%` }} />
+      <div class="slider-thumb" style={{ left: `calc(${norm} * (100% - var(--thumb-w)))` }} />
+    </div>
+  );
+}
+
 /**
  * A horizontal Platinum slider. Dragging the thumb moves it from where it is; pressing the track jumps there first.
- * Shift drags 10× finer; arrows step 1 %, Page keys 10 %, Home/End go to the ends; double-click resets.
+ * Shift drags 10× finer; arrows step 1 % (or call onArrow), Page keys 10 %, Home/End go to the ends; double-click
+ * resets.
  */
-export function Slider({ label, norm, text, disabled, ticks, onNorm, onReset }: Props) {
+export function Slider({ label, norm, text, disabled, onNorm, onArrow, onReset }: Props) {
   const drag = useRef<{ x: number; norm: number; fine: boolean; span: number } | null>(null);
   const endDrag = () => {
     drag.current = null;
   };
   return (
     <div
-      class={ticks ? "slider has-ticks" : "slider"}
+      class="slider"
       role="slider"
       aria-label={label}
       aria-valuemin={0}
@@ -92,23 +103,19 @@ export function Slider({ label, norm, text, disabled, ticks, onNorm, onReset }: 
       }}
       onKeyDown={(e) => {
         if (disabled) return;
+        const dir = ARROWS[e.key];
+        if (onArrow && dir !== undefined) {
+          e.preventDefault();
+          onArrow(dir);
+          return;
+        }
         const target = keyTarget(e.key, norm);
         if (target === null) return;
         e.preventDefault();
         onNorm(clamp01(target));
       }}
     >
-      <div class="slider-track">
-        <div class="slider-fill" style={{ width: `${norm * 100}%` }} />
-        <div class="slider-thumb" style={{ left: `calc(${norm} * (100% - var(--thumb-w)))` }} />
-      </div>
-      {ticks && (
-        <div class="slider-ticks" aria-hidden="true">
-          {TICKS.map((i) => (
-            <i key={i} style={{ left: `${i * 10}%` }} />
-          ))}
-        </div>
-      )}
+      <SliderTrack norm={norm} />
     </div>
   );
 }

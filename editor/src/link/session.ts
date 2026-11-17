@@ -1,6 +1,8 @@
 // A request/reply session with the pedal over any SysEx transport (docs/MIDI.md): slot listing, reading and changes,
 // the chunked upload with its retries, and the STATUS stream. Pure TypeScript: the transport supplies the I/O.
 
+import { NAME_MAX } from "../device";
+import { OFF_FLAGS, PRESET_FLAG_HAS_IR, SLOT_COUNT } from "../preset/bank";
 import { type GateSettings, gateProblem } from "../preset/gate";
 import { infoRanges, type SlotInfo, slotInfo } from "../preset/info";
 import {
@@ -15,7 +17,6 @@ import {
   IMAGE_SIZES,
   identityRequest,
   listMsg,
-  MAX_NAME,
   type PedalMessage,
   parseMessage,
   RESULT,
@@ -57,10 +58,9 @@ export interface SessionOptions {
   onLog?: (text: string) => void;
 }
 
-const SLOTS = 8;
-
 function checkSlot(what: string, slot: number): void {
-  if (!Number.isInteger(slot) || slot < 0 || slot >= SLOTS) throw new LinkError(`${what}: slot ${slot}: must be 0-7`);
+  if (!Number.isInteger(slot) || slot < 0 || slot >= SLOT_COUNT)
+    throw new LinkError(`${what}: slot ${slot}: must be 0-${SLOT_COUNT - 1}`);
 }
 
 function checkGate(what: string, slot: number, g: GateSettings): void {
@@ -125,7 +125,7 @@ export class PedalSession {
     await this.request(listMsg(), CMD.list, this.replyTimeoutMs, (m) => {
       if (m.type === "slot") slots.push(m);
     });
-    if (slots.length !== SLOTS) throw new LinkError(`LIST: ${slots.length} slots, need ${SLOTS}`);
+    if (slots.length !== SLOT_COUNT) throw new LinkError(`LIST: ${slots.length} slots, need ${SLOT_COUNT}`);
     return slots;
   }
 
@@ -138,8 +138,8 @@ export class PedalSession {
   /** Renames the slot's preset (1-63 printable ASCII characters); the flash time in ms. */
   async rename(slot: number, name: string): Promise<number> {
     checkSlot("RENAME", slot);
-    if (name.length < 1 || name.length > MAX_NAME || !/^[\x20-\x7e]+$/.test(name))
-      throw new LinkError(`RENAME: name must be 1-${MAX_NAME} printable ASCII characters`);
+    if (name.length < 1 || name.length > NAME_MAX || !/^[\x20-\x7e]+$/.test(name))
+      throw new LinkError(`RENAME: name must be 1-${NAME_MAX} printable ASCII characters`);
     return (await this.request(renameMsg(slot, name), CMD.rename, this.flashTimeoutMs)).value;
   }
 
@@ -195,7 +195,7 @@ export class PedalSession {
   async readInfo(slot: number): Promise<SlotInfo> {
     const [head, ...rest] = infoRanges(false);
     const first = await this.read(slot, head![0], head![1]);
-    const hasIr = (first[6]! & 1) !== 0;
+    const hasIr = (first[OFF_FLAGS]! & PRESET_FLAG_HAS_IR) !== 0;
     const image = new Uint8Array(IMAGE_SIZES[hasIr ? 1 : 0]);
     image.set(first, head![0]);
     for (const [off, len] of hasIr ? infoRanges(true).slice(1) : rest) image.set(await this.read(slot, off, len), off);

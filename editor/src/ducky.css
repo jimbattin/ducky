@@ -56,7 +56,8 @@ p {
   clip-path: inset(50%);
   white-space: nowrap;
 }
-:is(button, select, input, .slider):focus-visible {
+:is(button, select, input, .slider):focus-visible,
+.file-btn:focus-within {
   outline: 0.125rem solid var(--rh-accent);
   outline-offset: 1px;
 }
@@ -74,8 +75,7 @@ select,
   box-shadow: var(--rh-raised);
 }
 .slider-track,
-.cpu-bar,
-.gate-bar,
+.meter-bar,
 .statusbar,
 .log,
 .eq-graph svg,
@@ -85,6 +85,7 @@ input[type="text"] {
   box-shadow: var(--rh-sunken);
 }
 .segmented > span,
+.edit-part,
 .statusbar,
 .pedal-knob-name,
 .slot-cell {
@@ -135,6 +136,12 @@ select {
     right 0.3125rem center;
   background-size: 0.25rem 0.25rem;
   background-repeat: no-repeat;
+}
+input[type="text"] {
+  height: 1.25rem;
+  padding: 0 0.3125rem;
+  border-radius: 0.125rem;
+  font-size: 0.6875rem;
 }
 
 .lamp {
@@ -257,6 +264,51 @@ select {
   box-shadow: var(--rh-sunken);
 }
 
+/* ---- Meter: a recessed bar with a fill and markers, over a lamp line (CPU load, gate input) ---- */
+
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.meter-bar {
+  position: relative;
+  height: 0.625rem;
+  border-radius: 0.125rem;
+  overflow: hidden;
+}
+.meter-fill {
+  height: 100%;
+  background: var(--rh-on);
+  transition: width 100ms linear;
+}
+.meter-fill[data-hot="true"] {
+  background: var(--rh-red);
+}
+.meter-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0.125rem;
+  background: var(--rh-amber);
+}
+.meter-mark[data-faint="true"] {
+  opacity: 0.5;
+}
+.meter-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3125rem;
+  align-items: center;
+  font-size: 0.6875rem;
+}
+.meter-readout {
+  margin-left: auto;
+  font: 0.625rem var(--rh-mono);
+  color: var(--rh-dim);
+  white-space: pre;
+}
+
 /* ---- Window: title bar, toolbar, body, status bar ---- */
 
 .window {
@@ -308,6 +360,10 @@ select {
 }
 .link-status {
   font: 0.6875rem var(--rh-mono);
+}
+.toolbar-build {
+  font: 0.6875rem var(--rh-mono);
+  color: var(--rh-dim);
 }
 .port {
   display: flex;
@@ -373,11 +429,6 @@ select {
   font-size: 0.6875rem;
   font-weight: bold;
 }
-.not-selected {
-  font-size: 0.625rem;
-  font-weight: normal;
-  color: var(--rh-dim);
-}
 .group-body {
   display: flex;
   flex-direction: column;
@@ -422,45 +473,13 @@ select {
 .pedal-knob-head output {
   font: 0.6875rem var(--rh-mono);
 }
+[data-inactive="true"] {
+  opacity: 0.5;
+}
 
-.cpu {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-.cpu-bar {
-  position: relative;
-  height: 0.625rem;
-  border-radius: 0.125rem;
-  overflow: hidden;
-}
-.cpu-fill {
-  height: 100%;
-  background: var(--rh-on);
-  transition: width 400ms ease-out;
-}
-.cpu-fill[data-hot="true"] {
-  background: var(--rh-red);
-}
-.cpu-peak {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 0.125rem;
-  background: var(--rh-amber);
-}
-.cpu-line {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3125rem;
-  align-items: center;
-  font-size: 0.6875rem;
-}
-.cpu-readout {
-  margin-left: auto;
-  font: 0.625rem var(--rh-mono);
-  color: var(--rh-dim);
-  white-space: pre;
+.cpu .meter-fill {
+  transition-duration: 400ms;
+  transition-timing-function: ease-out;
 }
 
 /* ---- Workspace: Platinum tabs over the panel ---- */
@@ -572,10 +591,6 @@ select {
   font: 0.6875rem var(--rh-mono);
   color: var(--rh-dim);
 }
-.slot-num:focus-visible {
-  outline: 0.125rem solid var(--rh-accent);
-  outline-offset: 1px;
-}
 .slot-cell[data-state="empty"] {
   color: var(--rh-dim);
 }
@@ -590,12 +605,6 @@ select {
   gap: 0.1875rem;
   justify-content: flex-end;
   align-items: center;
-}
-input[type="text"] {
-  height: 1.25rem;
-  padding: 0 0.3125rem;
-  border-radius: 0.125rem;
-  font-size: 0.6875rem;
 }
 
 /* ---- Details: a model's and an IR's metadata ---- */
@@ -638,9 +647,6 @@ dl.details dd {
 .edit-part {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   font: 0.6875rem var(--rh-mono);
 }
 .edit-part[data-kind="none"] {
@@ -652,10 +658,6 @@ dl.details dd {
 .file-btn {
   position: relative;
   cursor: default;
-}
-.file-btn:focus-within {
-  outline: 0.125rem solid var(--rh-accent);
-  outline-offset: 1px;
 }
 .edit-error {
   padding: 0.25rem;
@@ -698,44 +700,7 @@ dl.details dd {
   font: 0.6875rem var(--rh-mono);
 }
 .gate-meter {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
   padding: 0.25rem;
-}
-.gate-bar {
-  position: relative;
-  height: 0.625rem;
-  border-radius: 0.125rem;
-  overflow: hidden;
-}
-.gate-fill {
-  height: 100%;
-  background: var(--rh-on);
-  transition: width 100ms linear;
-}
-.gate-mark {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 0.125rem;
-  background: var(--rh-amber);
-}
-.gate-mark[data-kind="open"] {
-  opacity: 0.5;
-}
-.gate-line {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3125rem;
-  align-items: center;
-  font-size: 0.6875rem;
-}
-.gate-readout {
-  margin-left: auto;
-  font: 0.625rem var(--rh-mono);
-  color: var(--rh-dim);
-  white-space: pre;
 }
 .gate-hint {
   padding: 0.25rem;
@@ -833,14 +798,4 @@ dl.details dd {
   font-weight: 700;
   letter-spacing: 0.12em;
   fill: var(--rh-dim);
-}
-
-/* ---- Odds and ends ---- */
-
-.toolbar-build {
-  font: 0.6875rem var(--rh-mono);
-  color: var(--rh-dim);
-}
-[data-inactive="true"] {
-  opacity: 0.5;
 }

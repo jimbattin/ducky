@@ -5,12 +5,11 @@ import type { PedalSession } from "./link/session";
 import type { ConvertedModel, ModelInfo } from "./nam/convert";
 import { buildSlot, splitSlot } from "./preset/bank";
 import type { GateSettings } from "./preset/gate";
+import { readFixture } from "./testFixtures";
 
-const FIXTURES = `${import.meta.dir}/../../tests/fixtures`;
-const read = async (rel: string) => new Uint8Array(await Bun.file(`${FIXTURES}/${rel}`).arrayBuffer());
-const model = await read("nam/A2.bin");
-const ir = await read("ir/decay.bin");
-const stored = splitSlot(await read("preset/A2_decay.bin"));
+const model = await readFixture("nam/A2.bin");
+const ir = await readFixture("ir/decay.bin");
+const stored = splitSlot(await readFixture("preset/A2_decay.bin"));
 
 const slot: SlotMessage = {
   type: "slot",

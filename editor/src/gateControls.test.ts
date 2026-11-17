@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { GATE_DEFAULT, GATE_PARAMS, gateProblem, gateStep } from "./gate";
+import { GATE_PARAMS, gateStep } from "./gateControls";
+import { GATE_DEFAULT, gateProblem } from "./preset/gate";
 
 test("an arrow step moves every setting by its resolution, even at a log taper's low end, and stays in range", () => {
   for (const p of GATE_PARAMS) {

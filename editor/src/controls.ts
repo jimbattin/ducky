@@ -3,6 +3,8 @@
 // (K1, K2, the calibration) and daisy/src/dsp/filters.h (K3-K6, SW1-SW3). k is the knob position 0..1 (STATUS
 // permille / 1000); a toggle is STATUS's position (0 down, 1 middle, 2 up).
 
+import { fmtHz, signedDb } from "./format";
+
 export interface Knob {
   id: string;
   label: string;
@@ -12,6 +14,8 @@ export interface Knob {
 export interface Switch {
   id: string;
   label: string;
+  /** Appended to the accessible name. */
+  unit?: string;
   /** Up, middle, down. */
   options: readonly [string, string, string];
 }
@@ -29,17 +33,14 @@ const RES_MAX_Q = 2;
 /** gain.h kLevelTargetDb, kInputLevelDbu, kDefaultModelInputDbu. */
 const LEVEL_TARGET_DB = -18;
 const INPUT_LEVEL_DBU = 4.5;
-const DEFAULT_MODEL_INPUT_DBU = 12;
+export const DEFAULT_MODEL_INPUT_DBU = 12;
 /** filters.h kMidHz, kMidBoostDb, kMidCutDb: SW3's bell. */
 export const MID_HZ = 515;
 const MID_BOOST_DB = 5;
 const MID_CUT_DB = -7;
 
-export const signedDb = (x: number): string => `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(1)} dB`;
-
-export const fmtHz = (f: number): string =>
-  f < 1000 ? `${Math.round(f)} Hz` : `${(f / 1000).toFixed(f < 10000 ? 2 : 1)} kHz`;
-
+/** Knob i's position 0..1 from STATUS's knobs (permille); 0 when absent. */
+export const knobPosition = (knobs: readonly number[], i: number): number => (knobs[i] ?? 0) / 1000;
 /** K5: 20-500 Hz, log. */
 export const lowCutHz = (k: number): number => LOW_CUT_MIN_HZ * (LOW_CUT_MAX_HZ / LOW_CUT_MIN_HZ) ** k;
 /** K4: 1.5-20 kHz, log. */
@@ -77,8 +78,8 @@ export function resonanceActive(freqK: number, toggle: number, lowCut: boolean):
 }
 
 export const SWITCHES: readonly Switch[] = [
-  { id: "SW1", label: "Low-cut slope", options: ["6", "12", "24"] },
-  { id: "SW2", label: "High-cut slope", options: ["6", "12", "24"] },
+  { id: "SW1", label: "Low-cut slope", unit: "dB/oct", options: ["6", "12", "24"] },
+  { id: "SW2", label: "High-cut slope", unit: "dB/oct", options: ["6", "12", "24"] },
   { id: "SW3", label: `Mid ${MID_HZ} Hz`, options: [`+${MID_BOOST_DB} dB`, "Off", `−${-MID_CUT_DB} dB`] },
 ];
 

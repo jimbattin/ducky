@@ -1,13 +1,13 @@
 // .wav → Ducky IR binary, format 1. Spec: docs/FILTERS.md "IR binary (format 1)".
 // Pure TypeScript (no DOM, no Bun APIs): shared by the editor and tools/ir_convert.ts.
 
-import { crc32 } from "../nam/crc32";
-import { sanitiseName } from "../name";
+import { crc32 } from "../crc32";
+import { SAMPLE_RATE, sanitiseName, writeAscii } from "../device";
 import { resampledLength, resampleTo48k } from "./resample";
 import { readWav, type WavAudio, WavError } from "./wav";
 
 export const IR_MAGIC = "DKIR";
-export const IR_FORMAT_VERSION = 1;
+const IR_FORMAT_VERSION = 1;
 export const IR_BIN_SIZE = 8292;
 export const IR_TAPS = 2048;
 export const IR_FADE = 64;
@@ -58,7 +58,6 @@ export interface ConvertedIr {
 const REF_LOW_HZ = 80;
 const REF_HIGH_HZ = 5000;
 const REF_POINTS = 144; // 24 per octave
-const SAMPLE_RATE = 48000;
 
 function referenceBandPower(taps: Float64Array): number {
   let sum = 0;
@@ -125,7 +124,7 @@ export function convertIr(bytes: Uint8Array, fallbackName: string): ConvertedIr 
 
   const bin = new Uint8Array(IR_BIN_SIZE);
   const dv = new DataView(bin.buffer);
-  for (let i = 0; i < 4; i++) bin[i] = IR_MAGIC.charCodeAt(i);
+  writeAscii(bin, 0, IR_MAGIC);
   dv.setUint16(OFF_VERSION, IR_FORMAT_VERSION, true);
   dv.setUint32(OFF_SIZE, IR_BIN_SIZE, true);
   dv.setUint32(OFF_TAP_COUNT, info.taps, true);
@@ -133,7 +132,7 @@ export function convertIr(bytes: Uint8Array, fallbackName: string): ConvertedIr 
   dv.setUint32(OFF_SOURCE_FRAMES, info.sourceFrames, true);
   dv.setUint16(OFF_SOURCE_CHANNELS, info.sourceChannels, true);
   dv.setFloat32(OFF_GAIN, gain, true);
-  for (let i = 0; i < info.name.length; i++) bin[OFF_NAME + i] = info.name.charCodeAt(i);
+  writeAscii(bin, OFF_NAME, info.name);
   taps.forEach((v, i) => {
     dv.setFloat32(OFF_TAPS + 4 * i, v * gain, true);
   });

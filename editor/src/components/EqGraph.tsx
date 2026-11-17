@@ -1,6 +1,7 @@
 import { useMemo, useState } from "preact/hooks";
-import { fmtHz, MID_HZ, signedDb } from "../controls";
-import { type EqSettings, eqCurves, eqTotalDb, readEqSettings } from "../eqModel";
+import { MID_HZ } from "../controls";
+import { type Cut, type EqSettings, eqCurves, eqTotalDb, readEqSettings } from "../eqModel";
+import { fixed, fmtHz, signedDb } from "../format";
 import type { StatusMessage } from "../link/protocol";
 import { GroupBox } from "./GroupBox";
 
@@ -58,7 +59,7 @@ interface Marker {
 /** The sections in use, each marked at its frequency. */
 function markers(s: EqSettings): Marker[] {
   const m: Marker[] = [];
-  const cut = (id: SectionId, letter: string, label: string, c: EqSettings["lowCut"]) => {
+  const cut = (id: SectionId, letter: string, label: string, c: Cut | null) => {
     if (c) m.push({ id, letter, hz: c.hz, text: `${label} ${fmtHz(c.hz)}, ${c.slope} dB/oct, Q ${c.q.toFixed(2)}` });
   };
   cut("low", "L", "Low-cut", s.lowCut);
@@ -77,11 +78,7 @@ interface Plot {
 /** The response curves as SVG paths: the whole chain, its fill to 0 dB, each section in use alone. */
 function plotPaths(s: EqSettings): Plot {
   const c = eqCurves(s, FREQS);
-  const used: SectionId[] = [];
-  if (s.lowCut) used.push("low");
-  if (s.midDb !== 0) used.push("mid");
-  if (s.highCut) used.push("high");
-  const sections = used.map((id) => ({ id, d: path(c[id]) }));
+  const sections = markers(s).map(({ id }) => ({ id, d: path(c[id]) }));
   if (!Number.isFinite(s.outDb)) return { total: null, fill: null, sections };
   const total = path(c.total);
   const zeroY = yOf(0);
@@ -141,7 +138,7 @@ export function EqGraph({ status }: Props) {
             <line class={db === 0 ? "eq-zero" : "eq-grid"} x1={X0} x2={X1} y1={yOf(db)} y2={yOf(db)} />
             {DB_LABELS.has(db) && (
               <text class="eq-grid-label" x={X0 - 8} y={yOf(db) + 4} text-anchor="end">
-                {db > 0 ? `+${db}` : db < 0 ? `−${-db}` : "0"}
+                {db > 0 ? `+${db}` : fixed(db, 0)}
               </text>
             )}
           </g>

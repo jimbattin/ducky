@@ -1,4 +1,4 @@
-import { KNOBS, positionIndex, resonanceActive, SWITCHES } from "../controls";
+import { KNOBS, knobPosition, positionIndex, resonanceActive, SWITCHES } from "../controls";
 import type { State } from "../state";
 import { CpuMeter } from "./CpuMeter";
 import { GroupBox } from "./GroupBox";
@@ -14,7 +14,7 @@ const INACTIVE_TITLE = "No effect: 6 dB/oct slope or the filter is off";
  */
 export function FrontPanel({ s }: { s: State }) {
   const st = s.status;
-  const k = (i: number): number => (st?.knobs[i] ?? 0) / 1000;
+  const k = (i: number): number => (st ? knobPosition(st.knobs, i) : 0);
   // K3 is the high-cut's resonance (K4, SW2), K6 the low-cut's (K5, SW1).
   const inactive = (id: string): boolean =>
     st !== null &&
@@ -70,7 +70,7 @@ export function FrontPanel({ s }: { s: State }) {
                 <span class="pedal-id">{sw.id}</span> {sw.label}
               </span>
               <Positions
-                label={`${sw.id} ${sw.label}${i < 2 ? ", dB/oct" : ""}`}
+                label={`${sw.id} ${sw.label}${sw.unit ? `, ${sw.unit}` : ""}`}
                 options={sw.options}
                 value={st ? positionIndex(st.toggles[i]!) : -1}
               />

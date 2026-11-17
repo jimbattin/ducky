@@ -1,8 +1,9 @@
 import { useState } from "preact/hooks";
+import { NAME_MAX } from "../device";
 import { type Draft, irName, isEdited, modelName, withModel } from "../draft";
-import { importWarnings, loadIr, loadModel, rejectionText } from "../importer";
-import { MAX_NAME, type SlotMessage } from "../link/protocol";
-import type { SlotInfo, StoredIr, StoredModel } from "../preset/info";
+import { type IrMeta, importWarnings, loadIr, loadModel, rejectionText } from "../importer";
+import type { SlotMessage } from "../link/protocol";
+import type { SlotInfo, StoredModel } from "../preset/info";
 import { Details } from "./Details";
 import { GroupBox } from "./GroupBox";
 import { Lamp } from "./Lamp";
@@ -65,7 +66,7 @@ export function SlotEditor({ slot, info, draft, onChange, onRevert }: Props) {
 
   const model: StoredModel | null =
     draft.model.kind === "new" ? draft.model.value.info : draft.model.kind === "stored" ? (info?.model ?? null) : null;
-  const ir: (StoredIr & { truncated?: boolean }) | null =
+  const ir: IrMeta | null =
     draft.ir.kind === "new" ? draft.ir.value.info : draft.ir.kind === "stored" ? (info?.ir ?? null) : null;
   const reading = (draft.model.kind === "stored" || draft.ir.kind === "stored") && info === null;
   const warnings = model ? importWarnings(model, ir) : [];
@@ -80,7 +81,7 @@ export function SlotEditor({ slot, info, draft, onChange, onRevert }: Props) {
           <input
             id="edit-name"
             type="text"
-            maxLength={MAX_NAME}
+            maxLength={NAME_MAX}
             value={draft.name}
             disabled={draft.model.kind === "none"}
             onInput={(e) => onChange({ ...draft, name: e.currentTarget.value })}

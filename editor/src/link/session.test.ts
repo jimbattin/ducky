@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { crc32 } from "../nam/crc32";
+import { crc32 } from "../crc32";
 import {
   CHUNK_BYTES,
   CMD,

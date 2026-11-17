@@ -8,11 +8,13 @@ import { SlotTable } from "./components/SlotTable";
 import { NO_STATUS, type Status, StatusLine } from "./components/StatusLine";
 import { type NavTab, TabNav } from "./components/TabNav";
 import { Toolbar } from "./components/Toolbar";
-import { baseDraft, type Draft, draftProblem, isEdited, saveDraft, slotView } from "./draft";
-import { dfuMsg } from "./link/protocol";
+import { baseDraft, type Draft, type Drafts, draftProblem, isEdited, saveDraft, slotView } from "./draft";
+import { errorText } from "./format";
+import { dfuMsg, SLOT_STATUS, type SlotMessage } from "./link/protocol";
 import type { PedalSession } from "./link/session";
 import { GATE_DEFAULT, type GateSettings, gateEqual } from "./preset/gate";
-import { errorText, usePedal } from "./usePedal";
+import { useGateAudition } from "./useGateAudition";
+import { usePedal } from "./usePedal";
 
 type TabId = "presets" | "eq" | "log";
 const TABS: readonly NavTab<TabId>[] = [
@@ -20,9 +22,6 @@ const TABS: readonly NavTab<TabId>[] = [
   { id: "eq", label: "EQ" },
   { id: "log", label: "Log" },
 ];
-const OK = 0;
-
-type Drafts = Readonly<Partial<Record<number, Draft>>>;
 const without = (ds: Drafts, ...slots: number[]): Partial<Record<number, Draft>> => {
   const out = { ...ds };
   for (const k of slots) delete out[k];
@@ -44,9 +43,9 @@ export function App() {
   const linked = s.link.linked;
   const ready = linked && s.synced && busy === null;
   const playing = s.status ? s.status.slot : (s.slots?.find((x) => x.playing)?.slot ?? null);
-  const edited = (s.slots ?? []).filter((x) => {
+  const edited: { slot: SlotMessage; draft: Draft }[] = (s.slots ?? []).flatMap((x) => {
     const d = drafts[x.slot];
-    return d !== undefined && isEdited(d, x);
+    return d !== undefined && isEdited(d, x) ? [{ slot: x, draft: d }] : [];
   });
   const unsaved = edited.length > 0;
 
@@ -57,40 +56,7 @@ export function App() {
     return () => window.removeEventListener("beforeunload", warn);
   }, [unsaved]);
 
-  // GATE TRY auditions, coalesced: one serial job sends the latest pending settings until none is left.
-  const pending = useRef<{ slot: number; gate: GateSettings } | null>(null);
-  const sending = useRef(false);
-  const pushTry = (slot: number, gate: GateSettings) => {
-    pending.current = { slot, gate };
-    if (sending.current) return;
-    sending.current = true;
-    serial(async (session) => {
-      for (let p = pending.current; p !== null; p = pending.current) {
-        pending.current = null;
-        // slot-state after an FS2 press moved playback elsewhere is expected: the pedal plays the stored gate.
-        await session.gateTry(p.slot, p.gate).catch(() => undefined);
-      }
-    })
-      .catch(() => undefined)
-      .finally(() => {
-        sending.current = false;
-      });
-  };
-  /** Auditions a gate on the pedal when the slot is the playing one. */
-  const tryGate = (slot: number, gate: GateSettings) => {
-    if (slot === playing && linked && s.synced) pushTry(slot, gate);
-  };
-  /** A dropped draft gate on the playing slot: the pedal goes back to the stored one. */
-  const restoreGate = (slot: number) => {
-    const stored = s.infos[slot]?.gate;
-    if (drafts[slot]?.gate && stored) tryGate(slot, stored);
-  };
-  // A preset switch or a resync reloads the stored gate on the pedal: an unsaved draft gate is auditioned again.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: only a new playing slot or a resync re-sends the draft
-  useEffect(() => {
-    const g = playing === null ? null : drafts[playing]?.gate;
-    if (playing !== null && g) tryGate(playing, g);
-  }, [s.synced, playing]);
+  const { tryGate, restoreGate } = useGateAudition(s, playing, drafts, serial);
 
   // One pedal operation at a time.
   const act = async (label: string, fn: () => Promise<string>): Promise<void> => {
@@ -133,7 +99,7 @@ export function App() {
     });
   const onErase = (slot: number) => {
     const sm = s.slots?.[slot];
-    const question = sm?.status === OK ? `Erase slot ${slot + 1} "${sm.name}"?` : `Erase slot ${slot + 1}?`;
+    const question = sm?.status === SLOT_STATUS.ok ? `Erase slot ${slot + 1} "${sm.name}"?` : `Erase slot ${slot + 1}?`;
     if (!window.confirm(question)) return;
     void slotChange("ERASING…", async (session) => {
       await session.erase(slot);
@@ -142,23 +108,24 @@ export function App() {
     });
   };
   const onSave = () => {
-    for (const x of edited) {
-      const problem = draftProblem(drafts[x.slot]!);
+    for (const { slot: x, draft } of edited) {
+      const problem = draftProblem(draft);
       if (problem !== null) {
         setSelected(x.slot);
         setStatus({ text: `Slot ${x.slot + 1}: ${problem}`, error: true });
         return;
       }
     }
-    const emptied = edited.filter((x) => x.status === OK && drafts[x.slot]!.model.kind === "none").map((x) => x.slot);
+    const emptied = edited
+      .filter(({ slot: x, draft }) => x.status === SLOT_STATUS.ok && draft.model.kind === "none")
+      .map(({ slot: x }) => x.slot);
     if (emptied.length > 0 && !window.confirm(`Saving empties ${slotList(emptied)}. Continue?`)) return;
-    const work = edited.map((x) => [x, drafts[x.slot]!] as const);
     void slotChange("SAVING…", async (session) => {
       const done: number[] = [];
-      for (const [x, d] of work) {
+      for (const { slot: x, draft } of edited) {
         const label = `SAVING SLOT ${x.slot + 1}…`;
         setBusy(label);
-        await saveDraft(session, x, d, (f) => setBusy(`${label} ${Math.floor(100 * f)} %`));
+        await saveDraft(session, x, draft, (f) => setBusy(`${label} ${Math.floor(100 * f)} %`));
         done.push(x.slot);
         setDrafts((ds) => without(ds, x.slot));
       }
@@ -166,7 +133,7 @@ export function App() {
     });
   };
   const onDiscard = () => {
-    if (!window.confirm(`Discard the unsaved changes to ${slotList(edited.map((x) => x.slot))}?`)) return;
+    if (!window.confirm(`Discard the unsaved changes to ${slotList(edited.map(({ slot: x }) => x.slot))}?`)) return;
     if (playing !== null) restoreGate(playing);
     setDrafts({});
   };
@@ -185,8 +152,8 @@ export function App() {
 
   const sel = s.slots?.[selected];
   // The selected slot's gate: the draft's, else the stored one (null while it is read), GATE_DEFAULT for a new preset.
-  const storedGate = sel?.status === OK ? (s.infos[selected]?.gate ?? null) : GATE_DEFAULT;
-  const selDraft = sel === undefined ? null : (drafts[selected] ?? baseDraft(sel));
+  const storedGate = sel?.status === SLOT_STATUS.ok ? (s.infos[selected]?.gate ?? null) : GATE_DEFAULT;
+  const selDraft: Draft | undefined = sel === undefined ? undefined : (drafts[selected] ?? baseDraft(sel));
   const onGate = (g: GateSettings) => {
     if (sel === undefined || storedGate === null) return;
     setDrafts((ds) => ({
@@ -197,7 +164,7 @@ export function App() {
   };
   const presets = !linked ? (
     <p class="tab-empty">Waiting for the pedal.</p>
-  ) : s.slots === null || sel === undefined ? (
+  ) : s.slots === null || sel === undefined || selDraft === undefined ? (
     <p class="tab-empty">{s.syncError ?? "Reading the pedal…"}</p>
   ) : (
     <>
@@ -218,7 +185,7 @@ export function App() {
         key={selected}
         slot={sel}
         info={s.infos[selected] ?? null}
-        draft={selDraft!}
+        draft={selDraft}
         onChange={(d) => setDrafts((ds) => ({ ...ds, [selected]: d }))}
         onRevert={() => {
           if (selected === playing) restoreGate(selected);
@@ -227,9 +194,9 @@ export function App() {
       />
       <GateEditor
         slotNumber={selected + 1}
-        gate={selDraft!.gate ?? storedGate}
-        edited={selDraft!.gate !== null}
-        enabled={selDraft!.model.kind !== "none"}
+        gate={selDraft.gate ?? storedGate}
+        edited={selDraft.gate !== null}
+        enabled={selDraft.model.kind !== "none"}
         playing={selected === playing}
         status={s.status}
         onChange={onGate}

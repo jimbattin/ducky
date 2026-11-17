@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { crc32 } from "../nam/crc32";
+import { crc32 } from "../crc32";
 import {
   CMD,
   CMD_NAMES,

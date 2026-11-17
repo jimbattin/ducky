@@ -5,17 +5,17 @@
 // the model binary, the IR binary when flagged, then the CRC-32 of everything before it (little-endian). The bank is
 // SLOT_COUNT slots of SLOT_BYTES, erased (0xFF) where no preset is, written by DFU at BANK_ADDRESS.
 
+import { crc32 } from "../crc32";
+import { sanitiseName, writeAscii } from "../device";
 import { IR_BIN_SIZE, IR_MAGIC } from "../ir/convert";
 import { MODEL_BIN_SIZE, MODEL_MAGIC } from "../nam/convert";
-import { crc32 } from "../nam/crc32";
-import { sanitiseName } from "../name";
 import { decodeGate, encodeGate, GATE_DEFAULT, type GateSettings, gateProblem } from "./gate";
 
-export const PRESET_MAGIC = "DKPS";
-export const PRESET_FORMAT_VERSION = 3;
+const PRESET_MAGIC = "DKPS";
+const PRESET_FORMAT_VERSION = 3;
 export const PRESET_FLAG_HAS_IR = 0x0001;
 export const PRESET_HEADER_SIZE = 84;
-export const PRESET_NAME_SIZE = 64;
+const PRESET_NAME_SIZE = 64;
 export const SLOT_COUNT = 8;
 export const SLOT_BYTES = 0x10000;
 export const BANK_BYTES = SLOT_COUNT * SLOT_BYTES;
@@ -32,10 +32,6 @@ export class PresetError extends Error {
     super(message);
     this.name = "PresetError";
   }
-}
-
-function ascii(bytes: Uint8Array, at: number, s: string): void {
-  for (let i = 0; i < s.length; i++) bytes[at + i] = s.charCodeAt(i);
 }
 
 // A model or IR binary: its length, magic and trailing CRC.
@@ -60,11 +56,11 @@ export function buildSlot(
   const size = PRESET_HEADER_SIZE + MODEL_BIN_SIZE + (ir === null ? 0 : IR_BIN_SIZE) + 4;
   const out = new Uint8Array(size);
   const dv = new DataView(out.buffer);
-  ascii(out, 0, PRESET_MAGIC);
+  writeAscii(out, 0, PRESET_MAGIC);
   dv.setUint16(OFF_VERSION, PRESET_FORMAT_VERSION, true);
   dv.setUint16(OFF_FLAGS, ir === null ? 0 : PRESET_FLAG_HAS_IR, true);
   dv.setUint32(OFF_SIZE, size, true);
-  ascii(out, OFF_NAME, sanitiseName(name)); // at most 63 characters: the rest stays NUL
+  writeAscii(out, OFF_NAME, sanitiseName(name)); // at most 63 characters: the rest stays NUL
   out.set(encodeGate(gate), OFF_GATE);
   out.set(model, PRESET_HEADER_SIZE);
   if (ir !== null) out.set(ir, PRESET_HEADER_SIZE + MODEL_BIN_SIZE);

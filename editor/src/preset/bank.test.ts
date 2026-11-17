@@ -1,19 +1,23 @@
 import { expect, test } from "bun:test";
-import { crc32 } from "../nam/crc32";
+import { crc32 } from "../crc32";
+import { readFixture } from "../testFixtures";
 import { BANK_BYTES, buildBank, buildSlot, PresetError, SLOT_BYTES, SLOT_COUNT, splitSlot } from "./bank";
 import { encodeGate, GATE_DEFAULT, type GateSettings } from "./gate";
 
-const FIXTURES = `${import.meta.dir}/../../../tests/fixtures`;
-const read = async (rel: string) => new Uint8Array(await Bun.file(`${FIXTURES}/${rel}`).arrayBuffer());
-const model = await read("nam/A2.bin");
-const ir = await read("ir/decay.bin");
+const model = await readFixture("nam/A2.bin");
+const ir = await readFixture("ir/decay.bin");
 
 test("the A2 + decay slot matches the committed fixture byte for byte", async () => {
-  expect(buildSlot(model, ir, "A2 + decay")).toEqual(await read("preset/A2_decay.bin"));
+  expect(buildSlot(model, ir, "A2 + decay")).toEqual(await readFixture("preset/A2_decay.bin"));
 });
 
 test("splitSlot returns the parts a stored preset was built from", async () => {
-  expect(splitSlot(await read("preset/A2_decay.bin"))).toEqual({ name: "A2 + decay", model, ir, gate: GATE_DEFAULT });
+  expect(splitSlot(await readFixture("preset/A2_decay.bin"))).toEqual({
+    name: "A2 + decay",
+    model,
+    ir,
+    gate: GATE_DEFAULT,
+  });
   expect(splitSlot(buildSlot(model, null, "A2"))).toEqual({ name: "A2", model, ir: null, gate: GATE_DEFAULT });
 });
 
@@ -24,7 +28,7 @@ test("a gate is stored as its 8-byte block and read back", () => {
 });
 
 test("splitSlot rejects a corrupted image read back", async () => {
-  const image = (await read("preset/A2_decay.bin")).slice();
+  const image = (await readFixture("preset/A2_decay.bin")).slice();
   image[5000]! ^= 0xff;
   expect(() => splitSlot(image)).toThrow("preset: crc");
 });

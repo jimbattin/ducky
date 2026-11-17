@@ -31,7 +31,6 @@ export const NO_LINK: LinkSnapshot = {
 // every 100 ms keeps the link fresh otherwise.
 const RX_TIMEOUT_MS = 4000;
 const HELLO_PERIOD_MS = 1000;
-const MAX_FRAME = 4096;
 /** Messages kept for the session between its requests (the oldest go first). */
 const QUEUE_MAX = 256;
 
@@ -46,7 +45,7 @@ export class PedalLink {
   private stopped = false;
   private msgListeners = new Set<(m: PedalMessage) => void>();
   private snapListeners = new Set<(s: LinkSnapshot) => void>();
-  private assembler = new SysExAssembler(MAX_FRAME);
+  private assembler = new SysExAssembler();
   private inputPref = "";
   private outputPref = "";
   private queue: Uint8Array[] = [];
@@ -170,7 +169,7 @@ export class PedalLink {
     if (inChanged) {
       if (this.input) this.input.onmidimessage = null;
       this.input = input;
-      this.assembler = new SysExAssembler(MAX_FRAME);
+      this.assembler = new SysExAssembler();
       if (input) input.onmidimessage = (e) => e.data && this.rx(e.data);
     }
     const outChanged = output !== this.output;
@@ -185,7 +184,7 @@ export class PedalLink {
   private rx(data: Uint8Array): void {
     for (const raw of this.assembler.feed(data)) {
       this.lastRx = Date.now();
-      this.updateStatus();
+      this.setStatus(this.linkStatus());
       if (this.waiter) this.waiter(raw);
       else {
         this.queue.push(raw);
@@ -204,16 +203,12 @@ export class PedalLink {
   private tick(): void {
     const now = Date.now();
     if (now - this.lastRx >= RX_TIMEOUT_MS && now - this.lastHello >= HELLO_PERIOD_MS) this.hello();
-    this.updateStatus();
+    this.setStatus(this.linkStatus());
   }
 
   private linkStatus(): string {
     if (!this.input || !this.output) return "NO MIDI DEVICE";
     return this.linked ? "LINKED" : NO_RESPONSE;
-  }
-
-  private updateStatus(): void {
-    this.setStatus(this.linkStatus());
   }
 
   /** Publishes a new status; "LINKED" is the only status with `linked` set, so an unchanged status is an unchanged link. */

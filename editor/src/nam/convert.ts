@@ -1,21 +1,20 @@
 // .nam (JSON) → Ducky model binary, format 2. Spec: docs/NAM_FORMAT.md "Ducky model binary (format 2)".
 // Pure TypeScript (no DOM, no Bun APIs): shared by the editor and tools/nam_convert.ts.
 
-import { sanitiseName } from "../name";
-import { crc32 } from "./crc32";
+import { crc32 } from "../crc32";
+import { SAMPLE_RATE, sanitiseName, writeAscii } from "../device";
 
 export const MODEL_MAGIC = "DKNM";
-export const MODEL_FORMAT_VERSION = 2;
+const MODEL_FORMAT_VERSION = 2;
 export const MODEL_BIN_SIZE = 7908;
-export const LITE_WEIGHT_COUNT = 1871; // NAM stream incl. trailing head_scale
-export const NETWORK_WEIGHT_COUNT = 1870; // stored weights, head_scale split out
+const LITE_WEIGHT_COUNT = 1871; // NAM stream incl. trailing head_scale
+const NETWORK_WEIGHT_COUNT = 1870; // stored weights, head_scale split out
 export const FLAG_HAS_LOUDNESS = 0x0001;
 export const FLAG_HAS_INPUT_LEVEL = 0x0002;
 
 const CHANNELS = 3;
 const NUM_LAYERS = 23;
 const HEAD_KERNEL = 16;
-const SAMPLE_RATE = 48000;
 
 export const KERNEL_SIZES: readonly number[] = [...Array(14).fill(6), 15, 15, ...Array(7).fill(6)];
 const DIL7 = [1, 3, 7, 17, 41, 101, 239];
@@ -255,7 +254,7 @@ export function convertNam(text: string, fallbackName: string): ConvertedModel {
 
   const bin = new Uint8Array(MODEL_BIN_SIZE);
   const dv = new DataView(bin.buffer);
-  for (let i = 0; i < 4; i++) bin[i] = MODEL_MAGIC.charCodeAt(i);
+  writeAscii(bin, 0, MODEL_MAGIC);
   dv.setUint16(4, MODEL_FORMAT_VERSION, true);
   let flags = 0;
   if (info.loudness !== null) flags |= FLAG_HAS_LOUDNESS;
@@ -273,7 +272,7 @@ export function convertNam(text: string, fallbackName: string): ConvertedModel {
   dv.setFloat32(OFF_LOUDNESS, info.loudness ?? 0, true);
   dv.setFloat32(OFF_INPUT_LEVEL, info.inputLevelDbu ?? 0, true);
   const putText = (at: number, s: string | null): void => {
-    if (s !== null) for (let i = 0; i < s.length; i++) bin[at + i] = s.charCodeAt(i);
+    if (s !== null) writeAscii(bin, at, s);
   };
   putText(OFF_NAME, info.name);
   putText(OFF_GEAR_TYPE, info.gearType);

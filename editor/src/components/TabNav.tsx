@@ -1,10 +1,6 @@
-import { Lamp } from "./Lamp";
-
 export interface NavTab<T extends string> {
   id: T;
   label: string;
-  /** A lamp beside the label: the section is in use on the pedal. */
-  lit?: boolean;
 }
 
 interface Props<T extends string> {
@@ -56,9 +52,7 @@ export function TabNav<T extends string>({ tabs, active, onSelect }: Props<T>) {
             tabIndex={t.id === active ? 0 : -1}
             onClick={() => onSelect(t.id)}
           >
-            {t.lit !== undefined && <Lamp color={t.lit ? "green" : null} />}
             {t.label}
-            {t.lit && <span class="visually-hidden"> (active on the pedal)</span>}
           </button>
         ))}
       </div>

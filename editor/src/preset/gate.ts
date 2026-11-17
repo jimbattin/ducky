@@ -1,5 +1,5 @@
 // A preset's noise gate (daisy/src/dsp/noise_gate.h, the gate block in daisy/src/preset.h). Pure TypeScript: shared by
-// the slot builder, the slot reader, the link protocol, the drafts, the editor's gate controls and tools/pedal.ts.
+// the slot builder, the slot reader, the link protocol, the drafts and tools/pedal.ts.
 //
 // The 8-byte block: u8 flags (bit 0 enabled), u8 threshold (dB below full scale), u8 attack (0.1 ms), u8 hold (ms),
 // u16 release (ms, little-endian), u8 ratio (0.1), u8 0.
@@ -89,52 +89,4 @@ export function gateEqual(a: GateSettings, b: GateSettings): boolean {
   const ea = encodeGate(a);
   const eb = encodeGate(b);
   return ea.every((v, i) => v === eb[i]);
-}
-
-/** One of the editor's gate sliders. */
-export interface GateParam {
-  key: Field;
-  label: string;
-  min: number;
-  max: number;
-  log: boolean;
-  step: number;
-  format: (v: number) => string;
-}
-
-export const GATE_PARAMS: readonly GateParam[] = [
-  {
-    key: "thresholdDb",
-    label: "Threshold",
-    min: -80,
-    max: -30,
-    log: false,
-    step: 1,
-    format: (v) => `${v < 0 ? `\u2212${-v}` : v} dBFS`,
-  },
-  { key: "attackMs", label: "Attack", min: 0.5, max: 10, log: true, step: 0.1, format: (v) => `${v.toFixed(1)} ms` },
-  { key: "holdMs", label: "Hold", min: 10, max: 100, log: true, step: 1, format: (v) => `${v} ms` },
-  { key: "releaseMs", label: "Release", min: 10, max: 1000, log: true, step: 1, format: (v) => `${v} ms` },
-  { key: "ratio", label: "Ratio", min: 1.5, max: 10, log: true, step: 0.1, format: (v) => `${v.toFixed(1)}:1` },
-];
-
-/** A value's slider position, 0..1. */
-export function gateNorm(p: GateParam, v: number): number {
-  const n = p.log ? Math.log(v / p.min) / Math.log(p.max / p.min) : (v - p.min) / (p.max - p.min);
-  return Math.min(1, Math.max(0, n));
-}
-
-/** A slider position's value, rounded to the parameter's step and kept inside its range. */
-export function gateValue(p: GateParam, norm: number): number {
-  const n = Math.min(1, Math.max(0, norm));
-  const v = p.log ? p.min * (p.max / p.min) ** n : p.min + (p.max - p.min) * n;
-  const stepped = Math.round(v / p.step) * p.step;
-  const decimals = p.step < 1 ? 1 : 0;
-  return Math.min(p.max, Math.max(p.min, Number(stepped.toFixed(decimals))));
-}
-
-/** One step of the parameter's resolution up (dir 1) or down (−1) from v, kept inside its range: the arrow keys. */
-export function gateStep(p: GateParam, v: number, dir: 1 | -1): number {
-  const stepped = Number((v + dir * p.step).toFixed(p.step < 1 ? 1 : 0));
-  return Math.min(p.max, Math.max(p.min, stepped));
 }

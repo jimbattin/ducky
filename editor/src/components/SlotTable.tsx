@@ -1,5 +1,5 @@
 import type { SlotView } from "../draft";
-import type { SlotMessage } from "../link/protocol";
+import { SLOT_STATUS, type SlotMessage } from "../link/protocol";
 import { GroupBox } from "./GroupBox";
 import { Lamp } from "./Lamp";
 
@@ -21,24 +21,34 @@ interface Props {
   onDiscard: () => void;
 }
 
-const OK = 0;
-const EMPTY = 1;
-
 /** A slot may take part in a SWAP: the pedal refuses a slot that is neither ok nor empty. */
 const swappable = (s: SlotMessage | undefined): s is SlotMessage =>
-  s !== undefined && (s.status === OK || s.status === EMPTY);
+  s !== undefined && (s.status === SLOT_STATUS.ok || s.status === SLOT_STATUS.empty);
 
 /**
  * The 8 slots: the playing lamp, the preset, model and IR names (unsaved changes in amber), the per-slot actions, and
  * Save / Discard for every unsaved change. Clicking a row selects it; the slot number is the selection's keyboard
  * button.
  */
-export function SlotTable(p: Props) {
-  const { slots, views, playing, selected, onSelect, enabled, onSwap, onErase, edits } = p;
+export function SlotTable({
+  slots,
+  views,
+  playing,
+  selected,
+  onSelect,
+  enabled,
+  onSwap,
+  onErase,
+  edits,
+  onSave,
+  onDiscard,
+}: Props) {
   const canSwap = (a: number, b: number): boolean => {
     const sa = slots[a];
     const sb = slots[b];
-    return enabled && swappable(sa) && swappable(sb) && !(sa.status === EMPTY && sb.status === EMPTY);
+    return (
+      enabled && swappable(sa) && swappable(sb) && !(sa.status === SLOT_STATUS.empty && sb.status === SLOT_STATUS.empty)
+    );
   };
 
   return (
@@ -67,7 +77,6 @@ export function SlotTable(p: Props) {
               <tr
                 key={k}
                 class="slot-row"
-                aria-selected={k === selected}
                 data-selected={k === selected}
                 data-edited={v.edited}
                 onClick={() => onSelect(k)}
@@ -122,7 +131,7 @@ export function SlotTable(p: Props) {
                     type="button"
                     class="btn small"
                     aria-label={`Erase slot ${n}`}
-                    disabled={!enabled || s.status === EMPTY}
+                    disabled={!enabled || s.status === SLOT_STATUS.empty}
                     onClick={() => onErase(k)}
                   >
                     Erase
@@ -137,10 +146,10 @@ export function SlotTable(p: Props) {
         <span class="edit-count">
           {edits === 0 ? "No unsaved changes" : `${edits} slot${edits === 1 ? "" : "s"} changed`}
         </span>
-        <button type="button" class="btn" disabled={edits === 0} onClick={p.onDiscard}>
+        <button type="button" class="btn" disabled={edits === 0} onClick={onDiscard}>
           Discard
         </button>
-        <button type="button" class="btn" disabled={!enabled || edits === 0} onClick={p.onSave}>
+        <button type="button" class="btn" disabled={!enabled || edits === 0} onClick={onSave}>
           Save
         </button>
       </div>
