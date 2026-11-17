@@ -15,7 +15,7 @@
 //   info N                                   the preset in slot N: its name, model metadata, IR and gate (read back)
 //   status [SECONDS]                         STATUS and LOG lines for SECONDS (default 5) or until Ctrl-C
 
-import { SLOT_STATUS_NAMES, type StatusMessage } from "../editor/src/link/protocol";
+import { SLOT_STATUS, SLOT_STATUS_NAMES, type StatusMessage } from "../editor/src/link/protocol";
 import { LinkError, PedalSession } from "../editor/src/link/session";
 import { type GateSettings, gateProblem } from "../editor/src/preset/gate";
 import { findSeeds, openRawMidi } from "./rawmidi";
@@ -157,7 +157,8 @@ try {
     case "list":
       for (const s of await session.list()) {
         const status = SLOT_STATUS_NAMES[s.status] ?? String(s.status);
-        const detail = s.status === 0 ? ` "${s.name}" model "${s.model}" ir ${s.hasIr ? `"${s.ir}"` : "none"}` : "";
+        const detail =
+          s.status === SLOT_STATUS.ok ? ` "${s.name}" model "${s.model}" ir ${s.hasIr ? `"${s.ir}"` : "none"}` : "";
         console.log(`${s.slot + 1} ${status}${detail}${s.playing ? " *" : ""}`);
       }
       break;
@@ -183,7 +184,7 @@ try {
     case "info": {
       const k = slots[0]!;
       const status = (await session.list())[k]!.status;
-      if (status !== 0) fail(`slot ${k + 1}: ${SLOT_STATUS_NAMES[status] ?? status}`);
+      if (status !== SLOT_STATUS.ok) fail(`slot ${k + 1}: ${SLOT_STATUS_NAMES[status] ?? status}`);
       const { name, model: m, ir, gate: g } = await session.readInfo(k);
       console.log(`slot ${k + 1} "${name}"`);
       console.log(
