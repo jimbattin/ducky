@@ -6,8 +6,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include "dsp/noise_gate.h"
+#include "params.h"
 
 namespace dklink {
 
@@ -15,9 +17,10 @@ constexpr uint8_t kManufacturer = 0x7D, kDevice = 0x64, kVersion = 0x01;
 // Host -> pedal.
 constexpr uint8_t kHello = 0x01, kList = 0x02, kErase = 0x03, kRename = 0x04, kSwap = 0x05, kDfu = 0x06,
                   kWatch = 0x07, kUploadBegin = 0x08, kUploadChunk = 0x09, kUploadCommit = 0x0A, kRead = 0x0B,
-                  kGate = 0x0C, kGateTry = 0x0D;
+                  kGate = 0x0C, kGateTry = 0x0D, kDump = 0x0E, kSet = 0x0F, kAssign = 0x10, kSave = 0x11;
 // Pedal -> host.
-constexpr uint8_t kLog = 0x12, kSlot = 0x13, kResult = 0x14, kStatus = 0x15, kData = 0x16;
+constexpr uint8_t kLog = 0x12, kSlot = 0x13, kResult = 0x14, kStatus = 0x15, kData = 0x16, kParam = 0x17,
+                  kValues = 0x18;
 constexpr size_t kMaxLog = 120, kMaxBuildId = 32;
 constexpr size_t kMaxName = 63;       // a SLOT name or a RENAME name
 constexpr size_t kChunkBytes = 256;   // an UPLOAD CHUNK's data, unpacked
@@ -26,6 +29,7 @@ constexpr size_t kMaxPayload = 200;   // a pedal -> host payload (LOG, SLOT, RES
 constexpr size_t kStatusBytes = 30;   // a STATUS payload
 constexpr size_t kGatePayload = 8;    // a GATE or GATE TRY payload: the slot, then ParseGate's 7 bytes
 constexpr uint32_t kWatchPeriodMs = 100;
+constexpr size_t kParamHead = 16;     // a PARAM payload before its text
 
 // Pack7's output size for n bytes: one header byte per group of up to 7.
 constexpr size_t Packed7Size(size_t n) { return n + (n + 6) / 7; }
@@ -34,6 +38,20 @@ constexpr size_t kMaxHostFrame = 5 + 3 + 5 + Packed7Size(kChunkBytes) + 1;
 static_assert(kMaxHostFrame == 307, "an UPLOAD CHUNK frame of 256 bytes");
 static_assert(3 + 3 * kMaxName + 2 <= kMaxPayload, "a SLOT fits");
 static_assert(1 + 3 + 5 + Packed7Size(kReadBytes) <= kMaxPayload, "a DATA fits");
+static_assert(9 + 2 * size_t(dkparam::kParamCount) <= kMaxPayload, "a VALUES fits");
+
+// Every kParams row's PARAM fits kMaxPayload: kParamHead, its four strings and their three separators.
+constexpr bool ParamTextFits() {
+    for (const dkparam::ParamDef& d : dkparam::kParams) {
+        size_t n = kParamHead + 3;
+        const char* text[4] = {d.name, d.label, d.unit, d.group};
+        for (const char* s : text)
+            while (*s++) ++n;
+        if (n > kMaxPayload) return false;
+    }
+    return true;
+}
+static_assert(ParamTextFits(), "a PARAM fits");
 
 enum class Result : uint8_t { kOk, kBadRequest, kNoUpload, kOffset, kCrc, kIncomplete, kInvalid, kFlash, kSlotState };
 
@@ -94,6 +112,13 @@ struct StatusFrame {
     uint8_t footswitches;         // held: bit 0 FS1, bit 1 FS2
     uint16_t gate_level;          // the gate detector's level, tenths of a dB below full scale, 0..1200
     uint16_t gate_cut;            // the gate's gain reduction, tenths of a dB, 0..1200 (1200: closed)
+};
+
+// VALUES's fields.
+struct ValuesFrame {
+    uint8_t assign[dkparam::kControlSlots];  // a parameter id or dkparam::kNoParam per control slot
+    uint8_t held;                            // bit c: control slot c is held
+    uint16_t code[dkparam::kParamCount];     // each parameter's value (dkparam::ToCode)
 };
 
 class TxBuffer {
@@ -162,6 +187,37 @@ public:
         PutSeptets(p + 4, crc, 5);
         const size_t m = Pack7(data, n, p + 9);
         return AppendSysEx(kData, p, 9 + m);
+    }
+    // PARAM: one row of dkparam::kParams. The floats travel as their IEEE 754 bits (u32); the strings pass through
+    // Printable and are separated by NULs.
+    bool AppendParam(const dkparam::ParamDef& d) {
+        uint8_t p[kMaxPayload];
+        p[0] = d.id & 0x7F;
+        p[1] = uint8_t(d.taper);
+        p[2] = uint8_t(d.off);
+        p[3] = d.factory & 0x7F;
+        PutSeptets(p + 4, dkparam::ToCode(d, d.def), 2);
+        uint32_t bits;
+        std::memcpy(&bits, &d.min, sizeof bits);
+        PutSeptets(p + 6, bits, 5);
+        std::memcpy(&bits, &d.max, sizeof bits);
+        PutSeptets(p + 11, bits, 5);
+        size_t n = kParamHead;
+        const char* text[4] = {d.name, d.label, d.unit, d.group};
+        for (int k = 0; k < 4; ++k) {
+            if (k > 0 && n < kMaxPayload) p[n++] = 0;
+            for (size_t i = 0; text[k][i] && n < kMaxPayload; ++i) p[n++] = Printable(uint8_t(text[k][i]));
+        }
+        return AppendSysEx(kParam, p, n);
+    }
+    // VALUES: the assignments, the held bits, the parameter count, then each parameter's code (u14).
+    bool AppendValues(const ValuesFrame& v) {
+        uint8_t p[9 + 2 * dkparam::kParamCount];
+        for (int c = 0; c < dkparam::kControlSlots; ++c) p[c] = v.assign[c] & 0x7F;
+        p[7] = v.held & 0x7F;
+        p[8] = dkparam::kParamCount;
+        for (int i = 0; i < dkparam::kParamCount; ++i) PutSeptets(p + 9 + 2 * i, v.code[i], 2);
+        return AppendSysEx(kValues, p, sizeof p);
     }
 
     const uint8_t* data() const { return buf_; }
@@ -276,8 +332,8 @@ inline constexpr CommandDoc kCommands[] = {
      "files differ (e.g. `711fa7c+dirty`), or `unknown` outside git."},
     {kHello, Dir::kToPedal, "HELLO", "none",
      "The pedal answers with LOG lines: the boot line `ducky <board> seed <version> sysclk N MHz audio N Hz N bit "
-     "block N <build id>`, then the `slots`, `preset`, `model`, `ir` and `gate` lines (docs/FIRMWARE.md \"Log "
-     "lines\"). No RESULT."},
+     "block N <build id>`, then the `slots`, `preset`, `model`, `ir`, `gate`, `settings` and `layout` lines "
+     "(docs/FIRMWARE.md \"Log lines\"). No RESULT."},
     {kList, Dir::kToPedal, "LIST", "none",
      "8 SLOT messages (slots 0-7), then RESULT `02` ok with value 8."},
     {kErase, Dir::kToPedal, "ERASE", "`<slot 0-7>`",
@@ -292,7 +348,8 @@ inline constexpr CommandDoc kCommands[] = {
      "The pedal logs `dfu reset` and restarts into the Daisy bootloader's DFU mode (no timeout), ready for "
      "tools/flash_when_ready.sh. No RESULT."},
     {kWatch, Dir::kToPedal, "WATCH", "`<on 0/1>`",
-     "RESULT ok (value 0). While on, a STATUS every 100 ms, the first 100 ms after WATCH on. Off at boot."},
+     "RESULT ok (value 0). While on, a STATUS and a VALUES every 100 ms, the first 100 ms after WATCH on. Off at "
+     "boot."},
     {kUploadBegin, Dir::kToPedal, "UPLOAD BEGIN", "`<slot 0-7> <size u21>` (size 7996 or 16288)",
      "Starts staging a preset image for the slot, discarding any earlier upload. RESULT value: the next offset "
      "(0)."},
@@ -318,8 +375,23 @@ inline constexpr CommandDoc kCommands[] = {
     {kGateTry, Dir::kToPedal, "GATE TRY", kGatePayloadDoc,
      "Sets the running gate only, until the next preset load or GATE; nothing is written. RESULT ok (value 0); "
      "`slot-state` when the slot is not the playing one."},
+    {kDump, Dir::kToPedal, "DUMP", "none",
+     "One PARAM per parameter (ids 0 to N-1), one VALUES, then RESULT ok with N."},
+    {kSet, Dir::kToPedal, "SET", "`<id> <code u14>`",
+     "Sets the parameter's value from the next audio block (continuous: code / 16383 along its taper; choice: the "
+     "index). Every control on it is held until it moves (a knob more than 3 % of its travel, a switch to another "
+     "position). RESULT ok with the code taken (clamped). `bad-request` for a payload other than 3 bytes or an "
+     "unknown id. No log line."},
+    {kAssign, Dir::kToPedal, "ASSIGN", "`<control 0-6> <id, or 7F none>`",
+     "Puts the parameter on the control (0-3 Knobs 3-6, 4-6 SW1-SW3); it keeps its value until the control moves. "
+     "Logs `assign CONTROL NAME`. RESULT ok (value 0). `bad-request` for a payload other than 2 bytes, a control "
+     "past 6, an unknown id, or a continuous parameter on a switch."},
+    {kSave, Dir::kToPedal, "SAVE", "none",
+     "Writes the assignments and every parameter's value to the settings record, used at the next power-up. Logs "
+     "`settings seq N T ms`. RESULT ok with the flash time in ms; `flash` when the write fails (`settings write "
+     "failed`)."},
     {kLog, Dir::kToHost, "LOG", "`<printable ASCII, at most 120 bytes>`",
-     "One log line (boot, HELLO, slot changes, the controls and status lines once a second)."},
+     "One log line (boot, HELLO, slot and control changes, the controls and status lines once a second)."},
     {kSlot, Dir::kToHost, "SLOT",
      "`<slot 0-7> <status> <flags> <preset name> 00 <model name> 00 <ir name>`",
      "One slot, answering LIST. Status: Slot status. Flags: bit 0 has an IR, bit 1 playing. Names: printable "
@@ -339,6 +411,18 @@ inline constexpr CommandDoc kCommands[] = {
      "the previous STATUS, in tenths of a dB (0-1200, 1200 closed)."},
     {kData, Dir::kToHost, "DATA", "`<slot 0-7> <offset u21> <crc32 u32> <Pack7 data>` (1-160 bytes unpacked)",
      "Answers READ: the image bytes at offset and the CRC-32 of the unpacked bytes. Comes before READ's RESULT."},
+    {kParam, Dir::kToHost, "PARAM",
+     "`<id> <taper> <off end> <factory control> <default u14> <min f32 as u32> <max f32 as u32> <name> 00 <label> "
+     "00 <unit> 00 <group>`",
+     "One parameter (Parameters), answering DUMP. Taper: 0 log (continuous: the value runs from min at code 0 to "
+     "max at code 16383, logarithmically), 1 choice (the value is an index 0 to max). Off end: 0 none, 1 the "
+     "parameter's filter is bypassed within 2 % of min, 2 within 2 % of max. Factory control: the control (0-6) "
+     "holding it in the factory layout, or 7F. Default: the value's code. Min and max: IEEE 754 single-precision "
+     "bits. The strings are printable ASCII: the name is the log's and `tools/pedal.ts`'s, the label the editor's; "
+     "a choice's unit is its labels, comma-separated, in index order."},
+    {kValues, Dir::kToHost, "VALUES", "`<control 0-6 assignments: 7 bytes> <held bits> <N> <code u14 x N>`",
+     "The live assignments (7F none), bit s set while control s is held, and each parameter's code. After DUMP's "
+     "PARAMs, and with every STATUS while WATCH is on."},
 };
 
 struct ResultDoc {
@@ -351,7 +435,7 @@ inline constexpr ResultDoc kResults[] = {
     {Result::kOk, "ok", "Done."},
     {Result::kBadRequest, "bad-request",
      "Wrong payload length or a field out of range (slot, size, name, a == b, chunk data past the image, bad "
-     "Pack7, a gate field)."},
+     "Pack7, a gate field, a parameter or control field)."},
     {Result::kNoUpload, "no-upload", "UPLOAD CHUNK or COMMIT without an UPLOAD BEGIN (or after a COMMIT)."},
     {Result::kOffset, "offset", "The chunk's offset is past the next expected offset (the value); resend from there."},
     {Result::kCrc, "crc", "The chunk's data does not match its CRC; resend it."},

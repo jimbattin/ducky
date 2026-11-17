@@ -1,8 +1,8 @@
 # Editor
 
-The browser editor manages the pedal's 8 preset slots and shows its live state over USB-MIDI. It is written in Preact and TypeScript, built with Bun into one self-contained file, `editor/dist/editor.html` (scripts and styles inlined, no external URLs). It needs Chrome: Web MIDI with SysEx. It follows the conventions of bad_tape's editor (`../bad_tape`): the Platinum look, a read-only sidebar of the pedal's controls, and tabs over a panel.
+The browser editor manages the pedal's 8 preset slots, assigns its knobs and switches to parameters, and shows its live state over USB-MIDI. It is written in Preact and TypeScript, built with Bun into one self-contained file, `editor/dist/editor.html` (scripts and styles inlined, no external URLs). It needs Chrome: Web MIDI with SysEx. It follows the conventions of bad_tape's editor (`../bad_tape`): the Platinum look, a read-only sidebar of the pedal's controls, and tabs over a panel.
 
-The editor never sets a knob or a switch: the pedal is "what you see is what you get". It sets slots (presets) and, while you edit one, auditions the playing preset's noise gate.
+It sets slots (presets), which parameter each of Knobs 3–6 and SW1–SW3 drives, and the parameters' values; while you edit a preset it auditions the playing preset's noise gate. A value set from the editor holds until its control moves, and then the pedal is "what you see is what you get" again. Knobs 1 and 2 are never set.
 
 ## Running
 
@@ -25,7 +25,7 @@ make -C editor fmt        # Biome's fixes and formatting, same files
 ![Presets tab](images/editor/presets.png)
 
 - **Toolbar:** the link lamp and status (`LINKED` green, `NO RESPONSE` amber, else off: `CONNECTING…`, `NO MIDI DEVICE`, or why Web MIDI is unavailable), the **In** and **Out** port menus, the firmware build from the Identity Reply, and **DFU mode…**.
-- **Sidebar:** read-only, from STATUS. FS1 mute, FS2's playing slot, the six knobs in the firmware's units, the three toggles, and the CPU load. `editor/src/controls.ts` mirrors `daisy/src/dsp/gain.h` and `daisy/src/dsp/filters.h`. A cut filter's knob reads `Off` at its bypass end. A resonance knob is dimmed when its slope is 6 dB/oct or its filter is off. The CPU bar's fill is the average load (red from 80 %), its amber marker the peak, and the Overload lamp lights on a new underrun or a full peak.
+- **Sidebar:** read-only, from STATUS and VALUES. FS1 mute, FS2's playing slot, Knobs 1 and 2 in the firmware's units (`editor/src/controls.ts` mirrors `daisy/src/dsp/gain.h`), then Knobs 3–6 and the three toggles, each named after the parameter it drives (`None` without one) with that parameter's value, and the CPU load. A knob's bar is the knob's position; its readout is the parameter's value, which differs while the control is **Held**: set from the editor or by another control on the same parameter, and waiting to be moved. A cut filter's frequency reads `Off` at its bypass end. A resonance is dimmed when its slope is 6 dB/oct or its filter is off. The CPU bar's fill is the average load (red from 80 %), its amber marker the peak, and the Overload lamp lights on a new underrun or a full peak.
 - **Status bar:** the progress of the running operation (`SAVING SLOT 5… 40 %`), then its result or its error.
 
 ## Presets tab
@@ -57,9 +57,21 @@ The sliders:
 - Dragging the thumb moves it from where it is; pressing the track jumps there first. Shift drags 10× finer.
 - Double-click resets the setting to its default.
 
+## Controls tab
+
+![Controls tab](images/editor/controls.png)
+
+The pedal's parameter table and its live assignments and values, read from the pedal (DUMP, then the VALUES stream): nothing about the parameters is built into the editor except how to draw the EQ (`docs/MIDI.md` "Parameters", "Controls").
+
+- **Controls:** a menu per control, K3–K6 and SW1–SW3. A knob takes any parameter; a switch's menu lists only the choice parameters (the slopes, the mid); `None` leaves the control unused. A parameter may be on several controls. Choosing one sends ASSIGN: the parameter keeps its value, and the control is **Held** until it moves.
+- **Parameters:** every parameter with the controls it is on, a slider (continuous) or a button group (a choice), and its value. A change is sent at once as SET (`editor/src/useParamEdits.ts`: coalesced to the latest value per parameter, one request in flight) and heard at once. It holds every control on that parameter; a parameter on no control keeps the value. The sliders work as the noise gate's; double-click resets to the parameter's default. A resonance is dimmed when it has no effect.
+- **Held** ends when the control moves: a knob by more than 3 % of its travel, a switch to another position. The parameter then follows the control.
+- **Factory layout** puts every control back on its factory parameter (the table's). **Save** writes the layout and the values to the pedal's settings record (SAVE, `docs/FIRMWARE.md` "Settings record"); until then they last until power-off, the line under the table reads `Not saved on the pedal`, and leaving the page asks first. At power-up a parameter on a control takes the control's position, so a saved value matters for parameters on no control.
+- Firmware from before the parameter table does not answer DUMP: the tab says so, and the rest of the editor works.
+
 ## EQ tab
 
-The response of the low-cut, the SW3 mid and the high-cut plus Knob 2's output volume, drawn from STATUS (`editor/src/eqModel.ts`, `docs/FILTERS.md` "Filters"). The whole chain is filled to 0 dB. Each section in use is a thin curve with a marker at its frequency (L, M, H; hover for its settings). The volume is the title's badge, and the gain at the pointer is read out top right. Muted dashes the curve; the volume's off end draws only the sections. Knob 1 is not drawn: it sets the drive into the model, not a level after it. Neither are the model and the IR.
+The response of the low-cut, the mid and the high-cut plus Knob 2's output volume (`editor/src/eqModel.ts`, `docs/FILTERS.md` "Filters"), drawn from the parameters' live values, whichever control or the Controls tab set them, and from STATUS for Knob 2 and the mute. The whole chain is filled to 0 dB. Each section in use is a thin curve with a marker at its frequency (L, M, H; hover for its settings). The volume is the title's badge, and the gain at the pointer is read out top right. Muted dashes the curve; the volume's off end draws only the sections. Knob 1 is not drawn: it sets the drive into the model, not a level after it. Neither are the model and the IR.
 
 ![EQ tab](images/editor/eq.png)
 
@@ -71,8 +83,8 @@ The pedal's log lines (`docs/FIRMWARE.md` "Log lines"; the last 1,000), each wit
 
 ## Link and sync
 
-- **Link:** the editor picks the input and output ports whose name contains `daisy` (the toolbar's In/Out menus override them). It sends HELLO every second until the pedal answers, and reads `LINKED` while anything arrived in the last 4 s. WATCH's STATUS every 100 ms keeps the link fresh.
-- **Sync:** on each link, on the boot line (`ducky …`, so a reflashed or power-cycled pedal is picked up without a reload), and every 3 s until one succeeds. A sync is Identity (device 64), LIST, every ok slot's metadata over READ (`editor/src/preset/info.ts`: 4 READs per slot, 5 with an IR), then WATCH on.
+- **Link:** the editor picks the input and output ports whose name contains `daisy` (the toolbar's In/Out menus override them). It sends HELLO every second until the pedal answers, and reads `LINKED` while anything arrived in the last 4 s. WATCH's STATUS and VALUES every 100 ms keep the link fresh.
+- **Sync:** on each link, on the boot line (`ducky …`, so a reflashed or power-cycled pedal is picked up without a reload), and every 3 s until one succeeds. A sync is Identity (device 64), LIST, every ok slot's metadata over READ (`editor/src/preset/info.ts`: 4 READs per slot, 5 with an IR), DUMP (the parameter table and the values), then WATCH on. A boot line also clears `Not saved on the pedal`: a restarted pedal is back on its saved settings.
 - **One request at a time:** every request goes through one queue (`usePedal.ts` `serial`), because the pedal answers one request at a time.
 - **DFU mode…** sends DFU after a confirmation. `tools/flash_when_ready.sh` then flashes, and the editor relinks and resyncs by itself.
 
@@ -94,25 +106,30 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 | `biome.jsonc`, `tsconfig.json` | Lint, format and type-check settings (Code conventions). |
 | `package.json`, `bun.lock` | Preact; TypeScript, Biome and Bun's types for development. |
 | `src/editor.html`, `src/main.tsx` | The page and its entry point. |
-| `src/App.tsx` | The window: tabs, the slot actions (swap, erase, save, discard, DFU) and the drafts. |
+| `src/App.tsx` | The window: tabs, the slot actions (swap, erase, save, discard, DFU), the drafts, and the Controls tab's actions (assign, factory layout, save). |
 | `src/ducky.css` | The Platinum styles. |
 | `src/midi.ts` | `PedalLink`: Web MIDI ports, SysEx reassembly, the HELLO keep-alive, the link status, the session's transport. |
 | `src/usePedal.ts` | The link's lifecycle: the reducer it feeds, the sync and its retries, the `serial` request queue. |
-| `src/state.ts` | The reducer: link, identity, slots, slot infos, STATUS, load, log. |
+| `src/state.ts` | The reducer: link, identity, slots, slot infos, STATUS, load, log, the parameter table, VALUES, and whether the settings are unsaved. |
 | `src/useGateAudition.ts` | GATE TRY auditions of the gate box's changes on the playing slot. |
+| `src/useParamEdits.ts` | SETs from the Controls tab, coalesced per parameter, and the value shown while one is in flight. |
 | `src/draft.ts` | Per-slot unsaved drafts, what the slot table shows for them, and Save (`saveDraft`). |
 | `src/importer.ts` | `.nam` and `.wav` files through the converters; rejection text and import warnings. |
-| `src/controls.ts` | The knobs' and switches' readouts in the firmware's tapers; level match and input calibration. |
-| `src/eqModel.ts` | The EQ's frequency response from STATUS's knobs and toggles. |
+| `src/controls.ts` | Knob 1's and Knob 2's readouts in the firmware's tapers; a toggle's position; level match and input calibration. |
+| `src/eqModel.ts` | The EQ's frequency response from the EQ parameters' values and Knob 2; when a resonance has no effect. |
 | `src/gateControls.ts` | The gate box's sliders: labels, tapers, resolutions, readouts. |
 | `src/device.ts` | `SAMPLE_RATE`, `NAME_MAX`, `sanitiseName`, `writeAscii`: what the converters, the preset code and the link share about the pedal. |
 | `src/crc32.ts` | CRC-32 (zlib), as the firmware checks binaries and link chunks. |
-| `src/format.ts` | Display formats: the typographic minus, signed dB, Hz, IR length, error text. |
-| `src/testFixtures.ts` | `readFixture`, `readFixtureText`: `tests/fixtures/` for the tests (never bundled). |
+| `src/format.ts` | Display formats: the typographic minus, signed dB, Hz, IR length, error text. Plain TypeScript: `link/params.ts` uses it. |
+| `src/testFixtures.ts` | `readFixture`, `readFixtureText`: `tests/fixtures/` for the tests; `FACTORY_PARAMS`: the pedal's parameter table, checked against `docs/MIDI.md` (never bundled). |
 | `src/components/Toolbar.tsx` | The link lamp, status, port menus, build and DFU button. |
-| `src/components/FrontPanel.tsx` | The sidebar: footswitches, knobs, switches, CPU load. |
+| `src/components/FrontPanel.tsx` | The sidebar: footswitches, the fixed knobs, each assignable knob and switch with its parameter, CPU load. |
 | `src/components/KnobGauge.tsx` | A knob's position as a read-only slider track with ticks. |
 | `src/components/Positions.tsx` | A toggle's three positions. |
+| `src/components/HeldBadge.tsx` | The Held mark on a control waiting to move. |
+| `src/components/ControlsTab.tsx` | The Controls tab: each control's parameter, each parameter's value, Factory layout and Save. |
+| `src/components/AssignSelect.tsx` | A control's menu of the parameters it accepts. |
+| `src/components/Segmented.tsx` | A button group: one pressed button per choice. |
 | `src/components/CpuMeter.tsx` | The CPU load meter. |
 | `src/components/Meter.tsx` | A bar with a fill and markers over a lamp line; the CPU and gate meters. |
 | `src/components/TabNav.tsx` | The WAI-ARIA tab list (Left/Right cycle, Home/End jump). |
@@ -125,7 +142,7 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 | `src/components/EqGraph.tsx` | The EQ tab's response graph. |
 | `src/components/LogView.tsx` | The Log tab. |
 | `src/components/GroupBox.tsx`, `Lamp.tsx`, `StatusLine.tsx` | An etched group box, a status lamp, the status bar. |
-| `src/link/` | The SysEx link (`docs/MIDI.md`): `protocol.ts` builders, codecs and parsing; `session.ts` `PedalSession`. Shared with `tools/pedal.ts`. |
+| `src/link/` | The SysEx link (`docs/MIDI.md`): `protocol.ts` builders, codecs and parsing; `session.ts` `PedalSession`; `params.ts` a parameter's code as its value and readout, the controls and what each accepts. Shared with `tools/pedal.ts`. |
 | `src/nam/` | The `.nam` → model binary converter (`docs/NAM_FORMAT.md`). Shared with `tools/nam_convert.ts`. |
 | `src/ir/` | The `.wav` → IR binary converter, its WAV reader and resampler (`docs/FILTERS.md`). Shared with `tools/ir_convert.ts`. |
 | `src/preset/` | `bank.ts` the slot and bank builders, `gate.ts` the gate block, `info.ts` a stored preset's metadata. Shared with `tools/preset_bank.ts` and `tools/pedal.ts`. |
@@ -134,6 +151,6 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 
 - **TypeScript:** `strict` with `noUncheckedIndexedAccess`. A `!` marks an index that a check before it guarantees (the wire parsers above all); `biome.jsonc` says why `noNonNullAssertion` is off. Where a type can carry what is known, use the type instead (App's `edited` list and `selDraft`).
 - **Biome:** the recommended rules plus the React domain, imports organised, 120 columns. `make -C editor check` must pass with no warnings; a `biome-ignore` states its reason.
-- **One module per shared fact:** the sample rate and name rules in `device.ts`, display formats in `format.ts`, the SLOT statuses in `link/protocol.ts` `SLOT_STATUS`, the slot count in `preset/bank.ts` `SLOT_COUNT`. No local copies.
-- **Shared code stays portable:** `link/`, `nam/`, `ir/`, `preset/`, `device.ts` and `crc32.ts` are plain TypeScript (no DOM, no Bun APIs), because `tools/*.ts` imports them too.
+- **One module per shared fact:** the sample rate and name rules in `device.ts`, display formats in `format.ts`, the SLOT statuses in `link/protocol.ts` `SLOT_STATUS`, the slot count in `preset/bank.ts` `SLOT_COUNT`, the controls in `link/params.ts` `CONTROLS`. The parameters' names, ranges and labels come from the pedal. No local copies.
+- **Shared code stays portable:** `link/`, `nam/`, `ir/`, `preset/`, `device.ts`, `format.ts` and `crc32.ts` are plain TypeScript (no DOM, no Bun APIs), because `tools/*.ts` imports them too.
 - **CSS:** each class in `ducky.css` is used by a component, and each class a component uses is styled; shared looks (bevels, wells, ellipsis, focus ring) are one rule with a selector list.

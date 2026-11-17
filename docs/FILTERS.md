@@ -12,7 +12,7 @@ graph LR
   JACK[input peak] --> G[noise gate] -.-> OUT
 ```
 
-The IR stage runs only when the current preset has an IR (`docs/FIRMWARE.md` "Preset store"). Every EQ section runs every block, whatever the knobs and switches, so the load does not depend on the controls.
+The IR stage runs only when the current preset has an IR (`docs/FIRMWARE.md` "Preset store"). Every EQ section runs every block, whatever the knobs and switches, so the load does not depend on the controls. The EQ's seven settings are parameters (`daisy/src/params.h`, `docs/MIDI.md` "Parameters"): any of Knobs 3–6 and SW1–SW3, or the link, can drive each one, and the controls named below are the factory layout's.
 
 ## IR convolver
 
@@ -97,21 +97,21 @@ The few dB left are the cabs' low-mid resonances, where a guitar signal has more
 
 ### Low-cut and high-cut
 
-| Control | Map |
+| Parameter (factory control) | Map |
 |---|---|
-| Knob 5 (low-cut frequency) | 20…500 Hz, log (`20 · 25^k`) |
-| Knob 4 (high-cut frequency) | 1.5…20 kHz, log |
-| Knobs 6, 3 (resonance) | Q 0.5…2, log; 1.0 at noon |
-| SW1 (low-cut), SW2 (high-cut) | up 6 dB/oct, middle 12 dB/oct, down 24 dB/oct |
+| `low_cut_freq` (Knob 5) | 20…500 Hz, log (`20 · 25^k`), k the parameter's value 0..1: a knob's position |
+| `high_cut_freq` (Knob 4) | 1.5…20 kHz, log |
+| `low_cut_res`, `high_cut_res` (Knobs 6, 3) | Q 0.5…2, log; 1.0 at noon |
+| `low_cut_slope`, `high_cut_slope` (SW1, SW2) | index 2 (up) 6 dB/oct, 1 (middle) 12 dB/oct, 0 (down) 24 dB/oct |
 
 - **Slopes:** 6 dB a one-pole (no resonance); 12 dB an SVF at the knob's Q; 24 dB a Butterworth SVF (Q 0.7071) into an SVF at the knob's Q. At Q 0.7071 on the knob the 24 dB cascade is two Butterworth sections (a Linkwitz–Riley knee, −6 dB at the cutoff); a higher Q peaks it.
 - **All slopes run every block,** whatever the switch, with their states warm. A switch crossfades linearly from the current slope weights to the new slope over 5 ms (240 samples); a change mid-fade starts from where the weights are. Once a fade completes the weights are exactly one-hot, and the output is bit-identical to a filter that ran in the new slope all along.
 - **Off end:** with the smoothed frequency knob within 0.02 of the end that turns the filter off (low-cut fully CCW, high-cut fully CW), the filter crossfades to dry over 5 ms, and comes back beyond 0.04 (hysteresis). At mix 0 the output is the input bit for bit.
 - **Statement order:** the per-sample loop interleaves the one-pole, the 12 dB SVF and the 24 dB Butterworth stage so their latencies overlap (`docs/M7_PERFORMANCE.md` "Recursive filters"); the 24 dB second stage follows.
 
-### Mid (SW3)
+### Mid
 
-A bell at 515 Hz, Q 1.0, constant-Q form: `A = 10^(dB/40)`, `k = 1/(Q·A)`, `m1 = k(A² − 1)`. SW3 **up is +5 dB (boost), middle bypass, down −7 dB (scoop)**. The gain is smoothed in dB (20 ms), so a flip glides; at 0 dB (`|dB| < 1e-3`) `m1` is exactly 0 and the output is the input bit for bit.
+A bell at 515 Hz, Q 1.0, constant-Q form: `A = 10^(dB/40)`, `k = 1/(Q·A)`, `m1 = k(A² − 1)`. The `mid` parameter (factory: SW3): index 2 **(up) is +5 dB (boost), 1 (middle) bypass, 0 (down) −7 dB (scoop)**. The gain is smoothed in dB (20 ms), so a flip glides; at 0 dB (`|dB| < 1e-3`) `m1` is exactly 0 and the output is the input bit for bit.
 
 ### Tests
 

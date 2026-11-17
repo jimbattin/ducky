@@ -1,8 +1,8 @@
-// Manage the pedal's preset slots over its USB MIDI link (docs/MIDI.md) while it plays: list, upload, erase, rename
-// and swap slots, set a preset's noise gate, and stream its status. Slots are 1-8. MODEL and IR are read as
-// tools/slot_source.ts does (.nam and .wav converted, anything else read as a binary); the name defaults to the
-// model's. The Seed is found by its USB path (--port, else DK_USB_PORT, else the only Seed attached); its Identity
-// must report a Ducky (device 64).
+// Manage the pedal over its USB MIDI link (docs/MIDI.md) while it plays: list, upload, erase, rename and swap preset
+// slots, set a preset's noise gate, list, set, assign and save the parameters, and stream its status. Slots are 1-8.
+// MODEL and IR are read as tools/slot_source.ts does (.nam and .wav converted, anything else read as a binary); the
+// name defaults to the model's. The Seed is found by its USB path (--port, else DK_USB_PORT, else the only Seed
+// attached); its Identity must report a Ducky (device 64).
 // Linux (ALSA rawmidi, tools/rawmidi.ts); the MIDI port opens exclusively, so close other MIDI programs first.
 //
 // Usage: bun tools/pedal.ts [--port BUS-PORT] COMMAND
@@ -13,9 +13,15 @@
 //                                            the preset's noise gate: on/off alone keeps the stored settings, e.g.
 //                                            `gate 1 on -55 0.5 20 100 4` (threshold in dBFS, ratio N for N:1)
 //   info N                                   the preset in slot N: its name, model metadata, IR and gate (read back)
+//   param list | param get NAME | param set NAME VALUE | param assign CONTROL NAME|none | param save
+//                                            the parameters (docs/MIDI.md "Parameters"): each one's value and
+//                                            controls; VALUE in the parameter's unit, a choice's label or index, or
+//                                            `off`; CONTROL k3-k6 or sw1-sw3; save keeps the layout and the values
+//                                            for the next power-up
 //   status [SECONDS]                         STATUS and LOG lines for SECONDS (default 5) or until Ctrl-C
 
-import { SLOT_STATUS, SLOT_STATUS_NAMES, type StatusMessage } from "../editor/src/link/protocol";
+import { accepts, CONTROLS, formatParam, parseParamValue } from "../editor/src/link/params";
+import { type ParamInfo, SLOT_STATUS, SLOT_STATUS_NAMES, type StatusMessage } from "../editor/src/link/protocol";
 import { LinkError, PedalSession } from "../editor/src/link/session";
 import { type GateSettings, gateProblem } from "../editor/src/preset/gate";
 import { findSeeds, openRawMidi } from "./rawmidi";
@@ -29,6 +35,7 @@ const USAGE = `usage: bun tools/pedal.ts [--port BUS-PORT] COMMAND
   rename N NAME
   swap A B
   gate N on|off [THRESHOLD_DB ATTACK_MS HOLD_MS RELEASE_MS RATIO]
+  param list | param get NAME | param set NAME VALUE | param assign CONTROL NAME|none | param save
   status [SECONDS]`;
 
 function usage(problem: string): never {
@@ -73,6 +80,7 @@ const arity: Record<string, [number, number]> = {
   rename: [2, 2],
   swap: [2, 2],
   gate: [2, 7],
+  param: [1, 3],
   status: [0, 1],
 };
 const counts = arity[command];
@@ -115,6 +123,17 @@ if (command === "gate") {
     gateArg = { enabled: gateOn, thresholdDb, attackMs, holdMs, releaseMs, ratio };
     const problem = gateProblem(gateArg);
     if (problem !== null) usage(`gate: ${problem}`);
+  }
+}
+
+// param's subcommand and, for assign, its control (0-6).
+let paramControl = -1;
+if (command === "param") {
+  const arity: Record<string, number> = { list: 1, get: 2, set: 3, assign: 3, save: 1 };
+  if (arity[rest[0]!] !== rest.length) usage("param: list, get NAME, set NAME VALUE, assign CONTROL NAME|none or save");
+  if (rest[0] === "assign") {
+    paramControl = CONTROLS.findIndex((c) => c.key === rest[1]!.toLowerCase());
+    if (paramControl < 0) usage("param: CONTROL is k3-k6 or sw1-sw3");
   }
 }
 
@@ -215,6 +234,39 @@ try {
         `swap slots ${slots[0]! + 1} ${slots[1]! + 1}: ok, flash ${await session.swap(slots[0]!, slots[1]!)} ms`,
       );
       break;
+    case "param": {
+      if (rest[0] === "save") {
+        console.log(`settings saved: ok, flash ${await session.save()} ms`);
+        break;
+      }
+      const d = await session.dump();
+      const named = (name: string): ParamInfo =>
+        d.params.find((p) => p.name === name) ?? fail(`param: no parameter ${name}`);
+      // NAME, its value, then the controls it is on, `(held)` on one waiting to move.
+      const line = (p: ParamInfo): string => {
+        const on = d.values.assign.flatMap((id, c) =>
+          id === p.id ? [`${CONTROLS[c]!.id}${d.values.held[c] ? " (held)" : ""}`] : [],
+        );
+        return `${p.name.padEnd(16)}${formatParam(p, d.values.codes[p.id]!).padEnd(14)}${on.join(" ") || "-"}`;
+      };
+      if (rest[0] === "list") {
+        for (const p of d.params) console.log(line(p));
+      } else if (rest[0] === "get") {
+        console.log(line(named(rest[1]!)));
+      } else if (rest[0] === "set") {
+        const p = named(rest[1]!);
+        const code = parseParamValue(p, rest[2]!);
+        if (code === null) fail(`param: ${rest[2]} is not a value of ${p.name}`);
+        console.log(`${p.name} = ${formatParam(p, await session.set(p.id, code))}`);
+      } else {
+        const p = rest[2] === "none" ? null : named(rest[2]!);
+        const control = CONTROLS[paramControl]!.id;
+        if (!accepts(paramControl, p)) fail(`param: ${control} takes only choice parameters`);
+        await session.assign(paramControl, p?.id ?? null);
+        console.log(`${control} = ${p?.name ?? "none"}: ok`);
+      }
+      break;
+    }
     case "status": {
       let stop = false;
       process.on("SIGINT", () => {

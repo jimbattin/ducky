@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { ControlsTab } from "./components/ControlsTab";
 import { EqGraph } from "./components/EqGraph";
 import { FrontPanel } from "./components/FrontPanel";
 import { GateEditor } from "./components/GateEditor";
@@ -10,15 +11,18 @@ import { type NavTab, TabNav } from "./components/TabNav";
 import { Toolbar } from "./components/Toolbar";
 import { baseDraft, type Draft, type Drafts, draftProblem, isEdited, saveDraft, slotView } from "./draft";
 import { errorText } from "./format";
+import { CONTROLS, factoryAssign } from "./link/params";
 import { dfuMsg, SLOT_STATUS, type SlotMessage } from "./link/protocol";
 import type { PedalSession } from "./link/session";
 import { GATE_DEFAULT, type GateSettings, gateEqual } from "./preset/gate";
 import { useGateAudition } from "./useGateAudition";
+import { useParamEdits } from "./useParamEdits";
 import { usePedal } from "./usePedal";
 
-type TabId = "presets" | "eq" | "log";
+type TabId = "presets" | "controls" | "eq" | "log";
 const TABS: readonly NavTab<TabId>[] = [
   { id: "presets", label: "Presets" },
+  { id: "controls", label: "Controls" },
   { id: "eq", label: "EQ" },
   { id: "log", label: "Log" },
 ];
@@ -31,7 +35,7 @@ const slotList = (ks: readonly number[]): string =>
   `slot${ks.length === 1 ? "" : "s"} ${ks.map((k) => k + 1).join(", ")}`;
 
 export function App() {
-  const { s, link, serial, refreshSlots } = usePedal();
+  const { s, link, serial, refreshSlots, dispatch } = usePedal();
   const [tab, setTab] = useState<TabId>("presets");
   const [busy, setBusy] = useState<string | null>(null);
   const busyRef = useRef(false);
@@ -47,7 +51,8 @@ export function App() {
     const d = drafts[x.slot];
     return d !== undefined && isEdited(d, x) ? [{ slot: x, draft: d }] : [];
   });
-  const unsaved = edited.length > 0;
+  // Slot drafts, or control assignments and values the pedal has not saved.
+  const unsaved = edited.length > 0 || s.settingsEdited;
 
   useEffect(() => {
     if (!unsaved) return;
@@ -57,6 +62,7 @@ export function App() {
   }, [unsaved]);
 
   const { tryGate, restoreGate } = useGateAudition(s, playing, drafts, serial);
+  const { setParam, shownCode } = useParamEdits(s, serial, dispatch);
 
   // One pedal operation at a time.
   const act = async (label: string, fn: () => Promise<string>): Promise<void> => {
@@ -149,6 +155,35 @@ export function App() {
       }),
     );
   };
+  const onAssign = (control: number, id: number | null) =>
+    void act("ASSIGNING…", () =>
+      serial(async (session) => {
+        await session.assign(control, id);
+        dispatch({ type: "settingsEdited", edited: true });
+        return `${CONTROLS[control]!.id}: ${s.params?.find((p) => p.id === id)?.label ?? "None"}`;
+      }),
+    );
+  const onFactoryLayout = () =>
+    void act("FACTORY LAYOUT…", () =>
+      serial(async (session) => {
+        const { params, values } = s;
+        if (params === null || values === null) return "Factory layout";
+        for (const [c, id] of factoryAssign(params).entries()) {
+          if (id === values.assign[c]) continue;
+          await session.assign(c, id);
+          dispatch({ type: "settingsEdited", edited: true });
+        }
+        return "Factory layout";
+      }),
+    );
+  const onSaveSettings = () =>
+    void act("SAVING CONTROLS…", () =>
+      serial(async (session) => {
+        const ms = await session.save();
+        dispatch({ type: "settingsEdited", edited: false });
+        return `Saved the controls (flash ${ms} ms)`;
+      }),
+    );
 
   const sel = s.slots?.[selected];
   // The selected slot's gate: the draft's, else the stored one (null while it is read), GATE_DEFAULT for a new preset.
@@ -222,7 +257,28 @@ export function App() {
         <div class="workspace">
           <TabNav tabs={TABS} active={tab} onSelect={setTab} />
           <div class="tabpanel" role="tabpanel" id="tabpanel" aria-labelledby={`tab-${tab}`}>
-            {tab === "log" ? <LogView lines={s.log} /> : tab === "eq" ? <EqGraph status={s.status} /> : presets}
+            {tab === "log" ? (
+              <LogView lines={s.log} />
+            ) : tab === "eq" ? (
+              <EqGraph status={s.status} params={s.params} values={s.values} />
+            ) : tab === "controls" && !linked ? (
+              <p class="tab-empty">Waiting for the pedal.</p>
+            ) : tab === "controls" ? (
+              <ControlsTab
+                params={s.params}
+                paramsError={s.paramsError}
+                values={s.values}
+                shownCode={shownCode}
+                enabled={ready}
+                edited={s.settingsEdited}
+                onAssign={onAssign}
+                onSet={setParam}
+                onFactoryLayout={onFactoryLayout}
+                onSave={onSaveSettings}
+              />
+            ) : (
+              presets
+            )}
           </div>
         </div>
       </div>

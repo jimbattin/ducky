@@ -1,13 +1,16 @@
 import { useMemo, useState } from "preact/hooks";
-import { MID_HZ } from "../controls";
+import { knobPosition, MID_HZ } from "../controls";
 import { type Cut, type EqSettings, eqCurves, eqTotalDb, readEqSettings } from "../eqModel";
 import { fixed, fmtHz, signedDb } from "../format";
-import type { StatusMessage } from "../link/protocol";
+import type { ParamInfo, StatusMessage, ValuesMessage } from "../link/protocol";
 import { GroupBox } from "./GroupBox";
 
 interface Props {
-  /** The pedal's last STATUS; null until one arrives. */
+  /** The pedal's last STATUS (Knob 2, the mute); null until one arrives. */
   status: StatusMessage | null;
+  /** The pedal's parameter table and its live values; null until they are read. */
+  params: readonly ParamInfo[] | null;
+  values: ValuesMessage | null;
 }
 
 // The plot: log frequency 20 Hz - 20 kHz across, +24..-36 dB down, in viewBox units.
@@ -86,13 +89,14 @@ function plotPaths(s: EqSettings): Plot {
 }
 
 /**
- * The EQ tab's response graph: low-cut, mid and high-cut with the output volume, from the pedal's knobs and toggles
- * as STATUS reports them. Read-only: the pedal is what you see is what you get.
+ * The EQ tab's response graph: low-cut, mid and high-cut from their parameters' live values (whichever control or
+ * the Controls tab set them), with Knob 2's output volume. Read-only.
  */
-export function EqGraph({ status }: Props) {
+export function EqGraph({ status, params, values }: Props) {
   const [hoverHz, setHoverHz] = useState<number | null>(null);
-  const settings = status && readEqSettings(status.knobs, status.toggles);
-  // Keyed on the settings' values: STATUS arrives every 100 ms with a fresh object.
+  const settings =
+    status && params && values ? readEqSettings(params, values.codes, knobPosition(status.knobs, 1)) : null;
+  // Keyed on the settings' values: STATUS and VALUES arrive every 100 ms with fresh objects.
   const settingsKey = settings && JSON.stringify(settings);
   // biome-ignore lint/correctness/useExhaustiveDependencies: settingsKey stands for settings
   const plot = useMemo(() => (settings ? plotPaths(settings) : null), [settingsKey]);

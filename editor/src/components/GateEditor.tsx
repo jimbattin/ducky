@@ -61,7 +61,7 @@ export function GateEditor({ slotNumber, gate, edited, enabled, playing, status,
             ))}
           </div>
           <GateMeter status={status} gate={gate} playing={playing} />
-          <p class="gate-hint">
+          <p class="hint">
             Listens to the guitar input before the model and closes the output. It closes below the threshold and opens
             6 dB above it.{playing && " Changes are heard at once; Save stores them."}
           </p>

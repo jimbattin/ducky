@@ -12,7 +12,8 @@ export function Positions({ label, options, value }: Props) {
     // biome-ignore lint/a11y/useSemanticElements: a row of position labels, not a form fieldset
     <div class="segmented" role="group" aria-label={label}>
       {options.map((name, i) => (
-        <span key={name} data-on={i === value} aria-current={i === value ? "true" : undefined} title={name}>
+        // biome-ignore lint/suspicious/noArrayIndexKey: the positions are fixed (up, middle, down); two may share a name
+        <span key={i} data-on={i === value} aria-current={i === value ? "true" : undefined} title={name}>
           {name}
         </span>
       ))}

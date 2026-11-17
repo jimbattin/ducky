@@ -499,9 +499,9 @@ Eichas and Zölzer's approach for a similar circuit: a generic feed-forward comp
 - **Calibration:** the model works in volts, and Ducky knows its input scale only from datasheets (+4.5 dBu at 0 dBFS, not measured). An error there moves every threshold by the same number of dB.
 - **Levels into the amp model:** a compressed signal sits at 0.5–1.0 V peak (−11 to −5 dBFS) whatever the guitar, and quiet playing arrives up to 20 dB hotter. Knob 1 follows the compressor and can trim it.
 - **Noise:** up to +20 dB on everything below threshold, the input noise included (−84 dBFS with nothing plugged in, `docs/ROADMAP.md` M4), ahead of a high-gain model.
-- **Controls:** all 6 knobs, 3 toggles and both footswitches are taken. The settings ("Settings (proposal)") would have to live in the preset like the noise gate's, edited and auditioned from the editor and `tools/pedal.ts`, with another slot format bump.
+- **Controls:** all 6 knobs, 3 toggles and both footswitches are taken in the factory layout. The settings ("Settings (proposal)") become global parameters (`docs/ROADMAP.md` M9), set from the editor and `tools/pedal.ts` or from a knob or switch assigned to them (Knobs 3–6, SW1–SW3); no slot format bump.
 - **Which controls to keep:** Level duplicates a gain Ducky does not otherwise have ahead of the compressor, so it matters. Sustain's linear-pot law puts half the range in the first quarter turn; a setting in dB of gain may serve better. Balance's taper is unresolved in the sources.
-- **CPU:** the bench chain with an IR is at 597.6 permille against the 550 gate (`docs/FILTERS.md` "Measured"), so even the 10–20 permille guessed under "Cost" has no room today.
+- **CPU:** the bench chain with an IR and the gate is at 597.6 permille against the 850 ceiling (`docs/FILTERS.md` "Measured", `docs/ROADMAP.md` "Decisions"), so the 10–20 permille guessed under "Cost" fits.
 - **Off state:** bit-exact bypass, as the gate's disabled state is, or running always so the load does not depend on the setting, as the EQ does.
 - **Latency:** none; nothing in the model looks ahead.
 

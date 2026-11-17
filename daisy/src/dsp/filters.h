@@ -1,4 +1,6 @@
-// The EQ after the IR: low-cut (Knobs 5, 6, SW1), the SW3 mid bell, high-cut (Knobs 4, 3, SW2). Spec: docs/FILTERS.md.
+// The EQ after the IR: low-cut, the 515 Hz mid bell, high-cut. Its inputs are the EQ parameters (params.h), each a
+// knob-like position 0..1 or a toggle-like position 0..2; the factory layout puts the low-cut on Knobs 5, 6 and SW1, the
+// mid on SW3 and the high-cut on Knobs 4, 3 and SW2, so the names below say "knob" and "toggle". Spec: docs/FILTERS.md.
 // Host-portable (no libDaisy, no allocation), covered by tests/filters_test.cpp.
 //
 // Every section is a trapezoidal (TPT, Zavalishin/Simper) one-pole or state-variable filter: bilinear-exact responses,
@@ -251,7 +253,8 @@ private:
     float ic1_ = 0.0f, ic2_ = 0.0f;
 };
 
-// The pedal's EQ controls: knobs 0..1, toggles as controls.h reports them (0 down, 1 middle, 2 up).
+// The EQ's inputs: the parameters' values (params.h), positions 0..1 for the continuous ones and indexes laid out as
+// toggle positions (0 down, 1 middle, 2 up) for the slopes and the mid.
 struct EqControls {
     float low_cut, low_res, high_cut, high_res;
     uint8_t sw1, sw2, sw3;

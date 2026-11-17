@@ -7,6 +7,9 @@ export const fixed = (x: number, digits: number): string => `${x < 0 ? "−" : "
 /** "+1.0 dB", "−7.0 dB"; unit "dBu" for levels. */
 export const signedDb = (x: number, unit = "dB"): string => `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(1)} ${unit}`;
 
+/** A value's text from the pedal's table (ASCII) as the editor shows it: "-7 dB" becomes "−7 dB". */
+export const typographic = (text: string): string => text.replace(/^-(?=\d)/, "−");
+
 export const fmtHz = (f: number): string =>
   f < 1000 ? `${Math.round(f)} Hz` : `${(f / 1000).toFixed(f < 10000 ? 2 : 1)} kHz`;
 

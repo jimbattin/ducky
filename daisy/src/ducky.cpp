@@ -1,6 +1,7 @@
 // Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). The left input goes through Knob 1's input trim,
 // the current preset's A2-Lite model (dsp/a2lite.h) and cab IR when it has one (dsp/convolver.h), the EQ
-// (dsp/filters.h: low-cut on Knobs 5-6 and SW1, the SW3 mid, high-cut on Knobs 4-3 and SW2), and Knob 2's output
+// (dsp/filters.h, driven by the parameters assigned to the control slots, Knobs 3-6 and SW1-SW3: params.h,
+// param_store.h; the assignments and values are kept in the settings record, settings.h), and Knob 2's output
 // volume times the model's level match and the preset's noise gate (dsp/gain.h, dsp/noise_gate.h: the gate listens to
 // the input before the trim), then FS1's mute ramp and the preset switch's fade, and is copied to both outputs (dual
 // mono). Presets live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU, or slot by slot over the
@@ -10,21 +11,23 @@
 //
 // Two threads of control:
 // - AudioCallback (the audio DMA interrupt, 48 kHz, 24-sample blocks): reads and publishes the controls (30 ms toggle
-//   hysteresis), toggles the mute on FS1, counts FS2 presses, steps the preset switch, runs the gate's detector, the
-//   trim, the engine, the IR, the EQ and the output gain, the mute ramp and the preset fade, measures the input and
-//   output peaks and the gate's level and cut, drives LED1 and LED2's blinks, and measures the load and the underruns.
-// - The main loop: USB (usb_link.h: Identity, HELLO, DFU; the slot commands in onCommand, their replies and the
-//   STATUS stream in serveReplies), the preset switch (servePresets), the state record (writeState), the slot writes
-//   (writeSlot) and the once-a-second log lines.
+//   hysteresis), toggles the mute on FS1, counts FS2 presses, applies the link's parameter edits and arbitrates the
+//   control slots (param_store.h), steps the preset switch, runs the gate's detector, the trim, the engine, the IR,
+//   the EQ and the output gain, the mute ramp and the preset fade, measures the input and output peaks and the gate's
+//   level and cut, drives LED1 and LED2's blinks, and measures the load and the underruns.
+// - The main loop: USB (usb_link.h: Identity, HELLO, DFU; the slot and parameter commands in onCommand, their replies
+//   and the STATUS and VALUES stream in serveReplies), the preset switch (servePresets), the state record
+//   (writeState), the settings record (saveSettings), the slot writes (writeSlot) and the once-a-second log lines.
 // A preset switch: the main loop raises gSwapReq; the callback fades out (gSwapFade), then parks (writes silence,
 // touches neither the engine nor the IR) and acks with gSwapParked; the main loop loads the next preset into the engine
 // and the IR and publishes its gains with gSwapLoaded; the callback takes them and fades in.
-// They share only atomics, each with one writer:
+// They share only atomics, each with one writer, and one single-producer single-consumer ring:
 // - callback -> main loop (relaxed): gKnob, gToggle, gFsHeld, gMutedPub, gUnderruns, gPeak, gOutPeak, gLoadAvg,
-//   gLoadMax, gFs2Presses, gGateLevel, gGateGain; gSwapParked (release/acquire);
+//   gLoadMax, gFs2Presses, gGateLevel, gGateGain, gParamPub, gAssignPub, gHeldPub; gSwapParked and gEditsDone
+//   (release/acquire);
 // - main loop -> callback (relaxed): gPeakReset, gLoadReset, gBlinkCount, gGateWord (publishGate), gGateMeterReset;
 //   gSwapReq, gSwapLoaded (publishing gNextLevel, gNextInCal, gNextIrOn, gNextModelOn) and gBlinkReq
-//   (release/acquire).
+//   (release/acquire); gEdits (the ring: SET and ASSIGN, applied at the next block).
 // Memory (memory.h): AudioCallback runs from ITCM; the engine, the EQ and the callback's own state live in DTCM, the
 // IR convolver (66 KB of spectra, streamed through the D-cache every block) in AXI SRAM, which the bench measured 24%
 // faster for it than D2 SRAM (docs/FILTERS.md), the parsed presets in SDRAM. FPSCR.FZ is on (denormals flush to zero).
@@ -49,7 +52,11 @@
 #include "ir.h"
 #include "memory.h"
 #include "model.h"
+#include "param_store.h"
+#include "params.h"
 #include "preset.h"
+#include "settings.h"
+#include "spsc_ring.h"
 #include "upload.h"
 #include "usb_link.h"
 
@@ -79,6 +86,8 @@ dkdsp::IrConvolver gIr;        // AXI SRAM; Init before StartAudio; the main loo
 DK_DTCM bool gIrOn = false;    // the current preset has an IR
 DK_DTCM bool gModelOn = false;  // a preset is loaded: false plays dry (taken from gNextModelOn when fading in)
 DK_DTCM dkdsp::Eq gEq;
+DK_DTCM dkparam::Store gStore;     // the parameter values and the control slots; Init before StartAudio
+DK_DTCM uint32_t gEditsTaken = 0;  // edits taken from gEdits since boot
 // The preset switch: kPlaying -> (gSwapReq) kFadingOut -> (gSwapFade silent) kParked -> (gSwapLoaded) kPlaying.
 enum class Swap : uint8_t { kPlaying, kFadingOut, kParked };
 DK_DTCM Swap gSwap = Swap::kPlaying;
@@ -104,6 +113,10 @@ std::atomic<float> gGateLevel{0.0f};       // gGateLevelAcc, published every blo
 std::atomic<float> gGateGain{1.0f};        // gGateGainAcc, published every block
 std::atomic<uint32_t> gFs2Presses{0};      // FS2 presses since boot
 std::atomic<uint32_t> gSwapParked{0};      // the gSwapReq the callback has parked for (release)
+std::atomic<float> gParamPub[dkparam::kParamCount];       // gStore's values, published every block
+std::atomic<uint8_t> gAssignPub[dkparam::kControlSlots];  // gStore's assignments, published every block
+std::atomic<uint8_t> gHeldPub{0};                         // gStore's held bits, published every block
+std::atomic<uint32_t> gEditsDone{0};  // gEditsTaken once those edits' values are published (release)
 // Main loop -> callback.
 std::atomic<bool> gPeakReset{false};  // restart gPeakAcc and gOutPeakAcc
 std::atomic<bool> gLoadReset{false};  // restart gLoad
@@ -115,6 +128,7 @@ std::atomic<uint8_t> gBlinkCount{0};
 // settings for one block; the reserved byte is 0, so no published pair equals gGateSeen's initial value.
 std::atomic<uint32_t> gGateWord[2];
 std::atomic<bool> gGateMeterReset{false};  // restart gGateLevelAcc and gGateGainAcc
+SpscRing<dkparam::Edit, 16> gEdits;        // SET and ASSIGN (onCommand), applied by the callback's next block
 float gNextLevel = 1.0f, gNextInCal = 1.0f;  // the loaded preset's gains, IR and model, published by gSwapLoaded
 bool gNextIrOn = false, gNextModelOn = false;
 
@@ -132,7 +146,7 @@ uint32_t gSwitchedAt = 0;      // System::GetNow() at the last switch
 constexpr uint32_t kPersistDelayMs = 2000;  // the state record is written once switching has settled this long
 bool gReload = false;          // reload the target slot (its flash changed) even when it is already loaded
 
-// The link's slot commands (onCommand, serveReplies). Main loop only.
+// The link's slot and parameter commands (onCommand, serveReplies). Main loop only.
 DK_SDRAM uint8_t gUploadBuf[ps::kSizeWithIr];
 dklink::Upload gUpload(gUploadBuf);
 DK_SDRAM uint8_t gScratch[2][ps::kSizeWithIr];  // RENAME's, SWAP's and GATE's copies of slot images
@@ -150,6 +164,11 @@ size_t gReadLen = 0;
 bool gWatch = false;  // STATUS every kWatchPeriodMs
 uint32_t gWatchAt = 0;
 uint16_t gLoadAvgPm = 0, gLoadMaxPm = 0;  // the last `load` line's values
+uint32_t gEditsSent = 0;                  // edits pushed to gEdits since boot
+int gSettingsIndex = -1;                  // the settings sector holding the newest record; -1 = none (factory)
+uint32_t gSettingsSeq = 0;
+int gDumpNext = -1;       // the next PARAM to send for DUMP; kParamCount: its VALUES; kParamCount + 1: its RESULT
+bool gValuesDue = false;  // WATCH's VALUES, after its STATUS
 
 // Slots and models.
 
@@ -279,11 +298,28 @@ void logSlots() {
     dkusb::Log("slots %s %s %s %s %s %s %s %s", s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
 }
 
-// At boot and on HELLO: the boot line, each slot's status, the current preset.
+// The settings record in use (`settings factory` with none) and the live layout: each control slot's parameter. Seven
+// parameters on one control each fit a log line; a longer layout (a parameter on several controls) is cut at 120
+// characters.
+void logSettings() {
+    if (gSettingsIndex < 0)
+        dkusb::Log("settings factory");
+    else
+        dkusb::Log("settings seq %lu", (unsigned long)gSettingsSeq);
+    const char* n[dkparam::kControlSlots];
+    for (int c = 0; c < dkparam::kControlSlots; ++c) {
+        const uint8_t id = gAssignPub[c].load(std::memory_order_relaxed);
+        n[c] = id < dkparam::kParamCount ? dkparam::kParams[id].name : "none";
+    }
+    dkusb::Log("layout k3 %s k4 %s k5 %s k6 %s sw1 %s sw2 %s sw3 %s", n[0], n[1], n[2], n[3], n[4], n[5], n[6]);
+}
+
+// At boot and on HELLO: the boot line, each slot's status, the current preset, the settings and the layout.
 void logBoot() {
     logBootLine();
     logSlots();
     logPreset(0);
+    logSettings();
 }
 
 // The no-audio loop's boot and HELLO lines.
@@ -371,7 +407,35 @@ DK_ITCM void readControls(uint8_t (&tog)[dkboard::kToggles]) {
     if (hw.FootswitchRising(1)) gFs2Presses.fetch_add(1, std::memory_order_relaxed);
 }
 
-// Step 3: the preset switch's handshake (servePresets).
+// gStore's values, assignments and held bits, for the main loop. The callback, and main() before StartAudio.
+DK_ITCM void publishParams() {
+    for (int i = 0; i < dkparam::kParamCount; ++i)
+        gParamPub[i].store(gStore.Value(uint8_t(i)), std::memory_order_relaxed);
+    for (int c = 0; c < dkparam::kControlSlots; ++c)
+        gAssignPub[c].store(gStore.Assignment(c), std::memory_order_relaxed);
+    gHeldPub.store(gStore.HeldBits(), std::memory_order_relaxed);
+}
+
+static_assert(dkparam::kFirstSlotKnob + dkparam::kKnobSlots == dkboard::kKnobs &&
+                  dkparam::kSwitchSlots == dkboard::kToggles,
+              "the control slots are Knobs 3-6 and SW1-SW3");
+
+// Step 3: the link's queued SETs and ASSIGNs, then the control slots write their parameters (param_store.h); the
+// result is published, then the count of edits it includes (awaitEdits).
+DK_ITCM void stepParams(const uint8_t (&tog)[dkboard::kToggles]) {
+    float knobs[dkparam::kKnobSlots];
+    for (int s = 0; s < dkparam::kKnobSlots; ++s) knobs[s] = hw.Knob(dkparam::kFirstSlotKnob + s);
+    dkparam::Edit e;
+    while (gEdits.Pop(e)) {
+        gStore.Apply(e, knobs);
+        ++gEditsTaken;
+    }
+    gStore.Update(knobs, tog);
+    publishParams();
+    gEditsDone.store(gEditsTaken, std::memory_order_release);
+}
+
+// Step 4: the preset switch's handshake (servePresets).
 DK_ITCM void stepSwap() {
     if (gSwap == Swap::kPlaying) {
         const uint32_t req = gSwapReq.load(std::memory_order_acquire);
@@ -387,7 +451,7 @@ DK_ITCM void stepSwap() {
     }
 }
 
-// Step 6: the mute flag, the input and output peaks and the gate's level and cut, accumulated and published.
+// Step 7: the mute flag, the input and output peaks and the gate's level and cut, accumulated and published.
 DK_ITCM void publishMeters(float peak, float outPeak, float gate) {
     gMutedPub.store(gMuted, std::memory_order_relaxed);
     if (gPeakReset.exchange(false, std::memory_order_relaxed)) {
@@ -408,7 +472,7 @@ DK_ITCM void publishMeters(float peak, float outPeak, float gate) {
     gGateGain.store(gGateGainAcc, std::memory_order_relaxed);
 }
 
-// Step 7: LED1 (on unless muted) and LED2's blinks.
+// Step 8: LED1 (on unless muted) and LED2's blinks.
 DK_ITCM void driveLeds() {
     gLed1.Set(gMuted ? 0.0f : 1.0f);
     gLed1.Update();
@@ -426,13 +490,14 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     const uint32_t start = System::GetTick();
     uint8_t tog[dkboard::kToggles];
     readControls(tog);
+    stepParams(tog);
     stepSwap();
-    // Step 4: the gate's settings (publishGate), then its detector on the raw input peak: its gain joins the output
+    // Step 5: the gate's settings (publishGate), then its detector on the raw input peak: its gain joins the output
     // ramp.
     const float peak = dkdsp::Peak(in[0], size);
     takeGate();
     const float gate = gGate.Process(peak);
-    // Step 5: the chain. out[0] is the working buffer; the engine accepts in == out.
+    // Step 6: the chain. out[0] is the working buffer; the engine accepts in == out.
     const float inTarget = gInCal * dkdsp::InputGain(gInKnob.Process(hw.Knob(0)));
     gInGain.Process(in[0], out[0], size, inTarget);
     if (gSwap == Swap::kParked) {
@@ -441,8 +506,11 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
         gEngine.Process(out[0], out[0], size);
         if (gIrOn) gIr.Process(out[0], out[0]);  // size is kBlockSize: dkfw::Start sets the block size
     }
-    // Knob 5 low-cut, Knob 6 its resonance, Knob 4 high-cut, Knob 3 its resonance.
-    gEq.Process(out[0], size, {hw.Knob(4), hw.Knob(5), hw.Knob(3), hw.Knob(2), tog[0], tog[1], tog[2]});
+    // The EQ's controls are parameters (stepParams); in the factory layout each is its knob's or toggle's reading.
+    const float* v = gStore.Values();
+    gEq.Process(out[0], size,
+                {v[dkparam::kLowCutFreq], v[dkparam::kLowCutRes], v[dkparam::kHighCutFreq], v[dkparam::kHighCutRes],
+                 uint8_t(v[dkparam::kLowCutSlope]), uint8_t(v[dkparam::kHighCutSlope]), uint8_t(v[dkparam::kMid])});
     const float outTarget = gLevel * dkdsp::OutputGain(gOutKnob.Process(hw.Knob(1))) * gate;
     gOutGain.Process(out[0], out[0], size, outTarget);
     gMute.Process(out[0], out[0], size);
@@ -451,11 +519,11 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
         gSwap = Swap::kParked;
         gSwapParked.store(gSwapSeen, std::memory_order_release);
     }
-    // Step 6.
+    // Step 7.
     std::copy(out[0], out[0] + size, out[1]);
     publishMeters(peak, dkdsp::Peak(out[0], size), gate);
     driveLeds();
-    // Step 8.
+    // Step 9.
     if (System::GetTick() - start > gBlockTicks) gUnderruns.fetch_add(1, std::memory_order_relaxed);
     // A Reset just before OnBlockEnd takes its first-cycle path: the published loads are never NaN.
     if (gLoadReset.exchange(false, std::memory_order_relaxed)) gLoad.Reset();
@@ -496,22 +564,27 @@ void settleTarget() {
     if (gTarget >= 0 && !gFilled[gTarget]) retarget(ps::NextFilled(gFilled, gTarget));
 }
 
-// Writes slot as the newest state record, into the state sector not holding the newest one, and verifies it through
-// the memory-mapped QSPI. On a failure the previous record stays the newest; the next switch tries again. The callback
-// reads nothing from QSPI, so the blocking erase and write do not stall audio.
+// Erases the 4 KB sector at QSPI offset off, writes buf[0, n) at its start and verifies it through the memory-mapped
+// QSPI. The callback reads nothing from QSPI, so the blocking erase and write do not stall audio.
+bool writeSector(uint32_t off, uint8_t* buf, size_t n) {
+    const bool ok = hw.seed.qspi.Erase(off, off + ps::kStateSectorBytes) == QSPIHandle::Result::OK &&
+                    hw.seed.qspi.Write(off, uint32_t(n), buf) == QSPIHandle::Result::OK;
+    SCB_InvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(ps::kQspiBase + off), int32_t(ps::kStateSectorBytes));
+    return ok && std::memcmp(mapped(off), buf, n) == 0;
+}
+
+// Writes slot as the newest state record, into the state sector not holding the newest one (writeSector). On a
+// failure the previous record stays the newest; the next switch tries again.
 void writeState(int slot) {
     const uint32_t t0 = System::GetNow();
     const int idx = gStateIndex == 0 ? 1 : 0;
     const uint32_t off = ps::kStateOffset[idx];
     uint8_t buf[ps::kStateBytes];
     ps::BuildState(buf, gStateSeq + 1, slot);
-    bool ok = hw.seed.qspi.Erase(off, off + ps::kStateSectorBytes) == QSPIHandle::Result::OK &&
-              hw.seed.qspi.Write(off, ps::kStateBytes, buf) == QSPIHandle::Result::OK;
-    SCB_InvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(ps::kQspiBase + off), int32_t(ps::kStateSectorBytes));
     uint32_t seq = 0;
     int written = -1;
-    ok = ok && ps::StateValid(mapped(off), seq, written) && seq == gStateSeq + 1 && written == slot &&
-         std::memcmp(mapped(off), buf, ps::kStateBytes) == 0;
+    const bool ok = writeSector(off, buf, sizeof buf) && ps::StateValid(mapped(off), seq, written) &&
+                    seq == gStateSeq + 1 && written == slot;
     if (!ok) {
         dkusb::Log("state write failed");
         return;
@@ -520,6 +593,31 @@ void writeState(int slot) {
     gStateSeq = seq;
     gStateSlot = slot;
     dkusb::Log("state slot %d seq %lu %lu ms", slot + 1, (unsigned long)seq, (unsigned long)(System::GetNow() - t0));
+}
+
+// SAVE: writes the live assignments and values (as published) as the newest settings record, into the settings sector
+// not holding the newest one (writeSector); ms is the time it took. On a failure the previous record stays the newest.
+bool saveSettings(uint32_t& ms) {
+    const uint32_t t0 = System::GetNow();
+    const int idx = gSettingsIndex == 0 ? 1 : 0;
+    const uint32_t off = dkparam::kSettingsOffset[idx];
+    dkparam::Settings s;
+    for (int c = 0; c < dkparam::kControlSlots; ++c) s.assign[c] = gAssignPub[c].load(std::memory_order_relaxed);
+    for (int i = 0; i < dkparam::kParamCount; ++i) s.value[i] = gParamPub[i].load(std::memory_order_relaxed);
+    uint8_t buf[dkparam::kSettingsBytes];
+    dkparam::BuildSettings(buf, gSettingsSeq + 1, s);
+    uint32_t seq = 0;
+    const bool ok =
+        writeSector(off, buf, sizeof buf) && dkparam::SettingsValid(mapped(off), seq) && seq == gSettingsSeq + 1;
+    ms = System::GetNow() - t0;
+    if (!ok) {
+        dkusb::Log("settings write failed");
+        return false;
+    }
+    gSettingsIndex = idx;
+    gSettingsSeq = seq;
+    dkusb::Log("settings seq %lu %lu ms", (unsigned long)seq, (unsigned long)ms);
+    return true;
 }
 
 // FS2 steps gTarget through the filled slots (presses while dry are dropped) and starts LED2's blinks; a target other
@@ -625,8 +723,23 @@ void finishWrite(uint8_t cmd, bool ok, uint32_t ms) {
     logSlots();
 }
 
-// The link's slot commands (docs/MIDI.md); false for a command this does not know. Each sets the RESULT; slot changes
-// log their line and the `slots` line.
+// Hands e to the callback, which applies it at its next block (stepParams). The ring holds 16 and the callback
+// empties it every 0.5 ms, so a full ring clears at once.
+void pushEdit(const dkparam::Edit& e) {
+    while (!gEdits.Push(e)) {
+    }
+    ++gEditsSent;
+}
+
+// Returns once the callback has applied every edit pushed so far and published the result: at most a block, 0.5 ms.
+// Only once audio runs (onCommand).
+void awaitEdits() {
+    while (gEditsDone.load(std::memory_order_acquire) != gEditsSent) {
+    }
+}
+
+// The link's slot and parameter commands (docs/MIDI.md); false for a command this does not know. Each sets the RESULT
+// (LIST and DUMP through serveReplies); slot changes log their line and the `slots` line.
 bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
     using dklink::Result;
     switch (cmd) {
@@ -820,6 +933,48 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
             finishWrite(cmd, ok, ms);
             return true;
         }
+        case dklink::kDump:
+            if (n != 0) {
+                result(cmd, Result::kBadRequest, 0);
+            } else {
+                awaitEdits();   // the VALUES includes every SET and ASSIGN answered so far
+                gDumpNext = 0;  // serveReplies sends the PARAMs and the VALUES, then the RESULT
+            }
+            return true;
+        case dklink::kSet: {
+            if (n != 3 || p[0] >= dkparam::kParamCount) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            // Sent while a slider moves: no log line.
+            const dkparam::ParamDef& d = dkparam::kParams[p[0]];
+            const float v = dkparam::FromCode(d, dklink::GetSeptets(p + 1, 2));
+            pushEdit({dkparam::EditKind::kSet, p[0], 0, v});
+            result(cmd, Result::kOk, dkparam::ToCode(d, v));
+            return true;
+        }
+        case dklink::kAssign: {
+            if (n != 2 || !dkparam::Accepts(p[0], p[1])) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            pushEdit({dkparam::EditKind::kAssign, p[0], p[1], 0.0f});
+            dkusb::Log("assign %s %s", dkparam::kControlNames[p[0]],
+                       p[1] == dkparam::kNoParam ? "none" : dkparam::kParams[p[1]].name);
+            result(cmd, Result::kOk, 0);
+            return true;
+        }
+        case dklink::kSave: {
+            if (n != 0) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            awaitEdits();
+            uint32_t ms;
+            const bool ok = saveSettings(ms);
+            result(cmd, ok ? Result::kOk : Result::kFlash, ok ? ms : 0);
+            return true;
+        }
         default: return false;
     }
 }
@@ -828,8 +983,19 @@ static_assert(sizeof(dklink::StatusFrame::knob) / sizeof(uint16_t) == dkboard::k
                   sizeof(dklink::StatusFrame::toggle) == dkboard::kToggles,
               "STATUS carries every knob and toggle");
 
-// Once per main-loop pass, before dkusb::Serve: LIST's SLOTs then its RESULT, READ's DATA, the pending RESULT, and the
-// STATUS when WATCH is on and kWatchPeriodMs has passed. Whatever does not fit in Tx() waits for a later pass, in order.
+// VALUES' fields, from what the callback last published.
+dklink::ValuesFrame valuesFrame() {
+    dklink::ValuesFrame v;
+    for (int c = 0; c < dkparam::kControlSlots; ++c) v.assign[c] = gAssignPub[c].load(std::memory_order_relaxed);
+    v.held = gHeldPub.load(std::memory_order_relaxed);
+    for (int i = 0; i < dkparam::kParamCount; ++i)
+        v.code[i] = dkparam::ToCode(dkparam::kParams[i], gParamPub[i].load(std::memory_order_relaxed));
+    return v;
+}
+
+// Once per main-loop pass, before dkusb::Serve: LIST's SLOTs then its RESULT, DUMP's PARAMs and VALUES then its
+// RESULT, READ's DATA, the pending RESULT, and the STATUS, then a VALUES, when WATCH is on and kWatchPeriodMs has
+// passed. Whatever does not fit in Tx() waits for a later pass, in order.
 void serveReplies(uint32_t now) {
     dklink::TxBuffer& tx = dkusb::Tx();
     while (gListNext >= 0 && gListNext < ps::kSlots) {
@@ -846,9 +1012,21 @@ void serveReplies(uint32_t now) {
         result(dklink::kList, dklink::Result::kOk, ps::kSlots);
         gListNext = -1;
     }
+    while (gDumpNext >= 0 && gDumpNext < dkparam::kParamCount) {
+        if (!tx.AppendParam(dkparam::kParams[gDumpNext])) break;
+        ++gDumpNext;
+    }
+    if (gDumpNext == dkparam::kParamCount && tx.AppendValues(valuesFrame())) ++gDumpNext;
+    if (gDumpNext == dkparam::kParamCount + 1 && !gResultDue) {
+        result(dklink::kDump, dklink::Result::kOk, dkparam::kParamCount);
+        gDumpNext = -1;
+    }
     if (gReadDue && tx.AppendData(gReadSlot, gReadOff, dkbin::Crc32(gReadBuf, gReadLen), gReadBuf, gReadLen))
         gReadDue = false;
-    if (gResultDue && !gReadDue && tx.AppendResult(gResultCmd, gResultCode, gResultValue)) gResultDue = false;
+    // A RESULT comes last: after READ's DATA, and never inside a DUMP's PARAMs and VALUES.
+    const bool dumping = gDumpNext >= 0 && gDumpNext <= dkparam::kParamCount;
+    if (gResultDue && !gReadDue && !dumping && tx.AppendResult(gResultCmd, gResultCode, gResultValue))
+        gResultDue = false;
     if (gWatch && now - gWatchAt >= dklink::kWatchPeriodMs) {
         dklink::StatusFrame s;
         s.load_avg = gLoadAvgPm;
@@ -865,8 +1043,10 @@ void serveReplies(uint32_t now) {
         if (tx.AppendStatus(s)) {
             gWatchAt = now;
             gGateMeterReset.store(true, std::memory_order_relaxed);
+            gValuesDue = true;
         }
     }
+    if (gValuesDue && tx.AppendValues(valuesFrame())) gValuesDue = false;
 }
 
 }  // namespace
@@ -898,6 +1078,11 @@ int main() {
     retarget(gCur);
     loadPreset(gCur);
     takeNextPreset();
+    gSettingsIndex = dkparam::NewestSettings(mapped(dkparam::kSettingsOffset[0]), mapped(dkparam::kSettingsOffset[1]),
+                                             gSettingsSeq);
+    gStore.Init(gSettingsIndex < 0 ? dkparam::FactorySettings()
+                                   : dkparam::DecodeSettings(mapped(dkparam::kSettingsOffset[gSettingsIndex])));
+    publishParams();
     logBoot();
 
     gSwapFade.Init(false);

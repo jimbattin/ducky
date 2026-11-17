@@ -12,15 +12,16 @@ A living plan. Milestones are done in order; any of them may be revised, split, 
 | CPU ceiling | The pedal's load stays under 850 permille of the block period; the bench's chain gate checks it (`docs/FIRMWARE.md` "Bench"). The rest is for what the load meter does not see: libDaisy's audio interrupt and its sample conversion, and the main loop (USB, the link, slot writes). The bench times the DSP alone, about 10 permille under the live meter. The model keeps its own M3 gate (450 permille). Until the 24-sample blocks the chain gate was 550. |
 | Input gain (Knob 1) | Relative trim of ±12 dB around the model's input calibration at noon (M4): NeuralAmpModelerPlugin's `+4.5 dBu − input_level_dbu`, where +4.5 dBu is the level at the input jack that reaches 0 dBFS (from the datasheets, not measured). A model without `input_level_dbu` is assumed captured at +12 dBu. |
 | Output (Knob 2) | Off … +12 dB, unity at noon. Each preset's output is level-matched using the A2-Lite submodel's own `metadata.loudness`. The top-level `loudness` is A2-Full's, and the two differ by about 0.1 dB. `loudness` is measured at the capture level, so after the input calibration a clean model plays a little quieter than a driven one (M4: about 1.8 dB). |
-| Cut filters | Knob 5 sets the low-cut (high-pass) cutoff, 20–500 Hz. Knob 4 sets the high-cut (low-pass) cutoff, 1.5–20 kHz. Both use a log taper. Turning the low-cut fully counter-clockwise or the high-cut fully clockwise bypasses that filter. Knob 6 sets the low-cut resonance and Knob 3 the high-cut resonance (Q 0.5 to about 2, only on the 12 and 24 dB slopes). SW1 sets the low-cut slope and SW2 the high-cut slope: up 6, middle 12, down 24 dB/oct. |
-| Mid (SW3) | Peaking filter at 515 Hz, Q 1: up +5 dB, middle bypass, down −7 dB. |
+| Cut filters | A low-cut (high-pass), 20–500 Hz, and a high-cut (low-pass), 1.5–20 kHz, both on a log taper. The low-cut at its bottom end and the high-cut at its top end are bypassed. Each has a resonance (Q 0.5 to about 2, only on the 12 and 24 dB slopes) and a slope: 6, 12 or 24 dB/oct. These six are parameters (M9). Factory layout: Knob 5 the low-cut frequency, Knob 6 its resonance, Knob 4 the high-cut frequency, Knob 3 its resonance, SW1 the low-cut slope and SW2 the high-cut slope (up 6, middle 12, down 24 dB/oct). |
+| Mid | Peaking filter at 515 Hz, Q 1, a three-value parameter (M9): +5 dB, bypass, −7 dB. Factory layout: SW3 up, middle, down. |
+| Controls (M9) | Knobs 1 and 2 are fixed. Knobs 3–6 and SW1–SW3 each drive one parameter of the table (`daisy/src/params.h`) or none; a switch takes only on/off and three-value parameters (on/off: middle off, up and down on). The assignments and the values are global, not per preset, and are kept by an explicit SAVE. A value set from the editor holds until its control moves (a knob more than 3 % of its travel). `docs/MIDI.md` "Parameters", "Controls". |
 | IR | Optional, up to 2048 taps (about 43 ms). The converter (`editor/src/ir/`, shared by the editor and `tools/ir_convert.ts`) resamples to 48 kHz, trims with a 64-tap fade, and normalises the 80 Hz–5 kHz band to 0 dB (pink-weighted), so a cab leaves an amp model's level about where it was. The editor warns when the model's `gear_type` already includes a cab. |
 | Noise gate | Per preset, off by default: threshold −80…−30 dBFS (opens 6 dB above it), attack 0.5–10 ms, hold 10–100 ms, release 10–1000 ms, ratio 1.5:1–10:1. Side-chained from the input jack (before Knob 1) and applied in Knob 2's output ramp, once per block: no latency, no lookahead. Edited in the editor (auditioned live) or with `tools/pedal.ts gate`; `docs/FILTERS.md` "Noise gate". |
 | Preset switching | FS2 steps forward through filled slots only and wraps. Audio fades out, the model is swapped and reset, then audio fades back in (5 ms each way, a gap of about 11 ms, no crossfade). LED2 blinks N times for slot N, repeating after 5 s dark; off while dry. The last slot is remembered across power cycles. |
 | Preset persistence | Presets survive switching to another firmware and back. They live in the upper 4 MB of the QSPI flash, outside any firmware image and outside bad_tape's saved values at `0x903FE000`. |
 | Hardware | Daisy Seed with 64 MB or more of SDRAM (development unit: Seed 1.2, 64 MB). HotHouse. |
-| SysEx | `F0 7D 64 <version> <cmd> … F7`. Device byte `0x64` is unused by sibling projects. Identity Reply and DFU command follow the bad_tape conventions. Since M7 the link also manages slots (list, chunked upload, erase, rename, swap) and streams status; since M8 it reads slots back (READ/DATA). `daisy/src/link.h` is the reference and `docs/MIDI.md` is generated from it. |
-| Editor | Preset manager plus live status: log, CPU load meter, knob/switch states, and the EQ's response graph (cuts, mid and output volume). It does not control the knobs remotely, because the pedal is "what you see is what you get". One self-contained HTML file, so it can be hosted anywhere, including in an iframe. Stored slots' metadata is read back from the pedal, not kept by the editor. |
+| SysEx | `F0 7D 64 <version> <cmd> … F7`. Device byte `0x64` is unused by sibling projects. Identity Reply and DFU command follow the bad_tape conventions. Since M7 the link also manages slots (list, chunked upload, erase, rename, swap) and streams status; since M8 it reads slots back (READ/DATA); since M9 it sends the parameter table, sets values and assignments and saves them (DUMP, SET, ASSIGN, SAVE; PARAM, VALUES). `daisy/src/link.h` is the reference and `docs/MIDI.md` is generated from it. |
+| Editor | Preset manager, the controls' assignments and the parameters' values, plus live status: log, CPU load meter, knob/switch states, and the EQ's response graph (cuts, mid and output volume). A parameter on a control stays "what you see is what you get" once that control moves; the editor sets parameters and holds them until then. One self-contained HTML file, so it can be hosted anywhere, including in an iframe. Stored slots' metadata and the parameter table are read from the pedal, not kept by the editor. |
 | Model and IR files | `models/*.nam`, converted `*.bin` and `irs/` are git-ignored. Only upstream MIT fixtures (`tests/fixtures/nam/`) are committed, plus `A2.bin` converted from upstream `A2.nam`, the generated IR fixture `tests/fixtures/ir/decay.{wav,bin}`, and the preset fixture `tests/fixtures/preset/A2_decay.bin` built from those two. |
 
 ## Feasibility
@@ -50,7 +51,15 @@ graph LR
   M6 --> M7[M7 Link protocol]
   M1 --> M8
   M7 --> M8[M8 Editor]
-  M8 --> M9[M9 Hardening]
+  M8 --> M9[M9 Parameters + assignable controls]
+  M9 --> M10[M10 Parametric EQ]
+  M10 --> M11[M11 Optical compressor]
+  M11 --> M12{M12 FX loop: go / no-go}
+  M9 -. settings record .-> M12
+  M12 --> M13[M13 Playtest, hardening, editor UX]
+  M13 --> M14[M14 Code audit]
+  M14 --> M15[M15 Public docs]
+  M15 --> M16[M16 Public release]
 ```
 
 ### M0: Scaffold, passthrough, DFU (done, `06ea416`)
@@ -164,10 +173,95 @@ graph LR
 - **Not yet checked:** an FS2 switch away and back re-auditioning an unsaved gate in the editor (needs the footswitch).
 - **Docs:** `docs/FILTERS.md` "Noise gate"; `docs/MIDI.md` (GATE, GATE TRY, STATUS); `docs/EDITOR.md`; `docs/FIRMWARE.md` "Threads", "Preset store", "Link protocol", "Log lines", "Bench".
 
-### M9: Hardening and release prep
-- Stress tests: fast FS2 presses, uploading while playing, power loss during writes, rapid knob sweeps.
-- Docs: a top-level `README.md`, and bring `docs/FIRMWARE.md` (memory map, measured performance, log lines) up to date.
-- Licence review before the history is squashed, including the upstream MIT fixtures and their `LICENSE` in `tests/fixtures/nam/`.
+### M9: Parameter table and assignable controls (done)
+Knobs 1 and 2 stay fixed (input trim, output volume). Knobs 3–6 and SW1–SW3 drive parameters chosen in the editor, after bad_tape's knob slots (`../bad_tape/daisy/src/params.h`, `param_store.h`, `saved_store.h`, the editor's Knobs tab, `AssignSelect.tsx`).
+
+- **Starting point:** Ducky had no parameter table. Every control was hard-wired in `daisy/src/ducky.cpp` and `controls.h`, and the gate was the only edited setting (in the slot). Most of M9 is the infrastructure M10–M12 add parameters to.
+- **Done when:** the factory layout plays as today (bench chain unchanged); every knob and switch slot is reassigned from the editor and from `pedal.ts` while playing, with no underruns, and survives a power cycle; a torn settings write leaves the previous record.
+- **Decided:**
+  - **Table** (`daisy/src/params.h`, host-portable): id (append-only), name, label, unit, group, range, default, taper (log or choice), off end, factory control. Seven parameters, the M5 EQ's. The editor and `pedal.ts` learn it over the link (DUMP), so ranges are not duplicated in TypeScript. No smoothing field: the DSP blocks smooth.
+  - **Values:** a continuous parameter's value is its position 0..1 along its taper (what the EQ already took from a knob); a choice's is its index, which for three values is the toggle position, so `SlopeFromToggle` and `MidGainDb` are unchanged. On the wire a value is a u14 code.
+  - **Controls:** slots 0–6 are Knobs 3–6 and SW1–SW3. A knob takes any parameter (a choice splits its travel, with hysteresis at the boundaries); a switch takes choices only. An on/off parameter on a switch is off in the middle and on up or down. A parameter may be on several controls or on none.
+  - **Arbitration** (`daisy/src/param_store.h`, in the audio callback): bad_tape's pickup. A SET, or assigning a control, holds it until a knob has moved more than 3 % of its travel or a switch changes position; a toggle that changes position always writes; the control moved last holds the others on its parameter.
+  - **Global, saved explicitly:** assignments and values are not per preset (a preset stays the model, the IR and the gate; the slot format stays 3). SET and ASSIGN act at once; SAVE writes the settings record (`daisy/src/settings.h`): two 4 KB sectors at `0x90482000`/`0x90483000`, written like the state record. At power-up a parameter on a control takes the control's position, one on no control its saved value.
+  - **Link:** DUMP (PARAM per parameter, then VALUES), SET, ASSIGN, SAVE, and a VALUES with every STATUS under WATCH. No GET: DUMP and the stream carry the values. The protocol version stays `01`. `tools/pedal.ts param list|get|set|assign|save`.
+  - **Editor:** a Controls tab (a menu per control, a slider or a button group per parameter, Factory layout, Save); the sidebar names what each control drives and marks held controls; the EQ graph is drawn from the parameters' values.
+  - FS2 has no hold layer (bad_tape's secondaries); its tap keeps stepping presets.
+- **Verified (host):** `tests/params_test.cpp`, `param_store_test.cpp` (the factory layout follows the controls exactly, pickup, last control wins, a jittering knob does not keep another held), `settings_test.cpp` (round trip, a torn newest record leaves the previous one, fewer stored parameters keep the later defaults, bad values and assignments decode safely), the PARAM and VALUES bytes in C++ and TypeScript, and `docs/MIDI.md`'s Parameters table against the editor's fixture. Both firmware images build; `AudioCallback` is in ITCM with the store inlined.
+- **Measured (Seed 1.2):** the parameter step costs 327 cycles a block (1.4 permille), after two rounds: the first version cost 545 (a loop over every control at each knob write, and float compares; `docs/M7_PERFORMANCE.md` rule 4). Live on a model without an IR: load avg 417, max 420–421 permille against 415, 418–419 before; 0 underruns through every command. SAVE takes 78–85 ms. `settings factory` on a pedal with no record; after assigning Knob 3 to the low-cut slope and Knob 6 to nothing, SAVE and a restart: `settings seq 1` and `layout k3 low_cut_slope … k6 none …`, the low-cut resonance (on no control) back at its saved Q 1.50 and the high-cut frequency (held at 3 kHz before the restart) back on Knob 4's position.
+- **Editor on the pedal (Chromium):** the Controls tab listed 7 controls and 7 parameters; choosing the low-cut slope for K3 renamed the sidebar's K3; SW1's menu offered only the three choices; a slider on a parameter with no control moved the EQ graph's curve; a slider on K5's parameter marked K5 Held; Save, then a page reload, showed the layout; Factory layout restored it.
+- **Not yet checked (needs hands on the pedal):** a held knob taking over after 3 % of travel and a held switch after a flip; a choice parameter on a knob by ear; a power pull during SAVE (the torn-record path is covered on the host).
+- **Found on hardware:** at power-up the knob readings rise from 0 over the first blocks, so with one parameter on a knob and a switch the knob usually ends up with it, not the switch.
+- **Docs:** `CLAUDE.md` "Controls"; `docs/MIDI.md` (generated: the commands, "Parameters", "Controls"); `docs/EDITOR.md` "Controls tab"; `docs/FIRMWARE.md` "Threads", "Settings record", "Memory", "Link protocol", "Log lines", "Measured (M9)".
+
+### M10: Parametric EQ (bad_tape's)
+Replace the M5 EQ with bad_tape's five-band parametric: low shelf, three bells, high shelf, ±12 dB, 40 Hz–16 kHz. Spec `../bad_tape/docs/EQ.md`; code `daisy/src/dsp/eq.h`, `tests/eq_model.h`, `editor/src/eqModel.ts`, `EqGraph.tsx`.
+
+- **What comes over:** RBJ prototypes mapped by the bilinear transform prewarped at each section's frequency; Simper SVFs mixed to the prototype; coefficients designed in double once per control tick and ramped across it; gains glide in dB, frequencies in log Hz, Qs in log Q (20 ms); a section resting at 0 dB stops, so the identity is bit-exact; `eq_enable` and `eq_position` (pre or post) crossfade over 20 ms.
+- **Port notes:**
+  - bad_tape runs at 96 kHz with 32-sample control ticks; Ducky runs 48 kHz with 24-sample blocks, so the tick becomes the block (2 kHz). The spec's reference table and its ±0.05 dB accuracy were measured at 96 kHz and must be recomputed at 48 kHz. The digital model is exact by construction, but bell 3 (up to 12 kHz) and the high shelf (up to 16 kHz) sit near Nyquist (24 kHz), where the bilinear curve departs from the analogue prototype; the editor draws the same digital model, so the graph stays true.
+  - `btdsp` helpers (`Svf`, `Flush`, `IsZero`, `Smoother`) against Ducky's `dsp/filters.h`, `blocks.h`, `gain.h`: reuse one set, not two.
+  - Cost: bad_tape measured 47.7 permille with all five sections live and 107.6 at most while every gain and frequency moved (96 kHz, 32 samples). At 48 kHz the per-sample work halves, but the design runs every 24 samples instead of 32 [estimate, not measured]. Today's EQ: 31.8 permille (M5, 48-sample blocks). The bench's worst case moves every section.
+  - `eq_position` pre puts the EQ before the model (a boost or tone shaping into the amp), post after the IR (where the EQ is today).
+  - Its parameters join M9's table; bad_tape's ids are not reused (Ducky's table is its own).
+- **Open questions:**
+  - The cut filters and the 515 Hz mid, to explore at the start of M10. (a) Drop everything; the shelves cover tone, but a shelf is not a 24 dB/oct high-cut for fizz. (b) Keep the cuts as their own block, and keep the mid only as a three-value parameter for SW3 (switches take no continuous parameter, so a bell's gain cannot go on one directly). (c) Keep all three as they are. Leaning towards (b).
+  - The factory layout of Knobs 3–6 and SW1–SW3 after the change.
+- **Done when:** `docs/EQ.md` restates the spec at 48 kHz with a recomputed reference; host tests cover the model, symmetry, identity, no-click on parameter jumps and block-size independence; the editor's graph and the firmware agree; the bench's worst case stays under 850 permille; sweeps on the pedal have no zipper noise.
+- **Docs:** `docs/EQ.md` (new); `docs/FILTERS.md` (the M5 EQ sections retired or reduced to the cuts); `CLAUDE.md` "Signal chain" and "Controls"; `docs/EDITOR.md`.
+
+### M11: Optical compressor (OTC-201)
+Implement the reduced model of `docs/compressor-spec.md` ("DSP model"), ahead of Knob 1 (spec, "Fitting it into Ducky").
+
+- **Order of work:**
+  1. Commit the reference implementation (appendix B) as a tool (run with `uv`) and render fixtures from it: the static table, the three steps, a guitar DI excerpt.
+  2. The C++ kernel in float32 (unchecked so far: conductances near 1e-5 S and block charges near 1e-9 C suggest scaling to µS and nC). Tables for `iled(w)` and `Gcell(n)` replace the per-block Newton steps and `pow`; ramping `1 / (A2 + Gf)` drops the per-sample division. Kernels follow `docs/M7_PERFORMANCE.md`.
+  3. Host tests: the kernel against the reference within float32 rounding, then the spec's "Validation plan" targets.
+  4. Settings into M9's table ("Settings (proposal)"): Enabled, Sustain, Level (−3 / 0 / +3 dB: a natural switch assignment), Mode (SB / Z), Balance.
+  5. Bench and live load.
+- **CPU:** guessed at 10–20 permille (spec, "Cost"). The bench chain with an IR and the gate is at 597.6 against the 850 ceiling, so it fits alongside M10.
+- **Open questions (from the spec):** off state (bit-exact bypass, or always running so the load does not depend on the setting); Sustain as pot percent or as dB of gain; Balance's taper; the +20 dB it adds to the input noise ahead of a high-gain model (the gate's detector reads the raw jack, so its threshold does not move); the unmeasured input calibration, which moves every threshold by the same error. Its settings are global (M9), so one setting serves every preset; a model that does not want it needs the compressor turned off or a switch assigned to it.
+- **Done when:** the spec's validation table passes on the host; the bench's worst case (M10's EQ moving, an IR, the gate, the compressor) stays under 850 permille; the settings are edited and auditioned from the editor and `pedal.ts` while playing; it sounds right on the pedal.
+- **Docs:** `docs/compressor-spec.md` becomes the block's spec (status built, measured cost); `docs/FILTERS.md` "Signal chain"; `CLAUDE.md` "Signal chain"; `docs/MIDI.md`; `docs/EDITOR.md`.
+
+### M12: FX loop mode (exploration, go / no-go)
+A global mode for a mono effects loop: R Out is the send, R In the return, and the pedal runs mono (L Out only).
+
+- **Hardware (checked in `../hothouse_pcb/open-source-pedals/hothouse/eagle/hothouse-io-no-branding.sch`):** both jacks are TRS. The input's tip is L In and its ring R In, the output's tip L Out and its ring R Out; the input's tip and ring normals go to ground. So the loop needs two insert (TRS to 2 × TS) cables: input = guitar + return, output = amp + send. With no plug or a mono plug the return reads silence, so loop mode cannot be detected from the jacks and must be an explicit setting (M9's settings record), off by default.
+- **Where the loop sits (to decide, possibly a setting):** after the model before the IR (the model includes the power amp, so this is "loop before the cab"), after the IR before the EQ, or last before the output volume.
+- **The gate moves:** its gain rides Knob 2's ramp at the output today. In loop mode it must act before the send, or it gates the returning delay and reverb tails. Mute (FS1) stays after the return.
+- **Structure:** each callback sends the first half of the chain on L In and runs the second half on R In. The return is always an earlier block's send (the round trip), so no extra state or buffering is needed.
+- **To measure:** round-trip latency (both converters' digital filters plus DMA buffering, at least a block: bad_tape's `APP=latency` image measures it and can be ported); R In's noise floor; L → R crosstalk in the codec and the jacks (ring beside tip).
+- **Series only,** unless measured otherwise: a dry + return blend comb-filters against the round-trip delay.
+- **Also:** send and return trims; a loop on/off that a switch can be assigned to (M9).
+- **Go / no-go:** playable with a delay and a reverb pedal in the loop; the latency added is small enough not to be felt (threshold to be set from the measurement); noise acceptable. Otherwise drop it and record why.
+- **Docs:** `CLAUDE.md` "IO Configuration" and "Signal chain"; `docs/FIRMWARE.md` "Threads"; `docs/EDITOR.md`.
+
+### M13: Playtest, hardening and editor UX audit
+- **Playtest** M9–M12 on the pedal over several sessions, keeping an issue list.
+- **Hardening** (the old M9's stress tests, plus the new paths): fast FS2 presses, uploading while playing, power loss during slot and settings writes, rapid knob sweeps and switch flips, reassigning controls while playing, the editor unplugged mid-save, an hour-long run with 0 underruns.
+- **Editor UX audit:** tab structure now that parameters live in the editor (presets, controls, EQ, compressor, gate, loop, log); what each knob does at a glance; consistency with bad_tape's conventions; keyboard and screen-reader use; error states (no Web MIDI, the wrong device, DFU, a stale firmware); a ranked list of findings, fixed in this milestone.
+- **Done when:** the issue list is closed or explicitly deferred, the stress tests pass on the pedal, and `docs/EDITOR.md` has fresh screenshots.
+
+### M14: Code audit
+- **Firmware:** rerun the bench for every stage; check `docs/M7_PERFORMANCE.md`'s rules, ITCM/DTCM placement and no heap (`nm -u`); split `ducky.cpp` (1,116 lines) where a seam is clear (the link's slot commands, the parameter commands and the settings); dead code, names, comments that no longer match.
+- **Editor and tools:** the cost of the WATCH stream's re-renders, bundle size, duplicated logic between `editor/src/` and `tools/`, formats shared with C++ tested on both sides.
+- **Tests:** everything host-portable covered; no flaky or wording-only tests.
+- **Docs:** every file, symbol and section a doc names still exists (a script check), measured numbers current.
+- **Done when:** the findings are fixed, the bench and host suites pass, and the docs match the code.
+
+### M15: Documentation for public release
+- A top-level `README.md`: what Ducky is, the hardware (Seed with 64 MB SDRAM, HotHouse), the controls, flashing a release, the editor, getting A2 models (Tone3000) and IRs; a pedal photo and editor screenshots.
+- Separate the player's documentation from the developer's (build, firmware internals, formats, research).
+- Replace private references with public links: sibling paths (`../bad_tape`, `../dp4/manuals`, `../hothouse_pcb`, `../spx90/guitar.wav`) and no mention of any multi-firmware launcher.
+- Decide what ships of `CLAUDE.md` and this roadmap (kept as history or condensed).
+- **Done when:** someone new builds, flashes and loads a preset from the README alone, tried on a clean clone.
+
+### M16: Public release
+- **Licence review:** the root `LICENSE` (MIT) and the third-party code that ships: libDaisy (MIT) and its STM32 HAL (BSD-3), CMSIS-DSP (Apache-2.0, compiled into the firmware: its notice), Preact (MIT, inlined in `editor.html`), the upstream NAM fixtures (MIT, `tests/fixtures/nam/LICENSE`). Models and IRs are never shipped (the York Audio packs are commercial). Product names (Dinosaural, Aion, York Audio, Tone3000) used descriptively only.
+- **History squash:** one initial commit; before it, check that nothing git-ignored or commercial was ever committed and that no personal paths, ports or secrets remain.
+- **Release:** a tag; a GitHub release with `ducky.bin` and the matching `editor.html`; flashing through the Daisy web programmer (check that it installs the bootloader a `BOOT_SRAM` image needs); optionally the editor on GitHub Pages and CI running the host and editor tests.
+- **Done when:** the public repo builds from a clean clone, and the release flashes a fresh Seed and talks to the published editor.
 
 ## Risks
 

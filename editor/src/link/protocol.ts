@@ -26,11 +26,17 @@ export const CMD = {
   read: 0x0b,
   gate: 0x0c,
   gateTry: 0x0d,
+  dump: 0x0e,
+  set: 0x0f,
+  assign: 0x10,
+  save: 0x11,
   log: 0x12,
   slot: 0x13,
   result: 0x14,
   status: 0x15,
   data: 0x16,
+  param: 0x17,
+  values: 0x18,
 } as const;
 
 /** docs/MIDI.md's command names, by code. */
@@ -48,11 +54,17 @@ export const CMD_NAMES: Readonly<Record<number, string>> = {
   [CMD.read]: "READ",
   [CMD.gate]: "GATE",
   [CMD.gateTry]: "GATE TRY",
+  [CMD.dump]: "DUMP",
+  [CMD.set]: "SET",
+  [CMD.assign]: "ASSIGN",
+  [CMD.save]: "SAVE",
   [CMD.log]: "LOG",
   [CMD.slot]: "SLOT",
   [CMD.result]: "RESULT",
   [CMD.status]: "STATUS",
   [CMD.data]: "DATA",
+  [CMD.param]: "PARAM",
+  [CMD.values]: "VALUES",
 };
 
 /** RESULT codes (link.h Result); the index is the code. */
@@ -87,6 +99,8 @@ export const SLOT_STATUS = { ok: 0, empty: 1 } as const;
 export const CHUNK_BYTES = 256;
 /** A DATA's bytes, at most. */
 export const READ_BYTES = 160;
+/** ASSIGN's and VALUES's "no parameter" (params.h kNoParam). */
+export const NO_PARAM = 0x7f;
 /** The two preset image sizes: without and with an IR. */
 export const IMAGE_SIZES = [
   PRESET_HEADER_SIZE + MODEL_BIN_SIZE + 4,
@@ -167,6 +181,13 @@ function gatePayload(slot: number, g: GateSettings): number[] {
 }
 export const gateMsg = (slot: number, g: GateSettings): Uint8Array => pedalMsg(CMD.gate, gatePayload(slot, g));
 export const gateTryMsg = (slot: number, g: GateSettings): Uint8Array => pedalMsg(CMD.gateTry, gatePayload(slot, g));
+export const dumpMsg = (): Uint8Array => pedalMsg(CMD.dump);
+/** code: the value as a u14 (link/params.ts codeOf). */
+export const setMsg = (id: number, code: number): Uint8Array => pedalMsg(CMD.set, [id, ...septets(code, 2)]);
+/** control 0-6 (Knobs 3-6, SW1-SW3); id null: none. */
+export const assignMsg = (control: number, id: number | null): Uint8Array =>
+  pedalMsg(CMD.assign, [control, id ?? NO_PARAM]);
+export const saveMsg = (): Uint8Array => pedalMsg(CMD.save);
 
 /**
  * Reassembles SysEx messages from a MIDI byte stream (link.h SysExAssembler): realtime bytes are ignored, F0 restarts,
@@ -258,7 +279,59 @@ export interface DataMessage {
   offset: number;
   data: Uint8Array;
 }
-export type PedalMessage = LogMessage | SlotMessage | ResultMessage | StatusMessage | IdentityMessage | DataMessage;
+/** One row of the pedal's parameter table (params.h ParamDef; docs/MIDI.md "Parameters"). */
+export interface ParamInfo {
+  id: number;
+  /** log: continuous, min at code 0 to max at code 16383; choice: the code is an index 0..max. */
+  taper: "log" | "choice";
+  /** The end at which the parameter's filter is bypassed. */
+  off: "none" | "min" | "max";
+  /** The control (0-6) holding it in the factory layout. */
+  factory: number | null;
+  /** The default value's code. */
+  defCode: number;
+  min: number;
+  max: number;
+  /** The log's and tools/pedal.ts's name. */
+  name: string;
+  label: string;
+  /** A choice's labels, comma-separated, in index order. */
+  unit: string;
+  group: string;
+}
+export interface ParamMessage {
+  type: "param";
+  info: ParamInfo;
+}
+export interface ValuesMessage {
+  type: "values";
+  /** Per control 0-6 (Knobs 3-6, SW1-SW3): its parameter's id, or null. */
+  assign: (number | null)[];
+  /** Per control: held, its parameter waits for the control to move. */
+  held: boolean[];
+  /** Per parameter id: its value's code. */
+  codes: number[];
+}
+export type PedalMessage =
+  | LogMessage
+  | SlotMessage
+  | ResultMessage
+  | StatusMessage
+  | IdentityMessage
+  | DataMessage
+  | ParamMessage
+  | ValuesMessage;
+
+const CONTROL_COUNT = 7;
+const PARAM_HEAD = 16;
+const TAPERS = ["log", "choice"] as const;
+const OFF_ENDS = ["none", "min", "max"] as const;
+/** The float32 whose bits are the u32 at p[at] (5 septets). */
+function f32At(p: Uint8Array, at: number): number {
+  const view = new DataView(new ArrayBuffer(4));
+  view.setUint32(0, fromSeptets(p, at, 5));
+  return view.getFloat32(0);
+}
 
 const ascii = (bytes: Uint8Array): string => String.fromCharCode(...bytes);
 
@@ -314,6 +387,39 @@ export function parseMessage(msg: Uint8Array): PedalMessage | null {
       if (data === null || data.length === 0 || data.length > READ_BYTES) return null;
       if (crc32(data) !== fromSeptets(p, 4, 5)) return null;
       return { type: "data", slot: p[0]!, offset: fromSeptets(p, 1, 3), data };
+    }
+    case CMD.param: {
+      if (p.length < PARAM_HEAD) return null;
+      const taper = TAPERS[p[1]!];
+      const off = OFF_ENDS[p[2]!];
+      const text = ascii(p.subarray(PARAM_HEAD)).split("\0");
+      if (taper === undefined || off === undefined || text.length !== 4) return null;
+      return {
+        type: "param",
+        info: {
+          id: p[0]!,
+          taper,
+          off,
+          factory: p[3] === NO_PARAM ? null : p[3]!,
+          defCode: fromSeptets(p, 4, 2),
+          min: f32At(p, 6),
+          max: f32At(p, 11),
+          name: text[0]!,
+          label: text[1]!,
+          unit: text[2]!,
+          group: text[3]!,
+        },
+      };
+    }
+    case CMD.values: {
+      const head = CONTROL_COUNT + 2;
+      if (p.length < head || p.length !== head + 2 * p[head - 1]!) return null;
+      return {
+        type: "values",
+        assign: Array.from(p.subarray(0, CONTROL_COUNT), (id) => (id === NO_PARAM ? null : id)),
+        held: Array.from({ length: CONTROL_COUNT }, (_, c) => ((p[CONTROL_COUNT]! >> c) & 1) !== 0),
+        codes: Array.from({ length: p[head - 1]! }, (_, i) => fromSeptets(p, head + 2 * i, 2)),
+      };
     }
     default:
       return null;

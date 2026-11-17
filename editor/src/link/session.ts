@@ -1,15 +1,19 @@
 // A request/reply session with the pedal over any SysEx transport (docs/MIDI.md): slot listing, reading and changes,
-// the chunked upload with its retries, and the STATUS stream. Pure TypeScript: the transport supplies the I/O.
+// the chunked upload with its retries, the parameter table, values and control assignments, and the STATUS stream.
+// Pure TypeScript: the transport supplies the I/O.
 
 import { NAME_MAX } from "../device";
 import { OFF_FLAGS, PRESET_FLAG_HAS_IR, SLOT_COUNT } from "../preset/bank";
 import { type GateSettings, gateProblem } from "../preset/gate";
 import { infoRanges, type SlotInfo, slotInfo } from "../preset/info";
+import { CONTROLS } from "./params";
 import {
+  assignMsg,
   CHUNK_BYTES,
   CMD,
   CMD_NAMES,
   DEVICE,
+  dumpMsg,
   eraseMsg,
   gateMsg,
   gateTryMsg,
@@ -17,6 +21,7 @@ import {
   IMAGE_SIZES,
   identityRequest,
   listMsg,
+  type ParamInfo,
   type PedalMessage,
   parseMessage,
   RESULT,
@@ -26,10 +31,13 @@ import {
   renameMsg,
   SLOT_STATUS_NAMES,
   type SlotMessage,
+  saveMsg,
+  setMsg,
   swapMsg,
   uploadBeginMsg,
   uploadChunkMsg,
   uploadCommitMsg,
+  type ValuesMessage,
   watchMsg,
 } from "./protocol";
 
@@ -48,9 +56,9 @@ export class LinkError extends Error {
 }
 
 export interface SessionOptions {
-  /** LIST, WATCH, Identity, READ, BEGIN and CHUNK. */
+  /** LIST, WATCH, Identity, READ, BEGIN, CHUNK, DUMP, SET and ASSIGN. */
   replyTimeoutMs?: number;
-  /** COMMIT, ERASE, RENAME and SWAP: they write flash. */
+  /** COMMIT, ERASE, RENAME, SWAP, GATE and SAVE: they write flash. */
   flashTimeoutMs?: number;
   /** Resends of one READ, BEGIN or CHUNK. */
   retries?: number;
@@ -202,9 +210,40 @@ export class PedalSession {
     return slotInfo(image);
   }
 
-  /** STATUS every 100 ms while on. */
+  /** STATUS and VALUES every 100 ms while on. */
   async watch(on: boolean): Promise<void> {
     await this.request(watchMsg(on), CMD.watch, this.replyTimeoutMs);
+  }
+
+  /** The parameter table (by id) and the live assignments and values. */
+  async dump(): Promise<{ params: ParamInfo[]; values: ValuesMessage }> {
+    const params: ParamInfo[] = [];
+    let values = null as ValuesMessage | null;
+    const r = await this.request(dumpMsg(), CMD.dump, this.replyTimeoutMs, (m) => {
+      if (m.type === "param") params.push(m.info);
+      else if (m.type === "values") values = m;
+    });
+    if (params.length !== r.value || params.some((p, i) => p.id !== i))
+      throw new LinkError(`DUMP: ${params.length} parameters, need ${r.value} in id order`);
+    if (values === null || values.codes.length !== params.length) throw new LinkError("DUMP: no values");
+    return { params, values };
+  }
+
+  /** Sets a parameter's value from its code (link/params.ts codeOf); the code the pedal took. */
+  async set(id: number, code: number): Promise<number> {
+    return (await this.request(setMsg(id, code), CMD.set, this.replyTimeoutMs)).value;
+  }
+
+  /** Puts a parameter (null: none) on control 0-6; it keeps its value until the control moves. */
+  async assign(control: number, id: number | null): Promise<void> {
+    if (!Number.isInteger(control) || control < 0 || control >= CONTROLS.length)
+      throw new LinkError(`ASSIGN: control ${control}: must be 0-${CONTROLS.length - 1}`);
+    await this.request(assignMsg(control, id), CMD.assign, this.replyTimeoutMs);
+  }
+
+  /** Writes the assignments and the values to the pedal's settings record; the flash time in ms. */
+  async save(): Promise<number> {
+    return (await this.request(saveMsg(), CMD.save, this.flashTimeoutMs)).value;
   }
 
   /**

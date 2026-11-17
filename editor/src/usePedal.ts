@@ -5,14 +5,12 @@ import { errorText } from "./format";
 import { SLOT_STATUS } from "./link/protocol";
 import type { PedalSession } from "./link/session";
 import { PedalLink } from "./midi";
-import { type Action, initial, reducer, type State } from "./state";
+import { type Action, BOOT_LINE, initial, reducer, type State } from "./state";
 
 /** A sync that has not completed this long after it started is started again. */
 const RETRY_MS = 3000;
 /** A boot line this soon after a sync started does not start another (HELLO's answer starts with one). */
 const SYNC_GAP_MS = 500;
-/** The pedal's boot line, also HELLO's first answer: after a restart its WATCH is off and its slots may differ. */
-const BOOT_LINE = /^ducky /;
 
 export interface Pedal {
   s: State;
@@ -21,12 +19,13 @@ export interface Pedal {
   serial: <T>(fn: (session: PedalSession) => Promise<T>) => Promise<T>;
   /** LIST, then the info of every ok slot, into the state. Call inside serial. */
   refreshSlots: (session: PedalSession) => Promise<void>;
+  dispatch: (a: Action) => void;
 }
 
 interface Ops {
   serial: Pedal["serial"];
   refreshSlots: Pedal["refreshSlots"];
-  /** Identity, the slots, WATCH on; unless one is running. */
+  /** Identity, the slots, the parameters, WATCH on; unless one is running. */
   sync: () => void;
   /** Date.now() of the last sync's start. */
   lastSync: () => number;
@@ -55,6 +54,12 @@ function makeOps(link: PedalLink, dispatch: (a: Action) => void): Ops {
     serial(async (session) => {
       dispatch({ type: "identity", identity: await session.identity() });
       await refreshSlots(session);
+      // Firmware from before the parameter table does not answer DUMP: the rest of the editor still works.
+      try {
+        dispatch({ type: "params", ...(await session.dump()) });
+      } catch (e) {
+        dispatch({ type: "paramsError", text: `${errorText(e)}: this firmware has no parameter table; update it` });
+      }
       await session.watch(true);
       dispatch({ type: "synced" });
     })
@@ -97,5 +102,5 @@ export function usePedal(): Pedal {
     if (linked) ops.sync();
   }, [ops, linked]);
 
-  return { s, link, serial: ops.serial, refreshSlots: ops.refreshSlots };
+  return { s, link, serial: ops.serial, refreshSlots: ops.refreshSlots, dispatch };
 }

@@ -1,10 +1,19 @@
 // The editor's view of the pedal: what its messages and the sync leave behind (App's reducer).
-import type { IdentityMessage, PedalMessage, SlotMessage, StatusMessage } from "./link/protocol";
+import type {
+  IdentityMessage,
+  ParamInfo,
+  PedalMessage,
+  SlotMessage,
+  StatusMessage,
+  ValuesMessage,
+} from "./link/protocol";
 import { type LinkSnapshot, NO_LINK } from "./midi";
 import { SLOT_COUNT } from "./preset/bank";
 import type { SlotInfo } from "./preset/info";
 
 const LOG_LINES = 1000;
+/** The pedal's boot line, also HELLO's first answer: after a restart its WATCH is off and its slots may differ. */
+export const BOOT_LINE = /^ducky /;
 
 export interface LogLine {
   t: number;
@@ -33,6 +42,14 @@ export interface State {
   /** The underrun total grew at the last STATUS. */
   xrun: boolean;
   log: LogLine[];
+  /** The pedal's parameter table (DUMP), by id; null until read. */
+  params: ParamInfo[] | null;
+  /** Why the table could not be read (older firmware). */
+  paramsError: string | null;
+  /** The live assignments and values: DUMP's, then each VALUES of the stream. */
+  values: ValuesMessage | null;
+  /** An assignment or a value was set from the editor since the pedal booted or its settings were saved. */
+  settingsEdited: boolean;
 }
 
 export type Action =
@@ -42,7 +59,10 @@ export type Action =
   | { type: "slots"; slots: SlotMessage[] }
   | { type: "info"; slot: number; info: SlotInfo }
   | { type: "synced" }
-  | { type: "syncError"; text: string };
+  | { type: "syncError"; text: string }
+  | { type: "params"; params: ParamInfo[]; values: ValuesMessage }
+  | { type: "paramsError"; text: string }
+  | { type: "settingsEdited"; edited: boolean };
 
 const NO_INFOS: readonly (SlotInfo | null)[] = Array(SLOT_COUNT).fill(null);
 
@@ -57,12 +77,23 @@ export const initial: State = {
   load: null,
   xrun: false,
   log: [],
+  params: null,
+  paramsError: null,
+  values: null,
+  settingsEdited: false,
 };
 
 function applyMessage(s: State, m: PedalMessage, now: number): State {
   switch (m.type) {
     case "log":
-      return { ...s, log: [...s.log, { t: now, text: m.text }].slice(-LOG_LINES) };
+      return {
+        ...s,
+        log: [...s.log, { t: now, text: m.text }].slice(-LOG_LINES),
+        // A restarted pedal is back on its saved settings.
+        settingsEdited: s.settingsEdited && !BOOT_LINE.test(m.text),
+      };
+    case "values":
+      return { ...s, values: m };
     case "status":
       return {
         ...s,
@@ -95,5 +126,11 @@ export function reducer(s: State, a: Action): State {
       return { ...s, synced: true, syncError: null };
     case "syncError":
       return { ...s, syncError: a.text };
+    case "params":
+      return { ...s, params: a.params, values: a.values, paramsError: null };
+    case "paramsError":
+      return { ...s, paramsError: a.text };
+    case "settingsEdited":
+      return a.edited === s.settingsEdited ? s : { ...s, settingsEdited: a.edited };
   }
 }
