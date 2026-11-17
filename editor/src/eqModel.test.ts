@@ -74,10 +74,10 @@ test("the parameters' codes map to the firmware's sections", () => {
   expect(s.high?.slope).toBe(24);
   expect(s.enabled).toBe(true);
   expect(s.outDb).toBeCloseTo(12, 9);
-  // The defaults: 0 dB (code 8192 reads as exactly 0), 250 Hz, 1 kHz and 3 kHz at Q 1.
+  // The defaults: 0 dB (code 8192 reads as exactly 0), 250 Hz, 515 Hz and 3 kHz at Q 1.
   expect(s.bells.map((b) => b.gain)).toEqual([0, 0, 0]);
   s.bells.forEach((b, i) => {
-    expect(b.hz / [250, 1000, 3000][i]!).toBeCloseTo(1, 3);
+    expect(b.hz / [250, 515, 3000][i]!).toBeCloseTo(1, 3);
     expect(b.q).toBeCloseTo(1, 3);
   });
   const boostedCodes = codes();

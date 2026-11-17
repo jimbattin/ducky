@@ -29,7 +29,7 @@ export const PARAMS: ParamInfo[] = [
   { ...HZ, id: 5, name: "bell1_freq", label: "Bell 1 frequency", defCode: 10022, min: 40, max: 800 },
   { ...BELL_Q, id: 6, name: "bell1_q", label: "Bell 1 Q" },
   { ...GAIN, id: 7, name: "bell2_gain", label: "Bell 2 gain" },
-  { ...HZ, id: 8, name: "bell2_freq", label: "Bell 2 frequency", defCode: 8192, min: 200, max: 5000 },
+  { ...HZ, id: 8, name: "bell2_freq", label: "Bell 2 frequency", defCode: 4814, min: 200, max: 5000 },
   { ...BELL_Q, id: 9, name: "bell2_q", label: "Bell 2 Q" },
   { ...GAIN, id: 10, name: "bell3_gain", label: "Bell 3 gain" },
   { ...HZ, id: 11, name: "bell3_freq", label: "Bell 3 frequency", defCode: 7996, min: 800, max: 12000 },

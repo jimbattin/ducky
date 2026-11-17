@@ -74,10 +74,10 @@ inline constexpr const char* kSlopeLabels = "24 dB/oct,12 dB/oct,6 dB/oct";  // 
 constexpr uint8_t kLoopMiso = 0, kLoopPre = 1, kLoopPost = 2;               // loop_mode's indices
 constexpr uint8_t kCompOff = 0, kCompBlend = 1, kCompDirect = 2;            // comp_mode's indices
 constexpr float kCompSustainMaxDb = 20.827854f;  // 20 log10(11): the stage's gain at Sustain's 100 kOhm (compressor.h)
-// The bells' default positions: 250 Hz, 1 kHz and 3 kHz, Q 1. The compressor's: off, Sustain +15.6 dB (position 0.75),
-// Level 0 dB (the toggle's middle), Balance fully compressed. comp_mode is both the stage's switch and the output's
-// mix, so one toggle sets it: down off, middle blend, up direct. Balance is the knob's rotation; the DSP applies the
-// audio taper. The loop's (docs/LOOP.md): MISO, send and return 0 dB at noon.
+// The bells' default positions: 250 Hz, 515 Hz (an amp's usual mid) and 3 kHz, Q 1. The compressor's: Off, Sustain
+// +15.6 dB (position 0.75), Level 0 dB (the toggle's middle), Balance fully compressed. comp_mode is both the stage's
+// switch and the output's mix, so one toggle sets it: down Off, middle Blend, up Direct. Balance is the knob's
+// rotation; the DSP applies the audio taper. The loop's (docs/LOOP.md): MISO, send and return 0 dB at noon.
 inline constexpr ParamDef kParams[kParamCount] = {
     {kEqEnable, "eq_enable", "EQ", "off,on", "EQ", 0.0f, 1.0f, 1.0f, Taper::kChoice, OffEnd::kNone},
     {kLowCutFreq, "low_cut_freq", "Low-cut frequency", "Hz", "EQ", dkdsp::kLowCutMinHz, dkdsp::kLowCutMaxHz, 0.0f,
@@ -94,7 +94,7 @@ inline constexpr ParamDef kParams[kParamCount] = {
      OffEnd::kNone},
     {kBell2Gain, "bell2_gain", "Bell 2 gain", "dB", "EQ", -dkdsp::kBellGainDb, dkdsp::kBellGainDb, 0.5f,
      Taper::kLinear, OffEnd::kNone},
-    {kBell2Freq, "bell2_freq", "Bell 2 frequency", "Hz", "EQ", dkdsp::kBellMinHz[1], dkdsp::kBellMaxHz[1], 0.5f,
+    {kBell2Freq, "bell2_freq", "Bell 2 frequency", "Hz", "EQ", dkdsp::kBellMinHz[1], dkdsp::kBellMaxHz[1], 0.29384f,
      Taper::kLog, OffEnd::kNone},
     {kBell2Q, "bell2_q", "Bell 2 Q", "Q", "EQ", dkdsp::kBellQMin, dkdsp::kBellQMax, 0.30587f, Taper::kLog,
      OffEnd::kNone},

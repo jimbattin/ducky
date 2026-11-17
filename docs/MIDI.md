@@ -88,7 +88,7 @@ The table DUMP sends (daisy/src/params.h); ids are append-only. A continuous par
 |5|`bell1_freq`|Bell 1 frequency|log|40 to 800 Hz|-|10022|EQ|
 |6|`bell1_q`|Bell 1 Q|log|0.4 to 8 Q|-|5011|EQ|
 |7|`bell2_gain`|Bell 2 gain|linear|-12 to 12 dB|-|8192|EQ|
-|8|`bell2_freq`|Bell 2 frequency|log|200 to 5000 Hz|-|8192|EQ|
+|8|`bell2_freq`|Bell 2 frequency|log|200 to 5000 Hz|-|4814|EQ|
 |9|`bell2_q`|Bell 2 Q|log|0.4 to 8 Q|-|5011|EQ|
 |10|`bell3_gain`|Bell 3 gain|linear|-12 to 12 dB|-|8192|EQ|
 |11|`bell3_freq`|Bell 3 frequency|log|800 to 12000 Hz|-|7996|EQ|
