@@ -102,6 +102,8 @@ test("STATUS parses", () => {
     0x78,
     0x01,
     0x75,
+    0x00,
+    0x25,
     0xf7,
   );
   expect(parseMessage(m)).toEqual({
@@ -117,6 +119,7 @@ test("STATUS parses", () => {
     fs2: true,
     gateLevelDb: -63.2,
     gateCutDb: 24.5,
+    compCutDb: 3.7,
   });
 });
 
@@ -209,8 +212,8 @@ test("PARAM parses a linear row", () => {
 
 test("VALUES parses", () => {
   // tests/link_test.cpp Values.Bytes.
-  const codes = [1, 0, 8192, 1, 8192, 16383, 0, 8192, 8192, 0, 8192, 8192, 0, 16383, 8192, 1];
-  const p = [...Array<number>(7).fill(0x7f), 0x05, 0x10, ...codes.flatMap((c) => [c >> 7, c & 0x7f])];
+  const codes = [1, 0, 8192, 1, 8192, 16383, 0, 8192, 8192, 0, 8192, 8192, 0, 16383, 8192, 1, 0, 12287, 1, 0, 16383];
+  const p = [...Array<number>(7).fill(0x7f), 0x05, 0x15, ...codes.flatMap((c) => [c >> 7, c & 0x7f])];
   expect(parseMessage(pedalMsg(CMD.values, p))).toEqual({
     type: "values",
     assign: Array(7).fill(null),

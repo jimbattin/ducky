@@ -1,21 +1,23 @@
-// Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). The left input goes through Knob 1's input trim,
-// the current preset's A2-Lite model (dsp/a2lite.h) and cab IR when it has one (dsp/convolver.h), the EQ
-// (dsp/eq.h: low-cut, three bells, high-cut, driven by the parameters, set over the link or by the controls assigned
-// to them, Knobs 3-6 and SW1-SW3: params.h, param_store.h; the assignments and values are kept in the settings record,
-// settings.h), and Knob 2's output volume times the model's level match and the preset's noise gate (dsp/gain.h,
-// dsp/noise_gate.h: the gate listens to the input before the trim), then FS1's mute ramp and the preset switch's
-// fade, and is copied to both outputs (dual mono). Presets live in QSPI (preset.h: 8 slots, written by
-// tools/preset_bank.ts over DFU, or slot by slot over the link: docs/MIDI.md) and are parsed into SDRAM at boot and
-// after every slot change; corrupt or empty slots are skipped. With no valid slot the pedal plays dry (trim, EQ,
-// volume, mute; no gate). If the IR convolver's FFT does not initialise, audio never starts: the pedal serves USB
-// (DFU included) and logs "ir fft" once a second.
+// Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). The left input goes through the compressor
+// (dsp/compressor.h), Knob 1's input trim, the current preset's A2-Lite model (dsp/a2lite.h) and cab IR when it has
+// one (dsp/convolver.h), the EQ (dsp/eq.h: low-cut, three bells, high-cut; the compressor and the EQ are driven by
+// the parameters, set over the link or by the controls assigned to them, Knobs 3-6 and SW1-SW3: params.h,
+// param_store.h; the assignments and values are kept in the settings record, settings.h), and Knob 2's output volume
+// times the model's level match and the preset's noise gate (dsp/gain.h, dsp/noise_gate.h: the gate listens to the
+// input before the compressor), then FS1's mute ramp and the preset switch's fade, and is copied to both outputs
+// (dual mono). Presets live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU, or slot by slot over
+// the link: docs/MIDI.md) and are parsed into SDRAM at boot and after every slot change; corrupt or empty slots are
+// skipped. With no valid slot the pedal plays dry (compressor, trim, EQ, volume, mute; no gate). If the IR
+// convolver's FFT does not initialise, audio never starts: the pedal serves USB (DFU included) and logs "ir fft" once
+// a second.
 //
 // Two threads of control:
 // - AudioCallback (the audio DMA interrupt, 48 kHz, 24-sample blocks): reads and publishes the controls (30 ms toggle
 //   hysteresis), toggles the mute on FS1, counts FS2 presses, applies the link's parameter edits and arbitrates the
-//   control slots (param_store.h), steps the preset switch, runs the gate's detector, the trim, the engine, the IR,
-//   the EQ and the output gain, the mute ramp and the preset fade, measures the input and output peaks and the gate's
-//   level and cut, drives LED1 and LED2's blinks, and measures the load and the underruns.
+//   control slots (param_store.h), steps the preset switch, runs the gate's detector, the compressor, the trim, the
+//   engine, the IR, the EQ and the output gain, the mute ramp and the preset fade, measures the input and output peaks,
+//   the gate's level and cut and the compressor's gain reduction, drives LED1 and LED2's blinks, and measures the load
+//   and the underruns.
 // - The main loop: USB (usb_link.h: Identity, HELLO, DFU; the slot and parameter commands in onCommand, their replies
 //   and the STATUS and VALUES stream in serveReplies), the preset switch (servePresets), the state record
 //   (writeState), the settings record (saveSettings), the slot writes (writeSlot) and the once-a-second log lines.
@@ -24,14 +26,15 @@
 // and the IR and publishes its gains with gSwapLoaded; the callback takes them and fades in.
 // They share only atomics, each with one writer, and one single-producer single-consumer ring:
 // - callback -> main loop (relaxed): gKnob, gToggle, gFsHeld, gMutedPub, gUnderruns, gPeak, gOutPeak, gLoadAvg,
-//   gLoadMax, gFs2Presses, gGateLevel, gGateGain, gParamPub, gAssignPub, gHeldPub; gSwapParked and gEditsDone
-//   (release/acquire);
-// - main loop -> callback (relaxed): gPeakReset, gLoadReset, gBlinkCount, gGateWord (publishGate), gGateMeterReset;
+//   gLoadMax, gFs2Presses, gGateLevel, gGateGain, gCompGain, gParamPub, gAssignPub, gHeldPub; gSwapParked and
+//   gEditsDone (release/acquire);
+// - main loop -> callback (relaxed): gPeakReset, gLoadReset, gBlinkCount, gGateWord (publishGate), gMeterReset;
 //   gSwapReq, gSwapLoaded (publishing gNextLevel, gNextInCal, gNextIrOn, gNextModelOn) and gBlinkReq
 //   (release/acquire); gEdits (the ring: SET and ASSIGN, applied at the next block).
-// Memory (memory.h): AudioCallback runs from ITCM; the engine, the EQ and the callback's own state live in DTCM, the
-// IR convolver (66 KB of spectra, streamed through the D-cache every block) in AXI SRAM, which the bench measured 24%
-// faster for it than D2 SRAM (docs/FILTERS.md), the parsed presets in SDRAM. FPSCR.FZ is on (denormals flush to zero).
+// Memory (memory.h): AudioCallback runs from ITCM; the engine, the compressor, the EQ and the callback's own state live
+// in DTCM, the IR convolver (66 KB of spectra, streamed through the D-cache every block) in AXI SRAM, which the bench
+// measured 24% faster for it than D2 SRAM (docs/FILTERS.md), the parsed presets in SDRAM. FPSCR.FZ is on (denormals
+// flush to zero).
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -44,6 +47,7 @@
 #include "controls.h"
 #include "dsp/a2lite.h"
 #include "dsp/blocks.h"
+#include "dsp/compressor.h"
 #include "dsp/convolver.h"
 #include "dsp/eq.h"
 #include "dsp/gain.h"
@@ -86,6 +90,7 @@ DK_DTCM bool gMuted = false;   // FS1's state; not persisted
 dkdsp::IrConvolver gIr;        // AXI SRAM; Init before StartAudio; the main loop loads it as it does gEngine
 DK_DTCM bool gIrOn = false;    // the current preset has an IR
 DK_DTCM bool gModelOn = false;  // a preset is loaded: false plays dry (taken from gNextModelOn when fading in)
+DK_DTCM dkdsp::Compressor gComp;
 DK_DTCM dkdsp::Eq gEq;
 DK_DTCM dkparam::Store gStore;     // the parameter values and the control slots; Init before StartAudio
 DK_DTCM uint32_t gEditsTaken = 0;  // edits taken from gEdits since boot
@@ -99,6 +104,7 @@ DK_DTCM dkctl::Blinker gBlinker;
 DK_DTCM dkdsp::NoiseGate gGate;                             // the playing preset's gate (gGateWord)
 DK_DTCM uint32_t gGateSeen[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};  // the last gGateWord pair taken
 DK_DTCM float gGateLevelAcc = 0.0f, gGateGainAcc = 1.0f;    // the gate meter since the last STATUS
+DK_DTCM float gCompGainAcc = 1.0f;                          // the compressor's lowest gain() since the last STATUS
 
 // Shared with the main loop: in SRAM (AXI).
 // Callback -> main loop.
@@ -112,6 +118,7 @@ std::atomic<float> gOutPeak{0.0f};         // gOutPeakAcc, published every block
 std::atomic<float> gLoadAvg{0.0f}, gLoadMax{0.0f};  // gLoad's, published every block
 std::atomic<float> gGateLevel{0.0f};       // gGateLevelAcc, published every block
 std::atomic<float> gGateGain{1.0f};        // gGateGainAcc, published every block
+std::atomic<float> gCompGain{1.0f};        // gCompGainAcc, published every block
 std::atomic<uint32_t> gFs2Presses{0};      // FS2 presses since boot
 std::atomic<uint32_t> gSwapParked{0};      // the gSwapReq the callback has parked for (release)
 std::atomic<float> gParamPub[dkparam::kParamCount];       // gStore's values, published every block
@@ -128,7 +135,7 @@ std::atomic<uint8_t> gBlinkCount{0};
 // The gate's settings as preset.h's 8-byte block, two little-endian words (publishGate). A torn pair mixes two valid
 // settings for one block; the reserved byte is 0, so no published pair equals gGateSeen's initial value.
 std::atomic<uint32_t> gGateWord[2];
-std::atomic<bool> gGateMeterReset{false};  // restart gGateLevelAcc and gGateGainAcc
+std::atomic<bool> gMeterReset{false};      // restart gGateLevelAcc, gGateGainAcc and gCompGainAcc
 SpscRing<dkparam::Edit, 16> gEdits;        // SET and ASSIGN (onCommand), applied by the callback's next block
 float gNextLevel = 1.0f, gNextInCal = 1.0f;  // the loaded preset's gains, IR and model, published by gSwapLoaded
 bool gNextIrOn = false, gNextModelOn = false;
@@ -452,7 +459,8 @@ DK_ITCM void stepSwap() {
     }
 }
 
-// Step 7: the mute flag, the input and output peaks and the gate's level and cut, accumulated and published.
+// Step 7: the mute flag, the input and output peaks, the gate's level and cut and the compressor's gain reduction,
+// accumulated and published.
 DK_ITCM void publishMeters(float peak, float outPeak, float gate) {
     gMutedPub.store(gMuted, std::memory_order_relaxed);
     if (gPeakReset.exchange(false, std::memory_order_relaxed)) {
@@ -463,14 +471,17 @@ DK_ITCM void publishMeters(float peak, float outPeak, float gate) {
     gPeak.store(gPeakAcc, std::memory_order_relaxed);
     gOutPeakAcc = std::fmax(gOutPeakAcc, outPeak);
     gOutPeak.store(gOutPeakAcc, std::memory_order_relaxed);
-    if (gGateMeterReset.exchange(false, std::memory_order_relaxed)) {
+    if (gMeterReset.exchange(false, std::memory_order_relaxed)) {
         gGateLevelAcc = 0.0f;
         gGateGainAcc = 1.0f;
+        gCompGainAcc = 1.0f;
     }
     gGateLevelAcc = std::fmax(gGateLevelAcc, gGate.level());
     gGateLevel.store(gGateLevelAcc, std::memory_order_relaxed);
     gGateGainAcc = std::fmin(gGateGainAcc, gate);
     gGateGain.store(gGateGainAcc, std::memory_order_relaxed);
+    gCompGainAcc = std::fmin(gCompGainAcc, gComp.gain());
+    gCompGain.store(gCompGainAcc, std::memory_order_relaxed);
 }
 
 // Step 8: LED1 (on unless muted) and LED2's blinks.
@@ -498,16 +509,17 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     const float peak = dkdsp::Peak(in[0], size);
     takeGate();
     const float gate = gGate.Process(peak);
-    // Step 6: the chain. out[0] is the working buffer; the engine accepts in == out.
+    // Step 6: the chain. out[0] is the working buffer; the compressor and the engine accept in == out. The
+    // compressor's and the EQ's controls are parameters (stepParams).
+    gComp.Process(in[0], out[0], size, gStore.Values());
     const float inTarget = gInCal * dkdsp::InputGain(gInKnob.Process(hw.Knob(0)));
-    gInGain.Process(in[0], out[0], size, inTarget);
+    gInGain.Process(out[0], out[0], size, inTarget);
     if (gSwap == Swap::kParked) {
         std::fill(out[0], out[0] + size, 0.0f);  // the main loop owns the engine and the IR
     } else if (gModelOn) {
         gEngine.Process(out[0], out[0], size);
         if (gIrOn) gIr.Process(out[0], out[0]);  // size is kBlockSize: dkfw::Start sets the block size
     }
-    // The EQ's controls are parameters (stepParams).
     gEq.Process(out[0], size, gStore.Values());
     const float outTarget = gLevel * dkdsp::OutputGain(gOutKnob.Process(hw.Knob(1))) * gate;
     gOutGain.Process(out[0], out[0], size, outTarget);
@@ -754,9 +766,9 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
                 return true;
             }
             gWatch = p[0] == 1;
-            // The first STATUS comes one period later and covers only that period: the gate meter restarts now.
+            // The first STATUS comes one period later and covers only that period: the meters restart now.
             gWatchAt = System::GetNow();
-            gGateMeterReset.store(true, std::memory_order_relaxed);
+            gMeterReset.store(true, std::memory_order_relaxed);
             result(cmd, Result::kOk, 0);
             return true;
         case dklink::kUploadBegin: {
@@ -1038,9 +1050,10 @@ void serveReplies(uint32_t now) {
         s.footswitches = gFsHeld.load(std::memory_order_relaxed);
         s.gate_level = tenthsBelow(gGateLevel.load(std::memory_order_relaxed));
         s.gate_cut = tenthsBelow(gGateGain.load(std::memory_order_relaxed));
+        s.comp_cut = tenthsBelow(gCompGain.load(std::memory_order_relaxed));
         if (tx.AppendStatus(s)) {
             gWatchAt = now;
-            gGateMeterReset.store(true, std::memory_order_relaxed);
+            gMeterReset.store(true, std::memory_order_relaxed);
             gValuesDue = true;
         }
     }
@@ -1093,7 +1106,9 @@ int main() {
     gLoad.Init(hw.seed.AudioSampleRate(), hw.seed.AudioBlockSize());
     gBlockTicks = uint32_t(uint64_t(System::GetTickFreq()) * dkdsp::kBlockSize / uint32_t(dkdsp::kSampleRate));
     for (dkctl::ToggleFilter& f : gToggleFilter) f.Init(1);
-    // The EQ starts settled at the parameters' values; a control's first reading reaches it through the smoothing.
+    // The compressor and the EQ start settled at the parameters' values; a control's first reading reaches them
+    // through the smoothing.
+    gComp.Init(gStore.Values());
     gEq.Init(gStore.Values());
     hw.seed.adc.Start();
     hw.seed.StartAudio(AudioCallback);

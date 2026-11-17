@@ -16,6 +16,7 @@ const GAIN = { ...EQ, taper: "linear", defCode: 8192, min: -12, max: 12, unit: "
 /** The bells' Q: 0.4 as the pedal's float32 sends it. */
 const BELL_Q = { ...EQ, taper: "log", defCode: 5011, min: Math.fround(0.4), max: 8, unit: "Q" } as const;
 const HZ = { ...EQ, taper: "log", unit: "Hz" } as const;
+const COMP = { off: "none", group: "Compressor" } as const;
 
 /** The pedal's parameter table as DUMP sends it (daisy/src/params.h kParams; docs/MIDI.md "Parameters"). */
 export const PARAMS: ParamInfo[] = [
@@ -44,4 +45,59 @@ export const PARAMS: ParamInfo[] = [
   },
   { ...RES, id: 14, name: "high_cut_res", label: "High-cut resonance" },
   { ...SLOPE, id: 15, name: "high_cut_slope", label: "High-cut slope" },
+  {
+    ...COMP,
+    id: 16,
+    name: "comp_enable",
+    label: "Compressor",
+    taper: "choice",
+    defCode: 0,
+    min: 0,
+    max: 1,
+    unit: "off,on",
+  },
+  {
+    ...COMP,
+    id: 17,
+    name: "comp_sustain",
+    label: "Sustain",
+    taper: "linear",
+    defCode: 12287,
+    min: 0,
+    max: Math.fround(20.827854),
+    unit: "dB",
+  },
+  {
+    ...COMP,
+    id: 18,
+    name: "comp_level",
+    label: "Level",
+    taper: "choice",
+    defCode: 1,
+    min: 0,
+    max: 2,
+    unit: "-3 dB,0 dB,+3 dB",
+  },
+  {
+    ...COMP,
+    id: 19,
+    name: "comp_mode",
+    label: "Mode",
+    taper: "choice",
+    defCode: 0,
+    min: 0,
+    max: 1,
+    unit: "blend,direct",
+  },
+  {
+    ...COMP,
+    id: 20,
+    name: "comp_balance",
+    label: "Balance",
+    taper: "linear",
+    defCode: 16383,
+    min: 0,
+    max: 100,
+    unit: "%",
+  },
 ];

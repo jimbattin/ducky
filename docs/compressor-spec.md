@@ -1,6 +1,6 @@
 # Compressor research: Dinosaural OTC-201 (Aion Convex)
 
-Research for an optical-compressor block in Ducky, modelled on the Dinosaural OTC-201 Opticompressor through its clone, the Aion FX Convex. **Nothing is in the firmware and nothing is decided.** The document covers how the circuit works, a vactrol model fitted to the datasheet, what a SPICE model of the circuit does, and a reduced DSP model with a Python reference implementation (appendix B) that was checked against SPICE.
+Research for an optical-compressor block in Ducky, modelled on the Dinosaural OTC-201 Opticompressor through its clone, the Aion FX Convex, and the spec of the block built from it (M11: `daisy/src/dsp/compressor.h`, covered by `tests/compressor_test.cpp` against `tools/comp_reference.py`, which is appendix B). The document covers how the circuit works, a vactrol model fitted to the datasheet, what a SPICE model of the circuit does, and a reduced DSP model with a Python reference implementation (appendix B) that was checked against SPICE. What M11 decided is under "Settings (as built)" and "Fitting it into Ducky"; the firmware's kernel is the reduced model in float32.
 
 **Provenance of the numbers.** No pedal was measured. Four kinds of value appear, and each is marked:
 
@@ -438,7 +438,7 @@ State: 3 filter states, `vf`, `ig′`, `Gf` and its target, and per half `w`, `i
 - **No delay-free loop:** `Gf` depends on the output only through block-rate states.
 - **Silence:** `n` sits on its floor (`Gcell` under 1e-11 S) and `w` creeps down: 1.20 V 1 s after a tone, 1.15 V after 4 s, 1.09 V after 20 s (the netlist: 1.20 V and 1.15 V at 1 s and 3.9 s). After a long silence the first note has to lift `w` by 0.3 V (3 µC) before the LED conducts; the steps above start from that state.
 - **Artefacts of the block rate:** with a 330 Hz tone (not a divisor of the 2 kHz block rate) the wet signal carries inharmonic components at −71 dB (300 mV in) and −76 dB (100 mV). At 80 Hz and 1 kHz there are none. The third harmonic at 80 Hz, 300 mV is −68.1 dB against SPICE's −67.9 dB: the reservoir's ripple, which belongs to the circuit.
-- **Not checked:** float32. The smallest quantities are conductances near 1e-5 S and block charges near 1e-9 C.
+- **float32:** checked at M11. The kernel in float32 (conductances in S, charges in C, libm `log1pf` and `powf`) follows the float64 reference within 4.4e-6 of full scale on the three steps and 5.4e-7 on a synthetic DI (`tests/compressor_test.cpp`), so neither scaling nor tables were needed.
 
 ### Agreement with SPICE
 
@@ -473,36 +473,41 @@ The waveform error is mostly not the compressor: the dry path alone differs by �
 | The TL072's input common-mode limit | its typical range ends 3 V above the negative rail, so a real one may misbehave when pin 5 swings more than about 1.3 V below VB (a hot input with Level at +3 dB); not characterised |
 | Supply sag, temperature, unit spread, cell voltage non-linearity and noise | no data |
 
-### Cost (estimate, not measured)
+### Cost (measured, M11)
 
-- **Per sample:** about 50 float operations and one division: three one-poles, the feedback update, two clamps, two knees. The division can go by ramping `1 / (A2 + Gf)` instead of `Gf`.
-- **Per block:** per half, 3 Newton steps with a logarithm each and one `pow`. A table of `iled(w)` over 0.9–7.8 V and of `Gcell(n)` would replace both.
-- **Guess:** 10–20 permille of the block period, extrapolated from the EQ (8,652 cycles a block for about nine filter sections, `docs/FILTERS.md` "Measured"). Only `APP=bench` settles it, and the kernels must follow `docs/M7_PERFORMANCE.md`.
+- **Per sample:** about 50 float operations and one division: three one-poles, the feedback update, two clamps, two knees. The division stays: ramping `1 / (A2 + Gf)` was not needed.
+- **Per block:** per half, 3 Newton steps with a logarithm each and one `pow`, plus a `pow` for Sustain and one for Balance's taper; no tables.
+- **Measured (Seed 1.2, `APP=bench`):** 7,108 cycles a block on average, 30.0 permille of the block period at most, with Sustain, Level and Balance moving every 5 ms and noise driving the side chain into compression and the clamp (the guess was 10–20). The chain with an IR, the gate, the EQ at its worst and the compressor: 657.4 permille against 850. Live: 31 permille more with the compressor on than off.
 
-### Settings (proposal)
+### Settings (as built)
+
+The parameters `comp_enable`, `comp_sustain`, `comp_level`, `comp_mode` and `comp_balance` (`daisy/src/params.h`, ids 16–20; `docs/MIDI.md` "Parameters"):
 
 | Setting | Range | Maps to |
 |---|---|---|
-| Enabled | off / on | off is the input, untouched |
-| Sustain | 0–100 % | `Rsus` = Sustain × 100 kΩ. Or as the stage's gain `g` in dB (0 to +20.8): `Rsus = 10 kΩ · (10^(g/20) − 1)` |
-| Level | −3 / 0 / +3 dB | `gL`, and `fin` at +3 dB |
-| Mode | SB / Z | the mix equation |
-| Balance | 0–100 % | `b`, linear; a taper can be applied on the editor's side |
+| Enabled | off / on (default off) | off is the input, untouched (bit-exact, after a 20 ms crossfade); turned on, the stage restarts from rest |
+| Sustain | 0 to +20.8 dB, linear (default +15.6 dB) | the stage's gain `g`: `Rsus = 10 kΩ · (10^(g/20) − 1)`; 0 dB shorts the feedback |
+| Level | −3 / 0 / +3 dB (a toggle down, middle, up) | `gL`, and `fin` at +3 dB |
+| Mode | blend (SB) / direct (Z) | the mix equation |
+| Balance | 0–100 % of the knob's rotation (default 100 %) | `b = (81^v − 1) / 80`, an audio taper: 0.1 at noon |
+
+Sustain, the Level stage's gain and corner and the two mix weights glide with the knobs' 20 ms time constant and ramp across each block, so moving a setting does not click.
 
 ### Alternative: a grey-box model
 
 Eichas and Zölzer's approach for a similar circuit: a generic feed-forward compressor with a static curve, attack and release times and one filter, fitted to input/output measurements. Here that would be the static table plus a constant-dB/s release. It is cheaper, but it loses what distinguishes this circuit: the gain-dependent treble, the convex return to unity, the two-stage release and the attack overshoot would each need its own special case.
 
-## Fitting it into Ducky (open questions)
+## Fitting it into Ducky
 
-- **Position:** it is a guitar-level pedal, so between the input jack and the input trim, ahead of the model. The noise gate's detector reads the raw jack and would be unaffected.
-- **Calibration:** the model works in volts, and Ducky knows its input scale only from datasheets (+4.5 dBu at 0 dBFS, not measured). An error there moves every threshold by the same number of dB.
+- **Position (built):** it is a guitar-level pedal, so between the input jack and the input trim, ahead of the model. The noise gate's detector reads the raw jack and is unaffected.
+- **Calibration (open):** the model works in volts, and Ducky knows its input scale only from datasheets (+4.5 dBu at 0 dBFS, not measured). An error there moves every threshold by the same number of dB.
 - **Levels into the amp model:** a compressed signal sits at 0.5–1.0 V peak (−11 to −5 dBFS) whatever the guitar, and quiet playing arrives up to 20 dB hotter. Knob 1 follows the compressor and can trim it.
-- **Noise:** up to +20 dB on everything below threshold, the input noise included (−84 dBFS with nothing plugged in, `docs/ROADMAP.md` M4), ahead of a high-gain model.
-- **Controls:** Knobs 1 and 2 and both footswitches are fixed; Knobs 3–6 and SW1–SW3 start unassigned (M10). The settings ("Settings (proposal)") become global parameters (`docs/ROADMAP.md` M9), set from the editor and `tools/pedal.ts` or from a knob or switch assigned to them; no slot format bump.
-- **Which controls to keep:** Level duplicates a gain Ducky does not otherwise have ahead of the compressor, so it matters. Sustain's linear-pot law puts half the range in the first quarter turn; a setting in dB of gain may serve better. Balance's taper is unresolved in the sources.
-- **CPU:** the bench chain with an IR, the gate and the EQ at its worst (M10) is at 626.9 permille against the 850 ceiling (`docs/FILTERS.md` "Measured", `docs/ROADMAP.md` "Decisions"), so the 10–20 permille guessed under "Cost" fits.
-- **Off state:** bit-exact bypass, as the gate's disabled state and the EQ's bells at 0 dB are, or running always so the load does not depend on the setting, as the EQ's cut filters do.
+- **Noise (not yet heard):** up to +20 dB on everything below threshold, the input noise included (−84 dBFS with nothing plugged in, `docs/ROADMAP.md` M4), ahead of a high-gain model.
+- **Controls (built):** the settings ("Settings (as built)") are global parameters (`docs/ROADMAP.md` M9), set from the editor's Compressor tab and `tools/pedal.ts param` or from a knob or switch assigned to them; no slot format bump, and the settings record stays version 2.
+- **Which controls to keep (decided):** all five. Level matters: Ducky has no other gain ahead of the compressor. Sustain is in dB of stage gain, not the pot's percent. Balance takes the audio taper.
+- **CPU (measured):** 30.0 permille; the bench chain is at 657.4 against the 850 ceiling ("Cost").
+- **Off state (decided):** bit-exact bypass, as the gate's disabled state and the EQ's bells at 0 dB are, so the load depends on the setting (31 permille live).
+- **Meter:** STATUS carries the largest drop of the stage's low-frequency gain below Sustain's since the previous STATUS (`docs/MIDI.md` STATUS `comp cut`), which the editor's Compressor tab shows.
 - **Latency:** none; nothing in the model looks ahead.
 
 ## Validation plan

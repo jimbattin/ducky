@@ -61,12 +61,22 @@ The sliders:
 
 ![Controls tab](images/editor/controls.png)
 
-The pedal's parameter table and its live assignments and values, read from the pedal (DUMP, then the VALUES stream): nothing about the parameters is built into the editor except how to draw the EQ (`docs/MIDI.md` "Parameters", "Controls"). The parameters' values are set on the EQ tab.
+The pedal's parameter table and its live assignments and values, read from the pedal (DUMP, then the VALUES stream): nothing about the parameters is built into the editor except how to draw the EQ (`docs/MIDI.md` "Parameters", "Controls"). The parameters' values are set on the EQ and Compressor tabs.
 
-- **Controls:** a menu per control, K3–K6 and SW1–SW3, with the value of the parameter it drives. Every control starts unassigned (`None`). A knob takes any parameter; a switch's menu lists only the choice parameters (`eq_enable`, the slopes). A parameter may be on several controls. Choosing one sends ASSIGN: the parameter keeps its value, and the control is **Held** until it moves.
+- **Controls:** a menu per control, K3–K6 and SW1–SW3, with the value of the parameter it drives. Every control starts unassigned (`None`). A knob takes any parameter; a switch's menu lists only the choice parameters (`eq_enable`, the slopes, `comp_enable`, `comp_level`, `comp_mode`). A parameter may be on several controls. Choosing one sends ASSIGN: the parameter keeps its value, and the control is **Held** until it moves.
 - **Held** ends when the control moves: a knob by more than 3 % of its travel, a switch to another position. The parameter then follows the control.
-- **Save** writes the assignments and the values to the pedal's settings record (SAVE, `docs/FIRMWARE.md` "Settings record"); until then they last until power-off, the line beside the button reads `Not saved on the pedal`, and leaving the page asks first. At power-up a parameter on a control takes the control's position, so a saved value matters for parameters on no control. The EQ tab has the same Save.
+- **Save** writes the assignments and the values to the pedal's settings record (SAVE, `docs/FIRMWARE.md` "Settings record"); until then they last until power-off, the line beside the button reads `Not saved on the pedal`, and leaving the page asks first. At power-up a parameter on a control takes the control's position, so a saved value matters for parameters on no control. The Compressor and EQ tabs have the same Save.
 - Firmware from before the parameter table does not answer DUMP: the tab says so, and the rest of the editor works.
+
+## Compressor tab
+
+![Compressor tab](images/editor/compressor.png)
+
+The optical compressor before the input trim (`docs/compressor-spec.md` "DSP model"), set directly: a meter, then a row per parameter.
+
+- **Meter:** the compressor's gain reduction from STATUS (the largest cut of its low-frequency gain below Sustain's per 100 ms) on 0…24 dB, read out as `cut X.X dB`. The lamp line reads `Compressor off`, `Not compressing` (green, a cut under 1 dB) or `Compressing` (amber). With Sustain at 0 dB it always reads 0.
+- **Rows:** a Stage box with `comp_enable`; a Compressor box with `comp_sustain` (the stage's gain, 0…+20.8 dB) and `comp_level` (−3, 0, +3 dB); an Output box with `comp_mode` (blend: Balance mixes the dry and the compressed signal; direct: the compressed signal only, Balance its volume) and `comp_balance` (the knob's rotation, 0…100 %; the pedal applies the audio taper). They work as the EQ tab's rows (`editor/src/useParamEdits.ts`); every row but `comp_enable` is dimmed while the compressor is off.
+- **Save** as on the Controls tab.
 
 ## EQ tab
 
@@ -115,13 +125,13 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 | `biome.jsonc`, `tsconfig.json` | Lint, format and type-check settings (Code conventions). |
 | `package.json`, `bun.lock` | Preact; TypeScript, Biome and Bun's types for development. |
 | `src/editor.html`, `src/main.tsx` | The page and its entry point. |
-| `src/App.tsx` | The window: tabs, the slot actions (swap, erase, save, discard, DFU), the drafts, and the settings actions (assign, save). |
+| `src/App.tsx` | The window: tabs (Presets, Controls, Compressor, EQ, Log), the slot actions (swap, erase, save, discard, DFU), the drafts, and the settings actions (assign, save). |
 | `src/ducky.css` | The Platinum styles. |
 | `src/midi.ts` | `PedalLink`: Web MIDI ports, SysEx reassembly, the HELLO keep-alive, the link status, the session's transport. |
 | `src/usePedal.ts` | The link's lifecycle: the reducer it feeds, the sync and its retries, the `serial` request queue. |
-| `src/state.ts` | The reducer: link, identity, slots, slot infos, STATUS, load, log, the parameter table, VALUES, and whether the settings are unsaved. |
+| `src/state.ts` | The reducer: link, identity, slots, slot infos, STATUS (`compCutDb` among its fields), load, log, the parameter table, VALUES, and whether the settings are unsaved. |
 | `src/useGateAudition.ts` | GATE TRY auditions of the gate box's changes on the playing slot. |
-| `src/useParamEdits.ts` | SETs from the EQ tab, coalesced per parameter, and the value shown while one is in flight. |
+| `src/useParamEdits.ts` | SETs from the EQ and Compressor tabs, coalesced per parameter, and the value shown while one is in flight. |
 | `src/draft.ts` | Per-slot unsaved drafts, what the slot table shows for them, and Save (`saveDraft`). |
 | `src/importer.ts` | `.nam` and `.wav` files through the converters; rejection text and import warnings. |
 | `src/controls.ts` | Knob 1's and Knob 2's readouts in the firmware's tapers; a toggle's position; level match and input calibration. |
@@ -137,13 +147,15 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 | `src/components/Positions.tsx` | A toggle's three positions. |
 | `src/components/HeldBadge.tsx` | The Held mark on a control waiting to move. |
 | `src/components/ControlsTab.tsx` | The Controls tab: each control's parameter and its value, and Save. |
+| `src/components/CompTab.tsx` | The Compressor tab: the meter, the Stage, Compressor and Output boxes of parameter rows, and Save. |
+| `src/components/CompMeter.tsx` | The compressor's gain reduction (STATUS `compCutDb`) and its state. |
 | `src/components/EqTab.tsx` | The EQ tab: the graph, the Stage box and a box of parameter rows per band, and Save. |
 | `src/components/ParamRow.tsx` | One parameter: label, controls on it, slider or button group, readout. |
 | `src/components/SettingsActions.tsx` | The settings record's state line and Save. |
 | `src/components/AssignSelect.tsx` | A control's menu of the parameters it accepts. |
 | `src/components/Segmented.tsx` | A button group: one pressed button per choice. |
 | `src/components/CpuMeter.tsx` | The CPU load meter. |
-| `src/components/Meter.tsx` | A bar with a fill and markers over a lamp line; the CPU and gate meters. |
+| `src/components/Meter.tsx` | A bar with a fill and markers over a lamp line; the CPU, gate and compressor meters. |
 | `src/components/TabNav.tsx` | The WAI-ARIA tab list (Left/Right cycle, Home/End jump). |
 | `src/components/SlotTable.tsx` | The slot table with swap, erase, Save and Discard. |
 | `src/components/SlotEditor.tsx` | The selected slot's name, model and IR, its warnings and Revert. |

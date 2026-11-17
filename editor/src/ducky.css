@@ -699,7 +699,8 @@ dl.details dd {
   text-align: right;
   font: 0.6875rem var(--rh-mono);
 }
-.gate-meter {
+.gate-meter,
+.comp-meter {
   padding: 0.25rem;
 }
 .hint {

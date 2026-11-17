@@ -29,6 +29,8 @@ constexpr size_t kIrSamples = size_t(1) << 17;
 constexpr double kTol = 0.05;
 // Values printed to 2 decimals.
 constexpr double kTol2 = 0.0051;
+// The EQ's parameters are ids [0, kEqParamEnd).
+constexpr int kEqParamEnd = kHighCutSlope + 1;
 
 size_t Samples(double seconds) { return size_t(seconds * kFs); }
 
@@ -291,7 +293,7 @@ TEST(Eq, NoClickOnParamJump) {
     const size_t settle = Samples(0.301), after = Samples(0.25), window = Samples(0.05);
     const std::vector<float> in = Sine(settle + after, kHz, kAmp);
     const double perUnit = kAmp * 2.0 * std::sin(M_PI * kHz / kFs);  // a unit-gain sine's largest step
-    for (int id = 0; id < kParamCount; ++id) {
+    for (int id = 0; id < kEqParamEnd; ++id) {
         const ParamDef& d = kParams[id];
         const float ends[2] = {0.0f, d.taper == Taper::kChoice ? d.max : 1.0f};
         for (int dir = 0; dir < 2; ++dir) {
@@ -333,7 +335,7 @@ TEST(Eq, BlockSizeIndependent) {
         std::uniform_real_distribution<float> unit(0.0f, 1.0f);
         std::vector<float> y = x;
         for (size_t i = 0; i < y.size(); i += every) {
-            for (int id = 0; id < kParamCount; ++id) {
+            for (int id = 0; id < kEqParamEnd; ++id) {
                 const ParamDef& d = kParams[id];
                 const float u = unit(rng);
                 r.v[id] = d.taper == Taper::kChoice ? std::min(std::floor(u * (d.max + 1.0f)), d.max) : u;
@@ -356,7 +358,7 @@ TEST(Eq, RandomChangesStayBounded) {
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
     std::vector<float> y = x;
     for (size_t i = 0; i < y.size(); i += every) {
-        for (int id = 0; id < kParamCount; ++id) {
+        for (int id = 0; id < kEqParamEnd; ++id) {
             const ParamDef& d = kParams[id];
             const float u = unit(rng);
             r.v[id] = d.taper == Taper::kChoice ? std::min(std::floor(u * (d.max + 1.0f)), d.max) : u;

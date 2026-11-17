@@ -163,7 +163,8 @@ const pct = (permille: number) => (permille / 10).toFixed(1);
 const statusLine = (s: StatusMessage): string =>
   `status load ${s.loadAvg}/${s.loadMax} permille underruns ${s.underruns} slot ${s.slot === null ? "dry" : s.slot + 1} ` +
   `mute ${s.muted ? "on" : "off"} k ${s.knobs.map(pct).join(" ")} sw ${s.toggles.join(" ")} ` +
-  `fs ${s.fs1 ? 1 : 0} ${s.fs2 ? 1 : 0} gate in ${s.gateLevelDb.toFixed(1)} dBFS cut ${s.gateCutDb.toFixed(1)} dB`;
+  `fs ${s.fs1 ? 1 : 0} ${s.fs2 ? 1 : 0} gate in ${s.gateLevelDb.toFixed(1)} dBFS cut ${s.gateCutDb.toFixed(1)} dB` +
+  ` comp cut ${s.compCutDb.toFixed(1)} dB`;
 const signed = (v: number | null, unit: string): string =>
   v === null ? "none" : `${v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(1)} ${unit}`;
 const quoted = (s: string | null): string => (s === null ? "none" : `"${s}"`);

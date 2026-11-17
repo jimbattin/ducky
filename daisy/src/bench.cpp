@@ -1,4 +1,5 @@
-// The A2-Lite, IR and EQ benchmark and device check (daisy/Makefile APP=bench, build/<BOARD>-bench/ducky_bench.bin).
+// The A2-Lite, IR, EQ and compressor benchmark and device check (daisy/Makefile APP=bench,
+// build/<BOARD>-bench/ducky_bench.bin).
 // No audio: the board and USB come up with the pedal's startup (firmware.h: FZ, the MPU), the committed fixtures
 // tests/fixtures/nam/A2.bin and tests/fixtures/ir/decay.bin are compiled in (.incbin, with a slice of input.wav and
 // its reference render), and then:
@@ -10,12 +11,14 @@
 //   its maximum against kGatePermille of the block period;
 // - the layers: the same blocks, each stage of Process (BeginChunk, RunLayer per layer, EndChunk) timed separately;
 // - the IR convolver with its state in D2 SRAM and in AXI SRAM, the EQ (its slopes, bell gains and bell frequencies
-//   flipping every 10 blocks, so every glide and coefficient ramp runs on every block),
-//   the noise gate (enabled, the longest hold: the longest detector scan), and the pedal's whole chain (gate, trim,
-//   engine, IR, EQ, output gain with the gate's gain, mute), timed the same way; the chain gate is its maximum
-//   against kChainGatePermille, the load ceiling (docs/ROADMAP.md "Decisions").
-// Placement matches the pedal's: the engine and the EQ in DTCM, the pedal's convolver in AXI SRAM (gIrAxi; gIrD2 is
-// the D2 SRAM comparison), the stages and the timed blocks in ITCM.
+//   flipping every 10 blocks, so every glide and coefficient ramp runs on every block), the noise gate (enabled, the
+//   longest hold: the longest detector scan), the compressor (on, blend, its Sustain, Level and Balance flipping every
+//   10 blocks, so every glide and ramp runs on every block, and the noise drives the side chain into compression and
+//   the clamp), and the pedal's whole chain (gate, compressor, trim, engine, IR, EQ, output gain with the gate's gain,
+//   mute), timed the same way; the chain gate is its maximum against kChainGatePermille, the load ceiling
+//   (docs/ROADMAP.md "Decisions").
+// Placement matches the pedal's: the engine, the compressor and the EQ in DTCM, the pedal's convolver in AXI SRAM
+// (gIrAxi; gIrD2 is the D2 SRAM comparison), the stages and the timed blocks in ITCM.
 // Log lines (usb_log.py; docs/FIRMWARE.md "Bench"):
 //   at power-on and on HELLO "ducky_bench <board> sysclk N MHz <build id>";
 //   "bench model "<name>" ok" (or "bench model <status>", repeated, when the embedded model does not parse);
@@ -27,7 +30,7 @@
 //   "bench a2lite cycles avg A max M permille avg P.p max Q.q" (permille of B), then
 //   "bench gate a2lite max Q.q permille limit 450 go|no-go";
 //   per stage "bench input|layer NN kK dD|head cycles avg ... " as above;
-//   "bench ir d2|ir axi|eq|noise gate|chain cycles avg ..." as above, then
+//   "bench ir d2|ir axi|eq|noise gate|comp|chain cycles avg ..." as above, then
 //   "bench gate chain max Q.q permille limit 850 go|no-go"; then "bench pass N done".
 // Passes repeat forever, 2 s apart. The link's DFU message restarts into the bootloader (checked between stages).
 #include <cmath>
@@ -38,6 +41,7 @@
 #include "board.h"
 #include "dsp/a2lite.h"
 #include "dsp/blocks.h"
+#include "dsp/compressor.h"
 #include "dsp/convolver.h"
 #include "dsp/eq.h"
 #include "dsp/gain.h"
@@ -123,8 +127,10 @@ dkir::Ir gIrData;
 DK_D2 dkdsp::IrConvolver gIrD2;  // D2 SRAM, for comparison
 dkdsp::IrConvolver gIrAxi;       // AXI SRAM (.bss): the pedal's placement
 DK_DTCM dkdsp::Eq gEq;
-DK_DTCM uint32_t gEqBlocks;                      // counts the EQ's blocks: its settings flip every 10
-DK_DTCM float gEqValues[dkparam::kParamCount];  // the EQ's parameter values (eqValues)
+DK_DTCM uint32_t gEqBlocks;                   // counts the EQ's blocks: its settings flip every 10
+DK_DTCM dkdsp::Compressor gComp;
+DK_DTCM uint32_t gCompBlocks;                 // counts the compressor's blocks: its settings flip every 10
+DK_DTCM float gValues[dkparam::kParamCount];  // the parameter values (eqValues, compValues: each writes its own)
 DK_DTCM dkdsp::GainRamp gInGain, gOutGain;
 DK_DTCM dkdsp::MuteRamp gMute;
 DK_DTCM dkdsp::NoiseGate gGate;
@@ -221,7 +227,7 @@ DK_ITCM void blockIrAxi(const float* in) { gIrAxi.Process(in, gOut); }
 DK_ITCM const float* eqValues() {
     using namespace dkparam;
     const bool flip = (gEqBlocks++ / 10) % 2 != 0;
-    float* v = gEqValues;
+    float* v = gValues;
     v[kEqEnable] = 1.0f;
     v[kLowCutFreq] = v[kHighCutFreq] = 0.5f;
     v[kLowCutRes] = v[kHighCutRes] = 1.0f;
@@ -239,13 +245,31 @@ DK_ITCM void blockEq(const float* in) {
     gEq.Process(gOut, kBlockSize, eqValues());
 }
 
+// The compressor's worst case: on, blend (both mix terms), Sustain flipping between 0.25 and 1.0 of its range, Level
+// between -3 and +3 dB and Balance between 0.25 and 0.75 every 10 blocks: every glide, ramp and pow runs on every
+// block, and the +-0.5 noise (0.92 V at the jack) keeps the side chain compressing and the stage clipping.
+DK_ITCM const float* compValues() {
+    using namespace dkparam;
+    const bool flip = (gCompBlocks++ / 10) % 2 != 0;
+    float* v = gValues;
+    v[kCompEnable] = 1.0f;
+    v[kCompSustain] = flip ? 1.0f : 0.25f;
+    v[kCompLevel] = flip ? 2.0f : 0.0f;
+    v[kCompMode] = 0.0f;
+    v[kCompBalance] = flip ? 0.75f : 0.25f;
+    return v;
+}
+
+DK_ITCM void blockComp(const float* in) { gComp.Process(in, gOut, kBlockSize, compValues()); }
+
 // The gate's detector input is the block's input peak, as in the pedal's AudioCallback.
 DK_ITCM void blockGate(const float* in) { gOut[0] = gGate.Process(dkdsp::Peak(in, kBlockSize)); }
 
 // The pedal's AudioCallback chain, without the control reads and meters.
 DK_ITCM void blockChain(const float* in) {
     const float gate = gGate.Process(dkdsp::Peak(in, kBlockSize));
-    gInGain.Process(in, gOut, kBlockSize, 1.0f);
+    gComp.Process(in, gOut, kBlockSize, compValues());
+    gInGain.Process(gOut, gOut, kBlockSize, 1.0f);
     gEngine.Process(gOut, gOut, kBlockSize);
     gIrAxi.Process(gOut, gOut);
     gEq.Process(gOut, kBlockSize, eqValues());
@@ -348,6 +372,8 @@ void runPass(unsigned pass) {
     dkusb::Serve(logBoot);
     timeStage("noise gate", blockGate);
     dkusb::Serve(logBoot);
+    timeStage("comp", blockComp);
+    dkusb::Serve(logBoot);
     logGate("chain", timeStage("chain", blockChain), kChainGatePermille);
     dkusb::Log("bench pass %u done", pass);
     serveFor(kPassGapMs);
@@ -391,6 +417,7 @@ int main() {
     gIrD2.Load(gIrData.taps);
     gIrAxi.Load(gIrData.taps);
     gEq.Init(eqValues());
+    gComp.Init(compValues());
     gInGain.Init(1.0f);
     gOutGain.Init(1.0f);
     gMute.Init(false);

@@ -4,15 +4,15 @@ The cab IR and the EQ that follow the model, and the preset's noise gate. Code: 
 
 ## Signal chain
 
-`AudioCallback` (`daisy/src/ducky.cpp`), in place on the left output buffer:
+`AudioCallback` (`daisy/src/ducky.cpp`): the compressor from the input into the left output buffer, then in place on it:
 
 ```mermaid
 graph LR
-  IN[in gain] --> NAM[A2Lite] --> IR[IR convolver] --> EQ[EQ: low-cut, bells 1-3, high-cut] --> OUT[out gain × level match × gate] --> M[mute] --> R[copy to R]
-  JACK[input peak] --> G[noise gate] -.-> OUT
+  JIN[L in] --> C[compressor] --> IN[in gain] --> NAM[A2Lite] --> IR[IR convolver] --> EQ[EQ: low-cut, bells 1-3, high-cut] --> OUT[out gain × level match × gate] --> M[mute] --> R[copy to R]
+  JACK[input peak, raw jack] --> G[noise gate] -.-> OUT
 ```
 
-The IR stage runs only when the current preset has an IR (`docs/FIRMWARE.md` "Preset store"). The EQ's sixteen settings are parameters (`daisy/src/params.h`, `docs/MIDI.md` "Parameters", `docs/EQ.md`): the editor, the link or any of Knobs 3–6 and SW1–SW3 assigned to one sets each of them.
+The compressor (M11, `daisy/src/dsp/compressor.h`, `docs/compressor-spec.md` "DSP model") comes first, before Knob 1's trim; the gate's detector reads the raw jack, before the compressor. The IR stage runs only when the current preset has an IR (`docs/FIRMWARE.md` "Preset store"). The EQ's sixteen settings and the compressor's five are parameters (`daisy/src/params.h`, `docs/MIDI.md` "Parameters", `docs/EQ.md`): the editor, the link or any of Knobs 3–6 and SW1–SW3 assigned to one sets each of them.
 
 ## IR convolver
 
@@ -118,7 +118,7 @@ The few dB left are the cabs' low-mid resonances, where a guitar signal has more
 
 ## Noise gate
 
-A per-preset, side-chained downward expander (`dkdsp::NoiseGate`). The detector reads the raw input at the jack (each block's `max|in|`, before Knob 1, the model and the IR), so the threshold is in dBFS at the input, independent of the trim and the model's calibration. Its gain multiplies the output gain's target (`gOutGain`), which ramps linearly across the block: no per-sample work, no latency, no lookahead. A pick that crosses the open threshold anywhere in a block opens the gate over that same block.
+A per-preset, side-chained downward expander (`dkdsp::NoiseGate`). The detector reads the raw input at the jack (each block's `max|in|`, before the compressor, Knob 1, the model and the IR), so the threshold is in dBFS at the input, independent of the compressor, the trim and the model's calibration. Its gain multiplies the output gain's target (`gOutGain`), which ramps linearly across the block: no per-sample work, no latency, no lookahead. A pick that crosses the open threshold anywhere in a block opens the gate over that same block.
 
 `Process` runs once per 24-sample block (0.5 ms), dry and parked included:
 
@@ -169,13 +169,16 @@ Bench (`APP=bench`, `docs/FIRMWARE.md` "Bench"), cycles per block of noise, maxi
 | EQ (M10: both cuts with slope fades, three bells gliding every block; `docs/EQ.md`) | 15,564 | 65.0 | — | — |
 | EQ (M5: both cuts, mid; slope fades every 10 blocks) | 8,652 | 36.2 | 15,135 | 31.8 |
 | Noise gate (enabled, 100 ms hold: the longest scan) | 832 | 3.5 | — | — |
+| Compressor (M11: on, blend, Sustain, Level and Balance flipping every 10 blocks; `docs/FIRMWARE.md` "Bench") | 7,108 | 30.0 | — | — |
 | Whole chain (gate, limit 850; 550 at M5): before the noise gate | 141,648 | 594.7 | 237,192 | 496.4 |
 | Whole chain with the noise gate (M9) | 142,057 | 597.6 | — | — |
 | Whole chain with the noise gate and the M10 EQ | 149,278 | 626.9 | — | — |
+| Whole chain with the noise gate, the M10 EQ and the M11 compressor | 156,559 | 657.4 | — | — |
 
 - **24-sample blocks:** the convolver's per-block work is the same as at 48 (86 × 32 against 43 × 64 complex multiply-adds, the same 66 KB of spectra through the D-cache) and runs twice as often, so its share of the block period nearly doubles. The model's per-sample cost barely moves. The chain missed the M5 gate (550) and is within the 850 ceiling that replaced it. Live without an IR the pedal measured load avg 415, max 419 permille, 0 underruns (394 at 48 samples); live with an IR is not yet measured.
 - **IR check:** the convolver against a direct convolution in double on the device, 4,800 samples of `input.wav`: max error 146e-9 at 24 samples, 182e-9 at 48 (limit 1e-5).
 - **Live, 48 samples** (`A2.bin`, `IR=irs/fdmn_blnd_mix01.bin`, 5 minutes): load avg 499, max 501 permille, 0 underruns (limit 600). Without `IR=`: avg 392, max 393. The load did not depend on the controls, since every M5 section always ran.
 - **M10 EQ:** the cuts still run every tick, so the load does not depend on their settings; a bell runs only while its gain is not 0 dB (and for 100 ms after), and `eq_enable` off stops the whole stage. Live on a model without an IR: load avg 415, max 418 permille at the EQ's defaults (417, 420 at M9); 423, 427 with both cuts on and all three bells at ±6 dB; 381, 385 with `eq_enable` off; 0 underruns. The bench's 65.0 permille is the worst case, every bell gliding.
+- **M11 compressor:** off is a bit-exact bypass that runs nothing. Live on a model without an IR, not playing: load 415 permille with the compressor off, 446 on; 0 underruns.
 - **Level:** with the reference-band normalisation the FDMN mix raises `A2.bin`'s render by 2.8 dB RMS (3.9 dB peak); on the pedal the `out` peak stayed at −8…−16 dBFS, against −9…−15 without an IR. Under the earlier unit-energy normalisation it was +10.7 dB and the output reached 0 dBFS.
 - **Knob ends:** on the pedal (M5 factory layout), Knob 5 fully counter-clockwise and Knob 4 fully clockwise bypass their filters (the 0.02/0.04 thresholds hold).

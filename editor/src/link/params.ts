@@ -60,7 +60,7 @@ export function isOff(p: ParamInfo, code: number): boolean {
 /** A choice's labels, in index order. */
 export const choiceLabels = (p: ParamInfo): string[] => p.unit.split(",");
 
-/** The readout of a code: "Off", a choice's label, "100 Hz", "Q 1.00", "+3.0 dB". */
+/** The readout of a code: "Off", a choice's label, "100 Hz", "Q 1.00", "+3.0 dB", "50 %". */
 export function formatParam(p: ParamInfo, code: number): string {
   if (isOff(p, code)) return "Off";
   if (p.taper === "choice") return choiceLabels(p)[paramValue(p, code)] ?? String(code);
@@ -68,6 +68,7 @@ export function formatParam(p: ParamInfo, code: number): string {
   if (p.unit === "Hz") return fmtHz(units);
   if (p.unit === "Q") return `Q ${units.toFixed(2)}`;
   if (p.unit === "dB") return signedDb(units);
+  if (p.unit === "%") return `${Math.round(units)} %`;
   return `${units.toFixed(2)} ${p.unit}`;
 }
 

@@ -264,6 +264,8 @@ export interface StatusMessage {
   gateLevelDb: number;
   /** The gate's largest gain reduction since the previous STATUS, dB (>= 0, 120 closed). */
   gateCutDb: number;
+  /** The compressor's largest gain reduction since the previous STATUS, dB (>= 0). */
+  compCutDb: number;
 }
 export interface IdentityMessage {
   type: "identity";
@@ -366,7 +368,7 @@ export function parseMessage(msg: Uint8Array): PedalMessage | null {
       if (p.length !== 5) return null;
       return { type: "result", cmd: p[0]!, code: p[1]!, value: fromSeptets(p, 2, 3) };
     case CMD.status:
-      if (p.length !== 30) return null;
+      if (p.length !== 32) return null;
       return {
         type: "status",
         loadAvg: fromSeptets(p, 0, 2),
@@ -380,6 +382,7 @@ export function parseMessage(msg: Uint8Array): PedalMessage | null {
         fs2: (p[25]! & 2) !== 0,
         gateLevelDb: -fromSeptets(p, 26, 2) / 10,
         gateCutDb: fromSeptets(p, 28, 2) / 10,
+        compCutDb: fromSeptets(p, 30, 2) / 10,
       };
     case CMD.data: {
       // A corrupt DATA reads as missing, so the session resends its READ.

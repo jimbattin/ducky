@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { CompTab } from "./components/CompTab";
 import { ControlsTab } from "./components/ControlsTab";
 import { EqTab } from "./components/EqTab";
 import { FrontPanel } from "./components/FrontPanel";
@@ -19,10 +20,11 @@ import { useGateAudition } from "./useGateAudition";
 import { useParamEdits } from "./useParamEdits";
 import { usePedal } from "./usePedal";
 
-type TabId = "presets" | "controls" | "eq" | "log";
+type TabId = "presets" | "controls" | "comp" | "eq" | "log";
 const TABS: readonly NavTab<TabId>[] = [
   { id: "presets", label: "Presets" },
   { id: "controls", label: "Controls" },
+  { id: "comp", label: "Compressor" },
   { id: "eq", label: "EQ" },
   { id: "log", label: "Log" },
 ];
@@ -246,8 +248,20 @@ export function App() {
           <div class="tabpanel" role="tabpanel" id="tabpanel" aria-labelledby={`tab-${tab}`}>
             {tab === "log" ? (
               <LogView lines={s.log} />
-            ) : (tab === "eq" || tab === "controls") && !linked ? (
+            ) : (tab === "eq" || tab === "comp" || tab === "controls") && !linked ? (
               <p class="tab-empty">Waiting for the pedal.</p>
+            ) : tab === "comp" ? (
+              <CompTab
+                status={s.status}
+                params={s.params}
+                paramsError={s.paramsError}
+                values={s.values}
+                shownCode={shownCode}
+                enabled={ready}
+                edited={s.settingsEdited}
+                onSet={setParam}
+                onSave={onSaveSettings}
+              />
             ) : tab === "eq" ? (
               <EqTab
                 status={s.status}

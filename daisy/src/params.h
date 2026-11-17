@@ -37,6 +37,11 @@ enum ParamId : uint8_t {
     kHighCutFreq,
     kHighCutRes,
     kHighCutSlope,
+    kCompEnable,
+    kCompSustain,
+    kCompLevel,
+    kCompMode,
+    kCompBalance,
     kParamCount
 };
 enum class Taper : uint8_t { kLog = 0, kChoice = 1, kLinear = 2 };  // wire values
@@ -63,7 +68,10 @@ struct ParamDef {
 };
 
 inline constexpr const char* kSlopeLabels = "24 dB/oct,12 dB/oct,6 dB/oct";  // the cut slopes' choice labels
-// The bells' default positions: 250 Hz, 1 kHz and 3 kHz, Q 1.
+constexpr float kCompSustainMaxDb = 20.827854f;  // 20 log10(11): the stage's gain at Sustain's 100 kOhm (compressor.h)
+// The bells' default positions: 250 Hz, 1 kHz and 3 kHz, Q 1. The compressor's: off, Sustain +15.6 dB (position 0.75),
+// Level 0 dB (the toggle's middle), blend, Balance fully compressed. Balance is the knob's rotation; the DSP applies
+// the audio taper.
 inline constexpr ParamDef kParams[kParamCount] = {
     {kEqEnable, "eq_enable", "EQ", "off,on", "EQ", 0.0f, 1.0f, 1.0f, Taper::kChoice, OffEnd::kNone},
     {kLowCutFreq, "low_cut_freq", "Low-cut frequency", "Hz", "EQ", dkdsp::kLowCutMinHz, dkdsp::kLowCutMaxHz, 0.0f,
@@ -96,6 +104,13 @@ inline constexpr ParamDef kParams[kParamCount] = {
      Taper::kLog, OffEnd::kNone},
     {kHighCutSlope, "high_cut_slope", "High-cut slope", kSlopeLabels, "EQ", 0.0f, 2.0f, 1.0f, Taper::kChoice,
      OffEnd::kNone},
+    {kCompEnable, "comp_enable", "Compressor", "off,on", "Compressor", 0.0f, 1.0f, 0.0f, Taper::kChoice, OffEnd::kNone},
+    {kCompSustain, "comp_sustain", "Sustain", "dB", "Compressor", 0.0f, kCompSustainMaxDb, 0.75f, Taper::kLinear,
+     OffEnd::kNone},
+    {kCompLevel, "comp_level", "Level", "-3 dB,0 dB,+3 dB", "Compressor", 0.0f, 2.0f, 1.0f, Taper::kChoice,
+     OffEnd::kNone},
+    {kCompMode, "comp_mode", "Mode", "blend,direct", "Compressor", 0.0f, 1.0f, 0.0f, Taper::kChoice, OffEnd::kNone},
+    {kCompBalance, "comp_balance", "Balance", "%", "Compressor", 0.0f, 100.0f, 1.0f, Taper::kLinear, OffEnd::kNone},
 };
 
 constexpr bool TableValid() {

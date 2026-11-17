@@ -47,7 +47,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | Path | Contents | Host-portable |
 |---|---|---|
 | `daisy/src/ducky.cpp` | The pedal: the boot slot scan, `AudioCallback`, the parameter step (`stepParams`), the preset switch (`servePresets`), the state record (`writeState`), the settings record (`saveSettings`), the link's slot and parameter commands (`onCommand`, `writeSlot`) and replies (`serveReplies`), the main loop, the log lines. | no |
-| `daisy/src/bench.cpp` | `APP=bench`: the A2-Lite and IR device checks and the cycle timing of the engine, the IR, the EQ, the noise gate and the whole chain ("Bench"). | no |
+| `daisy/src/bench.cpp` | `APP=bench`: the A2-Lite and IR device checks and the cycle timing of the engine, the IR, the EQ, the noise gate, the compressor and the whole chain ("Bench"). | no |
 | `daisy/src/board.h` | `dkboard::Board`: the HotHouse pins, knobs, toggles, footswitches. `kBoardId` 1, `kKnobs` 6, `kToggles` 3. | no |
 | `daisy/src/firmware.h` | `dkfw::Start` (flush-to-zero, board init, MPU) and `kBuildId`. | no |
 | `daisy/src/usb_link.h/.cpp` | `dkusb`: USB-MIDI transport, a non-blocking double-buffered send, `Serve` (Identity, HELLO, DFU restart, then other commands to the caller's `onCommand`). | no |
@@ -65,6 +65,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `daisy/src/dsp/convolver.h` | `dkdsp::IrConvolver`: the partitioned FFT IR convolver (`docs/FILTERS.md`). | yes |
 | `daisy/src/dsp/filters.h` | The EQ's sections: `dkdsp::CutFilter` (with `EdgeBypass`, the cut maps), `DesignBell` and `Bell` (`docs/FILTERS.md`, `docs/EQ.md`). | yes |
 | `daisy/src/dsp/eq.h` | `dkdsp::Eq`: the EQ stage, low-cut, bells 1–3, high-cut, driven by the parameters' values (`docs/EQ.md`). | yes |
+| `daisy/src/dsp/compressor.h` | `dkdsp::Compressor`: the optical compressor before the input trim, the reduced OTC-201 model (`docs/compressor-spec.md` "DSP model"), driven by the parameters' values; `gain()` for the meter. | yes |
 | `daisy/src/model.h` | `dkmodel::Parse`: validates and decodes a format-2 model binary. | yes |
 | `daisy/src/ir.h` | `dkir::Parse`: validates and decodes a format-1 IR binary. | yes |
 | `daisy/src/preset.h` | `dkpreset`: the slot format (`Parse`, `PutGate`/`GetGate`/`SetGate` for its gate block), the state record (`StateValid`, `NewestState`, `BuildState`), slot stepping (`NextFilled`, `BootSlot`), the QSPI layout ("Preset store"). | yes |
@@ -80,6 +81,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `editor/` (UI) | The browser editor; its layout: `docs/EDITOR.md` "Source layout". | |
 | `editor/src/preset/info.ts` | `infoRanges`, `slotInfo`: a stored preset's metadata from the bytes READ fetches. | |
 | `editor/src/nam/`, `tools/nam_convert.ts`, `tools/nam_reference.sh`, `tools/make_stimuli.py` | The `.nam` → model binary converter and its CLI, the NAM reference renders, and their stimulus (`docs/NAM_FORMAT.md`). | |
+| `tools/comp_reference.py` | The compressor's Python reference (`docs/compressor-spec.md` appendix B verbatim) and the generator of `tests/fixtures/comp/` (`uv run tools/comp_reference.py`). | |
 | `editor/src/ir/`, `tools/ir_convert.ts`, `tools/make_ir_fixture.ts` | The `.wav` → IR binary converter and its CLI, and the generator of `tests/fixtures/ir/decay.wav` (`docs/FILTERS.md`). | |
 | `editor/src/preset/`, `tools/preset_bank.ts`, `tools/make_preset_fixture.ts` | The slot and bank builders (`buildSlot`, `buildBank`), the gate block and its units (`gate.ts`), the bank CLI, and the generator of `tests/fixtures/preset/A2_decay.bin`. | |
 | `editor/src/device.ts`, `editor/src/crc32.ts` | `SAMPLE_RATE`, `NAME_MAX`, `sanitiseName`, `writeAscii`; CRC-32: shared by the converters, the preset code and the link. | |
@@ -87,6 +89,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `tests/fixtures/nam/` | Upstream MIT `.nam` and WAV fixtures, `A2.bin` converted from `A2.nam`, and the committed `A2.nam` reference render. | |
 | `tests/fixtures/ir/` | `decay.wav` (generated: 44.1 kHz decaying noise, 4,410 frames) and `decay.bin` converted from it. | |
 | `tests/fixtures/preset/` | `A2_decay.bin`: `A2.bin` with `decay.bin`, named `A2 + decay`, built by `editor/src/preset/bank.ts`; both the host tests and the editor tests check it. | |
+| `tests/fixtures/comp/` | The compressor's reference fixtures from `tools/comp_reference.py`: inputs `step_30_300.in.wav`, `step_10_1000.in.wav`, `di.in.wav` (synthetic plucked notes, 1.5 s); outputs `step_30_300.s100.ref.wav`, `step_30_300.s50.ref.wav`, `step_10_1000.s100.ref.wav`, `di.ref.wav`; the static curve `static.csv`. `tests/compressor_test.cpp` checks the kernel against them and against the spec's SPICE tables. | |
 
 - **Naming:** namespaces are `dkboard`, `dkfw`, `dkusb`, `dklink`, `dkctl`, `dkparam`, `dkdsp`, `dkbin`, `dkmodel`, `dkir`, `dkpreset` and (host only) `dkwav`. Macros use the `DK_` prefix, and the board define is `DUCKY_BOARD_HOTHOUSE`.
 - **DSP code** goes under `daisy/src/dsp/`, host-portable and covered by `tests/`. The top-level `Makefile` rebuilds the tests and `render` whenever any `daisy/src/*.h`, `daisy/src/dsp/*.h`, `tests/*.h` or `tools/*.h` changes. Tests find fixtures through `DK_REPO_ROOT`, so `build/host/tests` runs from any directory.
@@ -94,13 +97,14 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 
 ## Threads
 
-- **`AudioCallback`** is the audio DMA interrupt at 48 kHz, in 24-sample blocks (0.5 ms). It runs from ITCM, and its state, the engine and the EQ included, lives in DTCM; the IR convolver lives in AXI SRAM. Control timings (toggle hysteresis, LED2's blinks) are set in milliseconds and counted in blocks (`dkctl::BlocksForMs`). In order, it:
+- **`AudioCallback`** is the audio DMA interrupt at 48 kHz, in 24-sample blocks (0.5 ms). It runs from ITCM, and its state, the engine, the EQ and the compressor included, lives in DTCM; the IR convolver lives in AXI SRAM. Control timings (toggle hysteresis, LED2's blinks) are set in milliseconds and counted in blocks (`dkctl::BlocksForMs`). In order, it:
   1. reads the controls;
   2. toggles the mute on FS1 and counts FS2 presses;
   3. applies the link's queued SETs and ASSIGNs, lets the control slots (Knobs 3–6, SW1–SW3) write their parameters (`dkparam::Store::Update`: pickup and holds, `docs/MIDI.md` "Controls"), and publishes the values, the assignments and the held controls;
   4. steps the preset switch's handshake ("Preset switch" below);
-  5. measures the input peak, takes new gate settings (`gGateWord`, published by the main loop) and runs the gate's detector on that peak (`NoiseGate::Process`, every block, dry and parked included);
-  6. runs the chain on the left input, in place in the left output buffer:
+  5. measures the input peak (the raw jack, before the compressor), takes new gate settings (`gGateWord`, published by the main loop) and runs the gate's detector on that peak (`NoiseGate::Process`, every block, dry and parked included);
+  6. runs the chain on the left input, into the left output buffer, then in place:
+     - `Compressor::Process` on the compressor's five parameters (step 3), from the input buffer into the output buffer (`docs/compressor-spec.md` "DSP model"). `comp_enable` off is a bit-exact bypass after a 20 ms crossfade and runs nothing; turning it on restarts the side chain from rest;
      - the input trim: the model's input calibration times Knob 1, smoothed (one-pole, 20 ms) and ramped linearly across the block, −12…+12 dB around the calibration, which is at noon;
      - while a switch is parked, silence instead of the engine and the IR; otherwise, with a preset loaded:
        - `A2Lite::Process`, also while muted, so the load stays constant and the model stays warm;
@@ -108,16 +112,16 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
      - `Eq::Process` on the EQ's sixteen parameters (step 3): low-cut, bells 1–3, high-cut, after the IR (`docs/EQ.md`). The cuts run every block; a bell runs while its gain is not 0 dB (and for 100 ms after); `eq_enable` off stops the stage;
      - the output gain: Knob 2 smoothed and ramped the same way, times the level match and the gate's gain (so the gate rides the same ramp, `docs/FILTERS.md` "Noise gate"). Knob 2 is `(2k)^3` up to noon (off at fully CCW, about −18 dB at 9 o'clock, unity at noon), then dB-linear to +12 dB;
      - `MuteRamp` (FS1), then the preset fade (`gSwapFade`, another `MuteRamp`);
-  7. copies the left output to the right, measures the output peak and accumulates the gate's level and largest cut for STATUS;
+  7. copies the left output to the right, measures the output peak and accumulates the gate's level and largest cut and the compressor's lowest gain for STATUS;
   8. drives LED1 (on unless muted) and LED2 (`Blinker`);
   9. measures the load and the underruns (a callback longer than one block period).
-- **Dry:** with no valid slot, the chain is the input trim, the EQ, the output gain and the mute, with the calibration and the level match at unity and the gate off; FS2 does nothing. The pedal goes dry at boot with no valid slot, or when the link erases the last one; it leaves dry when a slot is uploaded (`gModelOn` follows the loaded preset through the switch handshake).
+- **Dry:** with no valid slot, the chain is the compressor, the input trim, the EQ, the output gain and the mute, with the calibration and the level match at unity and the gate off; FS2 does nothing. The pedal goes dry at boot with no valid slot, or when the link erases the last one; it leaves dry when a slot is uploaded (`gModelOn` follows the loaded preset through the switch handshake).
 - **Input calibration:** NeuralAmpModelerPlugin's: the input gain at noon is `kInputLevelDbu − input_level_dbu`, so a guitar drives the model as hard as it drove the captured amp. `kInputLevelDbu` is +4.5 dBu, the level at the input jack that reaches 0 dBFS, derived from the datasheets and not measured: the PCM3060 full scale is 0.6 VCC Vpp (VCC 4.5 V), behind the Seed's 3.6 kΩ series resistor into the codec's 10 kΩ input (3.67 Vpp), and the HotHouse input is a unity-gain buffer. A model captured at +15 dBu gets −10.5 dB. A model without `input_level_dbu` is assumed captured at +12 dBu, the plugin's default calibration level (−7.5 dB). Without calibration, noon drove the models about 10 dB harder than at capture, and they sounded distorted.
 - **Level match:** `LevelMatchGain` brings the model's A2-Lite `loudness` to −18 dB (NeuralAmpModelerPlugin's normalisation target); a model without `loudness` plays at unity. `loudness` is measured at the capture level, before the input calibration, so a clean model plays a little quieter than a driven one at noon (SSS vs Fender: 1.8 dB, `docs/ROADMAP.md` M4). At boot the input gain starts at the calibration and the output gain at 0, so the output fades in over the knob time constant.
 - **Main loop** runs `serveReplies` (LIST's SLOTs, DUMP's PARAMs and VALUES, the pending RESULT, STATUS and VALUES every 100 ms with WATCH on), `dkusb::Serve(logBoot, onCommand)`, `servePresets` and the once-a-second log lines. If the IR convolver's FFT does not initialise, audio never starts and the LEDs stay off; the main loop serves USB (DFU included) and logs `ir fft` once a second.
 - **Sharing:** the two threads share only `std::atomic`s, each with one writer, and one single-producer single-consumer ring:
-  - callback → main loop, relaxed: `gKnob`, `gToggle`, `gFsHeld`, `gMutedPub`, `gUnderruns`, `gPeak`, `gOutPeak`, `gLoadAvg`, `gLoadMax`, `gFs2Presses`, `gGateLevel`, `gGateGain`, `gParamPub`, `gAssignPub`, `gHeldPub`; release/acquire: `gSwapParked`, `gEditsDone`;
-  - main loop → callback, relaxed: `gPeakReset`, `gLoadReset`, `gBlinkCount`, `gGateWord` (the 8-byte gate block as two words: a torn pair mixes two valid settings for one block), `gGateMeterReset`; release/acquire: `gSwapReq`, `gSwapLoaded` (which publishes the plain `gNextLevel`, `gNextInCal`, `gNextIrOn`, `gNextModelOn`) and `gBlinkReq`; the ring `gEdits` (16 SETs and ASSIGNs).
+  - callback → main loop, relaxed: `gKnob`, `gToggle`, `gFsHeld`, `gMutedPub`, `gUnderruns`, `gPeak`, `gOutPeak`, `gLoadAvg`, `gLoadMax`, `gFs2Presses`, `gGateLevel`, `gGateGain`, `gCompGain`, `gParamPub`, `gAssignPub`, `gHeldPub`; release/acquire: `gSwapParked`, `gEditsDone`;
+  - main loop → callback, relaxed: `gPeakReset`, `gLoadReset`, `gBlinkCount`, `gGateWord` (the 8-byte gate block as two words: a torn pair mixes two valid settings for one block), `gMeterReset` (restarts the gate's and the compressor's meters); release/acquire: `gSwapReq`, `gSwapLoaded` (which publishes the plain `gNextLevel`, `gNextInCal`, `gNextIrOn`, `gNextModelOn`) and `gBlinkReq`; the ring `gEdits` (16 SETs and ASSIGNs).
 - **Parameters:** the callback owns `gStore` (`dkparam::Store`, DTCM). SET and ASSIGN push an edit to `gEdits` and answer at once; the next block applies it (within 0.5 ms). DUMP and SAVE first wait until the callback has applied every edit pushed so far and published the result (`awaitEdits`: `gEditsDone` against the count pushed), so they see what the RESULTs before them promised. The step costs 327 cycles a block (1.4 permille), measured with the cycle counter: the knob slots write every block without comparing values, and a write tests one mask for other controls on its parameter (`docs/M7_PERFORMANCE.md`: a float compare and branch costs 6 cycles or more).
 - **Gate settings:** `loadPreset` publishes the loaded preset's gate (`kGateOff` when dry) while the callback is parked, so a switch changes the gate in silence; GATE on the playing slot and GATE TRY publish while it plays, and the gate glides to the new settings.
 - **Preset switch:** the engine and the convolver have two owners in turn, and the handshake hands them over.
@@ -131,8 +135,8 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 
 | Region | Size | Holds now | Reserved for |
 |---|---|---|---|
-| ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages, the convolver, the noise gate, the EQ's sample loops, the gains and the parameter store inlined), `A2Lite::RunLayer`, `Eq::Control` (about 15.2 KB in all) | |
-| DTCM `0x20000000` | 128 KB | The engine (92,116 bytes in `.dtcm_bss`: history 83,976, weights 7,480); callback state, the parameter store included; the 16 KB stack reserve at the top | |
+| ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages, the convolver, the noise gate, the EQ's and the compressor's sample loops, the gains and the parameter store inlined), `A2Lite::RunLayer`, `Eq::Control`, `Compressor::Control`, `Compressor::SideChain` (17,800 bytes in all) | |
+| DTCM `0x20000000` | 128 KB | The engine (92,116 bytes in `.dtcm_bss`: history 83,976, weights 7,480); callback state, the parameter store, the EQ and the compressor included; the 16 KB stack reserve at the top: 110,768 bytes in all | |
 | AXI SRAM `0x24000000` | 480 KB | Code (CMSIS-DSP's FFT included), `.data`, `.bss` with the IR convolver (68 KB): 238 KB in total | |
 | D2 SRAM `0x30008000` | 256 KB | — (the convolver measured slower here than in AXI SRAM, `docs/FILTERS.md`) | |
 | SDRAM `0xC0000000` | 64 MB | The 8 parsed presets (`gPresets`, 127,296 bytes; the gear texts stay in flash), the link's upload buffer (16,288), RENAME/SWAP/GATE scratch (2 × 16,288) and COMMIT's parse target (`gCheck`, 15,912): 192,072 bytes in `.sdram_bss` | |
@@ -209,11 +213,11 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 - **Two copies,** as for the state record: each of the two 4 KB sectors holds one record at its start. The valid record with the higher seq is the newest. SAVE (the link's command) erases and writes the other sector, then reads it back through the memory-mapped QSPI (`settings seq S T ms`, or `settings write failed` and RESULT `flash`), so a torn write leaves the previous record readable. Nothing else writes it: ASSIGN and SET change only the running pedal.
 - **At boot** the newest record sets the assignments and the values (`settings seq S`); with none, no control is assigned and every parameter is at its default (`settings factory`). The first audio block then writes every parameter on a control from that control, so a saved value matters only for a parameter on no control.
 - **Decoding is defensive:** a stored value is clamped into its range, a choice rounded to an index, and a non-finite value replaced by the default; an assignment its slot does not accept (an unknown id, a continuous parameter on a switch) becomes none.
-- **Across firmware versions:** parameter ids are append-only within a version. A record with fewer parameters than the firmware leaves the later ones at their defaults; one with more has the extra values ignored. SAVE always writes the running firmware's count. A table whose ids change bumps the version, and a record of another version is ignored: version 2 is M10's EQ table (16 parameters); a version-1 record (M9's cuts and 515 Hz mid) reads as no record.
+- **Across firmware versions:** parameter ids are append-only within a version. A record with fewer parameters than the firmware leaves the later ones at their defaults; one with more has the extra values ignored. SAVE always writes the running firmware's count. A table whose ids change bumps the version, and a record of another version is ignored: version 2 is M10's EQ table (16 parameters) and M11's compressor (ids 16–20 appended, 21 parameters; a 16-value record leaves the compressor's five at their defaults); a version-1 record (M9's cuts and 515 Hz mid) reads as no record.
 
 ## Link protocol
 
-`daisy/src/link.h` is the reference: the command and result tables (`kCommands`, `kResults`) generate `docs/MIDI.md` (`make midi-doc`; `make test` fails when it is stale), which documents the framing, every command, the parameter table, the controls, the upload and the playback rules. Frames are `F0 7D 64 01 <cmd> … F7` (device byte `0x64`, version `0x01`). M0's HELLO, DFU, LOG and Identity are unchanged; M7 adds LIST, ERASE, RENAME, SWAP, WATCH, UPLOAD BEGIN/CHUNK/COMMIT, and the SLOT, RESULT and STATUS replies; M8 adds READ and its DATA reply (up to 160 bytes of an ok slot's image, copied from the mapped QSPI and sent by `serveReplies` before READ's RESULT); the noise gate adds GATE (rewrite a slot's gate block), GATE TRY (set the running gate only, for the editor's sliders) and STATUS's gate level and cut (30 bytes); M9 adds DUMP (the parameter table as PARAMs, then a VALUES), SET, ASSIGN, SAVE, and a VALUES after every STATUS under WATCH. Every request except HELLO and DFU gets exactly one RESULT, last.
+`daisy/src/link.h` is the reference: the command and result tables (`kCommands`, `kResults`) generate `docs/MIDI.md` (`make midi-doc`; `make test` fails when it is stale), which documents the framing, every command, the parameter table, the controls, the upload and the playback rules. Frames are `F0 7D 64 01 <cmd> … F7` (device byte `0x64`, version `0x01`). M0's HELLO, DFU, LOG and Identity are unchanged; M7 adds LIST, ERASE, RENAME, SWAP, WATCH, UPLOAD BEGIN/CHUNK/COMMIT, and the SLOT, RESULT and STATUS replies; M8 adds READ and its DATA reply (up to 160 bytes of an ok slot's image, copied from the mapped QSPI and sent by `serveReplies` before READ's RESULT); the noise gate adds GATE (rewrite a slot's gate block), GATE TRY (set the running gate only, for the editor's sliders) and STATUS's gate level and cut (30 bytes); M9 adds DUMP (the parameter table as PARAMs, then a VALUES), SET, ASSIGN, SAVE, and a VALUES after every STATUS under WATCH; M11 adds the compressor's parameters (ids 16–20) and STATUS's comp cut (32 bytes: the largest reduction of the compressor's low-frequency gain below Sustain's since the previous STATUS, tenths of a dB, 0 when off). Every request except HELLO and DFU gets exactly one RESULT, last.
 
 **CLI:** `bun tools/pedal.ts [--port BUS-PORT] COMMAND`, slots 1–8:
 
@@ -227,7 +231,7 @@ param list | param get NAME              # each parameter: its name, value and c
 param set NAME VALUE                     # VALUE in the parameter's unit (Hz, Q, dB), a choice's label or index, or `off`: `param set high_cut_freq 3000`, `param set bell2_gain -3`
 param assign CONTROL NAME|none           # CONTROL k3-k6 or sw1-sw3: `param assign k3 bell2_freq`; a switch takes only choice parameters
 param save                               # SAVE: the assignments and the values for the next power-up; prints the flash time
-status [SECONDS]                         # WATCH: a STATUS line every 100 ms (with `gate in … dBFS cut … dB`) and the LOG lines, for SECONDS (5) or until Ctrl-C
+status [SECONDS]                         # WATCH: a STATUS line every 100 ms (with `gate in … dBFS cut … dB`, ending `comp cut … dB`) and the LOG lines, for SECONDS (5) or until Ctrl-C
 ```
 
 - Usage errors exit 2; a refused command (`pedal: RENAME: slot-state`), a rejected file or no reply exits 1.
@@ -389,15 +393,29 @@ Preset 4 (no IR), factory layout, audio running throughout; over the link with `
 - **SAVE and restart** (a DFU reflash, not a power cycle): `settings seq 1`, `layout k3 low_cut_slope k4 high_cut_freq k5 low_cut_freq k6 none …`; `low_cut_res`, on no control, came back at the saved Q 1.50; `high_cut_freq` went back to Knob 4's position.
 - **Not checked in this run:** moving a held knob or switch (the pickup), a choice parameter on a knob by ear, and a power pull during SAVE.
 
+## Measured (M11, Seed 1.2 / PCM3060)
+
+Slot with a model and no IR, not playing; the compressor's parameters set with `bun tools/pedal.ts param set`.
+
+| | |
+|---|---|
+| Load, compressor off | 415 permille |
+| Load, compressor on | 446 permille |
+| Underruns | 0 |
+| DTCM | 110,768 bytes of 128 KB |
+| ITCM | 17,800 bytes of 64 KB |
+
+- **Host:** the kernel against `tools/comp_reference.py`: max abs diff 3.6e-6, 1.8e-6 and 4.4e-6 on the three steps, 5.4e-7 on the DI; `static.csv` worst 0.0000 dB; the static curve against SPICE worst 0.113 dB; the stage response against the spec's table worst 0.083 dB; lowest step gains 4.44, 0.49 and 5.74 dB (SPICE 4.77, 0.53, 5.87).
+
 ## Bench
 
-`APP=bench` (`daisy/src/bench.cpp`) has no audio. It compiles in `tests/fixtures/nam/A2.bin`, `tests/fixtures/ir/decay.bin` and a slice of `input.wav` and `A2.input.ref.wav` (`.incbin`; the Makefile rebuilds `bench.o` when they change). It places the engine like the pedal does: the object in DTCM, its stages and the timed blocks in ITCM; the EQ in DTCM and the pedal's convolver (`gIrAxi`) in AXI SRAM, with a second one (`gIrD2`) in D2 SRAM for comparison. Each pass:
+`APP=bench` (`daisy/src/bench.cpp`) has no audio. It compiles in `tests/fixtures/nam/A2.bin`, `tests/fixtures/ir/decay.bin` and a slice of `input.wav` and `A2.input.ref.wav` (`.incbin`; the Makefile rebuilds `bench.o` when they change). It places the engine like the pedal does: the object in DTCM, its stages and the timed blocks in ITCM; the EQ and the compressor in DTCM and the pedal's convolver (`gIrAxi`) in AXI SRAM, with a second one (`gIrD2`) in D2 SRAM for comparison. The parameter values both read are one array, `gValues`; `eqValues` and `compValues` each write their own ids. Each pass:
 
 1. **Check:** a reset engine runs `input.wav[48000, 72000)` (the file's first second is silence, so a reset engine is already in that state) against the reference render; limit 1e-5.
 2. **IR check:** the reset convolver runs `input.wav[48000, 52800)` against a direct convolution computed on the device in double; limit 1e-5.
 3. **Model:** `A2Lite::Process` on `kBlockSize` blocks of uniform noise (±0.5), timed with the DWT cycle counter: 200 ms of warm-up blocks, then 2 s measured, interrupts masked inside each block. The M3 gate is the maximum against 450 permille of the block period.
 4. **Layers:** the same blocks, each stage (`BeginChunk`, `RunLayer` per layer, `EndChunk`) timed separately.
-5. **IR, EQ, noise gate, chain:** the same way, the convolver from D2 and from AXI SRAM; the EQ at its worst case: enabled, both cuts at mid-travel with the top resonance and their slopes flipping between 24 and 12 dB every 10 blocks (slope fades), every bell flipping between −12 dB at a quarter and +12 dB at three quarters of its frequency range every 10 blocks, so every glide and coefficient ramp runs on every block; the noise gate enabled with the longest hold (100 ms, the longest detector scan), fed each block's input peak; and the pedal's whole chain (the gate, input gain, engine, IR, EQ, output gain with the gate's gain, mute). The chain gate is its maximum against 850 permille, the load ceiling (`docs/ROADMAP.md` "Decisions"; 550 until the 24-sample blocks). M10's figures: `docs/EQ.md` "As built".
+5. **IR, EQ, noise gate, compressor, chain:** the same way, the convolver from D2 and from AXI SRAM; the EQ at its worst case: enabled, both cuts at mid-travel with the top resonance and their slopes flipping between 24 and 12 dB every 10 blocks (slope fades), every bell flipping between −12 dB at a quarter and +12 dB at three quarters of its frequency range every 10 blocks, so every glide and coefficient ramp runs on every block; the noise gate enabled with the longest hold (100 ms, the longest detector scan), fed each block's input peak; the compressor (`comp`) on in blend, Sustain 0.25 ↔ 1.0, Level −3 ↔ +3 dB and Balance 0.25 ↔ 0.75 flipping every 10 blocks, so every smoother, ramp and `powf` runs on every block, while the noise (0.92 V at the jack) keeps the side chain compressing and clipping; and the pedal's whole chain (the gate, compressor, input gain, engine, IR, EQ, output gain with the gate's gain, mute). The chain gate is its maximum against 850 permille, the load ceiling (`docs/ROADMAP.md` "Decisions"; 550 until the 24-sample blocks). M10's figures: `docs/EQ.md` "As built"; M11's: "Measured (M11)" below.
 
 Passes repeat every 2 s; the DFU command works between stages, so `flash_when_ready.sh` returns to the pedal with no button presses.
 
@@ -422,6 +440,8 @@ bench chain cycles avg 237192 max 238301 permille avg 494.1 max 496.4
 bench gate chain max 496.4 permille limit 550 go
 bench pass 1 done
 ```
+
+The compressor (M11) adds `bench comp cycles avg … max … permille avg … max …` after the noise gate's line.
 
 ### Measured (M3, Seed 1.2)
 
@@ -453,5 +473,15 @@ bench pass 1 done
 - **IR check:** max error 182e-9.
 - **IR placement:** the convolver's 66 KB of spectra pass through the 16 KB D-cache every block; from AXI SRAM it costs 21 % less than from D2 SRAM, so the pedal keeps it in `.bss`.
 - **Image:** bench 299,728 bytes; SRAM 94.6 % (the second convolver and the IR check's buffers).
+
+### Measured (M11, Seed 1.2, 24 samples)
+
+| Stage | Avg cycles | Max permille |
+|---|---|---|
+| Compressor (`comp`) | 7,108 | 30.0 |
+| Whole chain (`chain`, with the compressor) | 156,559 | 657.4 |
+
+- **Gate:** go, 657.4 permille against 850 (626.9 before the compressor, `docs/FILTERS.md` "Measured").
+- **Image:** bench DTCM 110,600 bytes; SRAM 99.09 %.
 
 How the engine got here from 570 permille, the measured cost model behind it, and how to check an image for a regression: `docs/M7_PERFORMANCE.md`. Run the bench after any change to the engine, the compiler or its flags: the gate line is the only test that sees a slowdown.

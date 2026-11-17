@@ -89,6 +89,7 @@ test("the parameters' codes map to the firmware's sections", () => {
 
 test("readEqSettings needs every EQ parameter", () => {
   for (let i = 0; i < PARAMS.length; ++i) {
+    if (PARAMS[i]!.group !== "EQ") continue;
     expect(
       readEqSettings(
         PARAMS.filter((_, j) => j !== i),

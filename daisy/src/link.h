@@ -26,7 +26,7 @@ constexpr size_t kMaxName = 63;       // a SLOT name or a RENAME name
 constexpr size_t kChunkBytes = 256;   // an UPLOAD CHUNK's data, unpacked
 constexpr size_t kReadBytes = 160;    // a DATA's data, unpacked
 constexpr size_t kMaxPayload = 200;   // a pedal -> host payload (LOG, SLOT, RESULT, STATUS, DATA)
-constexpr size_t kStatusBytes = 30;   // a STATUS payload
+constexpr size_t kStatusBytes = 32;   // a STATUS payload
 constexpr size_t kGatePayload = 8;    // a GATE or GATE TRY payload: the slot, then ParseGate's 7 bytes
 constexpr uint32_t kWatchPeriodMs = 100;
 constexpr size_t kParamHead = 15;     // a PARAM payload before its text
@@ -112,6 +112,7 @@ struct StatusFrame {
     uint8_t footswitches;         // held: bit 0 FS1, bit 1 FS2
     uint16_t gate_level;          // the gate detector's level, tenths of a dB below full scale, 0..1200
     uint16_t gate_cut;            // the gate's gain reduction, tenths of a dB, 0..1200 (1200: closed)
+    uint16_t comp_cut;            // the compressor's largest gain reduction, tenths of a dB, 0..1200
 };
 
 // VALUES's fields.
@@ -176,6 +177,7 @@ public:
         p[25] = s.footswitches & 0x03;
         PutSeptets(p + 26, s.gate_level, 2);
         PutSeptets(p + 28, s.gate_cut, 2);
+        PutSeptets(p + 30, s.comp_cut, 2);
         return AppendSysEx(kStatus, p, sizeof p);
     }
     // DATA: the slot, the image offset (u21), the CRC-32 of data[0, n) (u32), then the data Pack7'd; n 1..kReadBytes.
@@ -401,13 +403,15 @@ inline constexpr CommandDoc kCommands[] = {
      "last."},
     {kStatus, Dir::kToHost, "STATUS",
      "`<load avg u14> <load max u14> <underruns u28> <slot> <mute> <knob 1-6: 6 x u14> <SW1> <SW2> <SW3> "
-     "<footswitches> <gate level u14> <gate cut u14>` (30 bytes)",
+     "<footswitches> <gate level u14> <gate cut u14> <comp cut u14>` (32 bytes)",
      "Sent every 100 ms while WATCH is on. Load in permille, as the last once-a-second `load` line reported it (0 "
      "before the first); underruns since boot, clamped at 2^28 - 1; slot 0-7, or 7F when dry; mute 0/1; knobs in "
      "permille (0-1000); SW1-SW3 0 down, 1 middle, 2 up; footswitches held: bit 0 FS1, bit 1 FS2. Gate level: the "
-     "highest level the gate's detector saw at the input (before Knob 1) since the previous STATUS, in tenths of a "
-     "dB below full scale (0-1200, 1200 for silence); gate cut: the largest gain reduction the gate applied since "
-     "the previous STATUS, in tenths of a dB (0-1200, 1200 closed)."},
+     "highest level the gate's detector saw at the input (before the compressor and Knob 1) since the previous "
+     "STATUS, in tenths of a dB below full scale (0-1200, 1200 for silence); gate cut: the largest gain reduction "
+     "the gate applied since the previous STATUS, in tenths of a dB (0-1200, 1200 closed); comp cut: the largest "
+     "reduction of the compressor's low-frequency gain below Sustain's since the previous STATUS, in tenths of a dB "
+     "(0-1200; 0 when the compressor is off)."},
     {kData, Dir::kToHost, "DATA", "`<slot 0-7> <offset u21> <crc32 u32> <Pack7 data>` (1-160 bytes unpacked)",
      "Answers READ: the image bytes at offset and the CRC-32 of the unpacked bytes. Comes before READ's RESULT."},
     {kParam, Dir::kToHost, "PARAM",

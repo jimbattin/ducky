@@ -29,6 +29,8 @@ test("formatParam follows the firmware's tapers and off ends", () => {
   expect(formatParam(param("bell1_gain"), 8192)).toBe("+0.0 dB");
   expect(formatParam(param("low_cut_slope"), 0)).toBe("24 dB/oct");
   expect(formatParam(param("eq_enable"), 1)).toBe("on");
+  expect(formatParam(param("comp_balance"), 8192)).toBe("50 %");
+  expect(formatParam(param("comp_sustain"), param("comp_sustain").defCode)).toBe("+15.6 dB");
 });
 
 test("codes and values round trip", () => {
