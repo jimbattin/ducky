@@ -90,8 +90,8 @@ extern "C" const uint8_t dk_bench_model[], dk_bench_model_end[], dk_bench_input[
 
 namespace {
 
-constexpr int kBlocksPerMs = int(size_t(dkdsp::kSampleRate) / kBlockSize / 1000);
-constexpr int kWarmBlocks = 200 * kBlocksPerMs, kRunBlocks = 2000 * kBlocksPerMs, kNoiseBlocks = 64;  // 200 ms, 2 s
+constexpr int kWarmBlocks = 200 * int(dkdsp::kBlocksPerMs), kRunBlocks = 2000 * int(dkdsp::kBlocksPerMs),
+              kNoiseBlocks = 64;  // 200 ms, 2 s
 constexpr uint32_t kPassGapMs = 2000;
 // input.wav's first second is digital silence, so a reset engine is already in the state of sample 48000.
 constexpr size_t kCheckOffset = 48000, kCheckSamples = 24000;
@@ -225,18 +225,12 @@ DK_ITCM void blockEq(const float* in) {
     gEq.Process(gOut, kBlockSize, eqControls());
 }
 
-// The block's input peak, the gate's detector input as in the pedal's AudioCallback.
-DK_ITCM float blockPeak(const float* in) {
-    float peak = 0.0f;
-    for (size_t i = 0; i < kBlockSize; ++i) peak = std::fmax(peak, std::fabs(in[i]));
-    return peak;
-}
-
-DK_ITCM void blockGate(const float* in) { gOut[0] = gGate.Process(blockPeak(in)); }
+// The gate's detector input is the block's input peak, as in the pedal's AudioCallback.
+DK_ITCM void blockGate(const float* in) { gOut[0] = gGate.Process(dkdsp::Peak(in, kBlockSize)); }
 
 // The pedal's AudioCallback chain, without the control reads and meters.
 DK_ITCM void blockChain(const float* in) {
-    const float gate = gGate.Process(blockPeak(in));
+    const float gate = gGate.Process(dkdsp::Peak(in, kBlockSize));
     gInGain.Process(in, gOut, kBlockSize, 1.0f);
     gEngine.Process(gOut, gOut, kBlockSize);
     gIrAxi.Process(gOut, gOut);

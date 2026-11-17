@@ -83,16 +83,6 @@ static_assert(kReceptiveField == 6346, "docs/NAM_FORMAT.md: receptive field");
 
 namespace dkdsp {
 
-// v in an FP register of its own, materialised at this point of the instruction stream. GCC otherwise emits a
-// single-use load, or the copy of a shared value, immediately before the first instruction that uses it, which puts
-// it in the middle of a multiply-accumulate run (see A2Lite). The value is unchanged; a no-op on the host.
-[[gnu::always_inline]] inline float FpHere(float v) {
-#if defined(__arm__)
-    __asm__ volatile("" : "+w"(v));
-#endif
-    return v;
-}
-
 // Runs the network in the arithmetic order of NeuralAmpModelerCore's A2FastModel<3> (NAM/wavenet/a2_fast.cpp), so the
 // output matches its renders to float rounding. Per output the summation order is upstream's: conv bias, taps oldest
 // first, inputs 0..2 within a tap, then the mixin; the layer1x1 residual is lb + L0*a0 + L1*a1 + L2*a2.

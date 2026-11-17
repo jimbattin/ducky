@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "binary.h"
 #include "link.h"
 #include "preset.h"
 
@@ -37,7 +38,7 @@ public:
         uint8_t data[kChunkBytes];
         size_t len = 0;
         if (!Unpack7(p + 8, n - 8, data, len) || len == 0 || len > kChunkBytes) return Result::kBadRequest;
-        if (dkmodel::Crc32(data, len) != GetSeptets(p + 3, 5)) return Result::kCrc;
+        if (dkbin::Crc32(data, len) != GetSeptets(p + 3, 5)) return Result::kCrc;
         const uint32_t offset = GetSeptets(p, 3);
         if (offset > next_) return Result::kOffset;
         if (offset + len > size_) return Result::kBadRequest;

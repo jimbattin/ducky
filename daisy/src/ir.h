@@ -7,8 +7,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "binary.h"
 #include "dsp/blocks.h"
-#include "model.h"
 
 namespace dkir {
 
@@ -54,13 +54,13 @@ static_assert(kOffTaps + 4 * dkdsp::kIrTaps == kOffCrc && kOffCrc + 4 == kBinSiz
 // Validates and decodes a format-1 image. *out is written only on kOk.
 inline Status Parse(const uint8_t* data, size_t n, Ir* out) {
     using namespace detail;
-    using dkmodel::detail::Le16;
-    using dkmodel::detail::Le32;
-    using dkmodel::detail::LeF32;
+    using dkbin::Le16;
+    using dkbin::Le32;
+    using dkbin::LeF32;
     if (n != kBinSize || Le32(data + kOffSize) != kBinSize) return Status::kSize;
     if (std::memcmp(data, "DKIR", 4) != 0) return Status::kMagic;
     if (Le16(data + kOffVersion) != kFormatVersion) return Status::kVersion;
-    if (Le32(data + kOffCrc) != dkmodel::Crc32(data, kOffCrc)) return Status::kCrc;
+    if (Le32(data + kOffCrc) != dkbin::Crc32(data, kOffCrc)) return Status::kCrc;
 
     const uint32_t tap_count = Le32(data + kOffTapCount);
     if (tap_count < 1 || tap_count > dkdsp::kIrTaps) return Status::kTaps;

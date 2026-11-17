@@ -5,14 +5,12 @@
 #include <cstdint>
 
 #include "dsp/blocks.h"
+#include "memory.h"
 
 namespace dkctl {
 
-// The control timings below count blocks; every whole millisecond is a whole number of them.
-constexpr int kBlocksPerSecond = int(size_t(dkdsp::kSampleRate) / dkdsp::kBlockSize);
-static_assert(size_t(dkdsp::kSampleRate) % dkdsp::kBlockSize == 0 && kBlocksPerSecond % 1000 == 0,
-              "the block rate is a whole number of kHz");
-constexpr int BlocksForMs(int ms) { return ms * (kBlocksPerSecond / 1000); }
+// The control timings below count blocks; every whole millisecond is a whole number of blocks (dkdsp::kBlocksPerMs).
+constexpr int BlocksForMs(int ms) { return ms * int(dkdsp::kBlocksPerMs); }
 
 // A toggle accepts a new position only after it has read that position for kToggleStableBlocks consecutive blocks,
 // so a lever moving up <-> down never reports the middle it passes through.
@@ -24,7 +22,7 @@ public:
         count_ = 0;
     }
     // Once per block with the raw position; returns the accepted position.
-    uint8_t Process(uint8_t raw) {
+    DK_ITCM uint8_t Process(uint8_t raw) {
         if (raw == pos_) {
             count_ = 0;
             return pos_;
@@ -58,7 +56,7 @@ public:
         phase_ = 0;
     }
     // Once per block: true (on) for the first kBlinkOnBlocks of each of the n periods.
-    bool Tick() {
+    DK_ITCM bool Tick() {
         if (n_ == 0) return false;
         if (remaining_ == 0) {  // the pause before the next repeat
             if (++phase_ == kBlinkPauseBlocks) {

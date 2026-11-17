@@ -6,7 +6,6 @@
 #include <cstring>
 
 #include "../memory.h"
-#include "a2lite.h"
 #include "blocks.h"
 #include "dsp/transform_functions.h"
 

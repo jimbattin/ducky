@@ -1,6 +1,7 @@
 # ducky: the Ducky NAM player pedal on the Daisy Seed in a Cleveland Music Co. HotHouse (src/board.h).
-# APP=ducky (default): the pedal firmware, build/<BOARD>/ducky.bin. Presets (models and IRs) live in QSPI, written by
-# tools/preset_bank.ts and tools/flash_when_ready.sh (docs/FIRMWARE.md "Preset store").
+# APP=ducky (default): the pedal firmware, build/<BOARD>/ducky.bin. Presets (models and IRs) live in QSPI, written as a
+# bank by tools/preset_bank.ts and tools/flash_when_ready.sh, or slot by slot over USB-MIDI by tools/pedal.ts and the
+# editor (docs/FIRMWARE.md "Preset store").
 # APP=bench: the A2-Lite, IR and EQ benchmark and device check (src/bench.cpp, no audio),
 # build/<BOARD>-bench/ducky_bench.bin.
 
@@ -51,7 +52,8 @@ include cmsis_fft.mk
 OPT = -O3 -fno-schedule-insns -fno-schedule-insns2
 CPP_STANDARD = -std=gnu++17
 # libDaisy's BOOT_SRAM script with .data/.bss in AXI SRAM, plus .dtcm_data/.itcm_text (copied at boot, src/memory.cpp),
-# .dtcm_bss (zeroed at boot), .sdram_bss (the parsed presets) and .d2_bss (reserved for later milestones).
+# .dtcm_bss (zeroed at boot), .sdram_bss (the parsed presets) and .d2_bss (the bench's D2 SRAM comparison convolver;
+# empty in the pedal).
 LDSCRIPT = STM32H750IB_sram_ducky.lds
 
 # The build id the Identity Reply carries (src/link.h): the repo's short commit, with +dirty when tracked

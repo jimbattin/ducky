@@ -16,7 +16,7 @@ void copyWords(uint32_t* dst, uint32_t* end, const uint32_t* src) {
     while (dst < end) *dst++ = *src++;
 }
 
-void InitTcm() {
+void initTcm() {
     copyWords(_itcm_text_start, _itcm_text_end, _itcm_text_load);
     copyWords(_dtcm_data_start, _dtcm_data_end, _dtcm_data_load);
     for (uint32_t* p = _dtcm_bss_start; p < _dtcm_bss_end; ++p) *p = 0;
@@ -24,4 +24,4 @@ void InitTcm() {
 
 }  // namespace
 
-__attribute__((section(".preinit_array"), used)) static void (*gInitTcm)() = InitTcm;
+__attribute__((section(".preinit_array"), used)) static void (*gInitTcm)() = initTcm;

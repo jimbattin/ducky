@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "binary.h"
 #include "dsp/a2lite.h"
 
 namespace dkmodel {
@@ -42,16 +43,6 @@ struct Model {
     char name[kNameSize];   // NUL-terminated printable ASCII
 };
 
-// IEEE 802.3 / zlib CRC-32, bitwise (no table): reflected poly 0xEDB88320, init and final XOR 0xFFFFFFFF.
-inline uint32_t Crc32(const uint8_t* data, size_t n) {
-    uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < n; ++i) {
-        crc ^= data[i];
-        for (int b = 0; b < 8; ++b) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
-
 namespace detail {
 
 // Byte offsets of the format-2 fields.
@@ -65,27 +56,19 @@ static_assert(kOffName + kNameSize == kOffGearType && kOffGearType + kTextSize =
                   kOffModeledBy + kTextSize == kOffCrc && kOffCrc + 4 == kBinSize,
               "name, the gear texts, then CRC, then the end");
 
-inline uint16_t Le16(const uint8_t* p) { return uint16_t(p[0] | p[1] << 8); }
-inline uint32_t Le32(const uint8_t* p) {
-    return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
-}
-inline float LeF32(const uint8_t* p) {
-    const uint32_t u = Le32(p);
-    float f;
-    std::memcpy(&f, &u, sizeof f);
-    return f;
-}
-
 }  // namespace detail
 
 // Validates and decodes a format-2 image (the gear texts stay in flash). *out is written only on kOk.
 inline Status Parse(const uint8_t* data, size_t n, Model* out) {
     using namespace detail;
+    using dkbin::Le16;
+    using dkbin::Le32;
+    using dkbin::LeF32;
     namespace a2 = dkdsp::a2;
     if (n != kBinSize || Le32(data + kOffSize) != kBinSize) return Status::kSize;
     if (std::memcmp(data, "DKNM", 4) != 0) return Status::kMagic;
     if (Le16(data + kOffVersion) != kFormatVersion) return Status::kVersion;
-    if (Le32(data + kOffCrc) != Crc32(data, kOffCrc)) return Status::kCrc;
+    if (Le32(data + kOffCrc) != dkbin::Crc32(data, kOffCrc)) return Status::kCrc;
 
     const uint8_t* desc = data + kOffDesc;
     bool shape_ok = desc[0] == a2::kChannels && desc[1] == a2::kChannels && desc[2] == a2::kLayers &&

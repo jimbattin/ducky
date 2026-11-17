@@ -9,7 +9,7 @@ It supports 8 presets. Each preset contains a NAM Model, an optional IR block an
 
 ## Signal chain
 
-L INPUT -> [Peset: NAM Model -> IR] -> EQ -> [Preset: noise gate gain, detected from L INPUT before the trim] -> L/R Out 
+L INPUT -> Input trim -> [Preset: NAM Model -> IR] -> EQ -> Output volume × [Preset: noise gate gain, detected from L INPUT before the trim] -> Mute -> L/R Out
 
 Presets contain the NAM Model, optional IR and noise gate settings. They do not track Input/Output gain or EQ settings - Those are "What you see is what you get" on the pedal
 

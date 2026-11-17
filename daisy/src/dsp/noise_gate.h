@@ -26,9 +26,7 @@ struct GateSettings {
 inline constexpr GateSettings kGateOff{false, 60, 5, 20, 100, 40};
 constexpr float kGateHysteresisDb = 6.0f;
 constexpr float kGateSilence = 1e-5f;  // -100 dB: gains below it are 0
-constexpr size_t kGateBlocksPerMs = size_t(kSampleRate) / kBlockSize / 1000;
-static_assert(kGateBlocksPerMs * kBlockSize * 1000 == size_t(kSampleRate), "the block rate is a whole number per ms");
-constexpr size_t kGateMaxHoldBlocks = 100 * kGateBlocksPerMs;
+constexpr size_t kGateMaxHoldBlocks = 100 * kBlocksPerMs;
 
 // Every field inside its range.
 inline bool GateValid(const GateSettings& s) {
@@ -58,7 +56,7 @@ public:
         exp_ = float(s.ratio) * 0.1f - 1.0f;
         attack_step_ = std::fmin(1.0f, kBlockMs / (0.1f * float(s.attack)));
         release_ = std::exp(-std::log(1000.0f) * kBlockMs / float(s.release));
-        const size_t n = size_t(s.hold) * kGateBlocksPerMs;
+        const size_t n = size_t(s.hold) * kBlocksPerMs;
         if (n != n_) {
             for (size_t i = 0; i < n; ++i) ring_[i] = level_;
             n_ = n;

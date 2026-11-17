@@ -27,7 +27,7 @@ bool gSendIdentity = false;                             // an Identity Request i
 
 // USB IRQ: every incoming MIDI byte goes to the main loop.
 void onMidiRx(uint8_t* data, size_t size, void*) {
-    for (size_t i = 0; i < size; ++i) gRx.push(data[i]);
+    for (size_t i = 0; i < size; ++i) gRx.Push(data[i]);
 }
 
 }  // namespace
@@ -39,15 +39,6 @@ void Init(DaisySeed& seed) {
     gMidi.Init(cfg);
     gMidi.StartRx(onMidiRx, nullptr);
 }
-
-void Poll() {
-    if (!gMidi.RxActive()) {
-        gMidi.FlushRx();
-        gMidi.StartRx(onMidiRx, nullptr);
-    }
-}
-
-bool ReadByte(uint8_t& b) { return gRx.pop(b); }
 
 dklink::TxBuffer& Tx() { return gTx[gFill]; }
 
@@ -61,9 +52,22 @@ void Log(const char* fmt, ...) {
     gTx[gFill].AppendLog(buf);
 }
 
-// A successful start means the previous transfer finished, so the other buffer can be refilled; a busy endpoint keeps
-// the batch for the next pass. (libDaisy's MidiUsbHandler::SendMessage retries a busy endpoint with a delay, so the
-// link bypasses it.)
+namespace {
+
+// Restarts reception if libDaisy stopped it (its ring overflowed).
+void Poll() {
+    if (!gMidi.RxActive()) {
+        gMidi.FlushRx();
+        gMidi.StartRx(onMidiRx, nullptr);
+    }
+}
+
+// The next byte from the USB IRQ ring; false when it is empty.
+bool ReadByte(uint8_t& b) { return gRx.Pop(b); }
+
+// Starts the filled buffer's transfer if the USB endpoint is free; never blocks. A successful start means the previous
+// transfer finished, so the other buffer can be refilled; a busy endpoint keeps the batch for the next pass.
+// (libDaisy's MidiUsbHandler::SendMessage retries a busy endpoint with a delay, so the link bypasses it.)
 void Flush() {
     dklink::TxBuffer& t = gTx[gFill];
     if (t.size() == 0) return;
@@ -73,7 +77,8 @@ void Flush() {
     gTx[gFill].Clear();
 }
 
-void EnterDfu() {
+// Logs "dfu reset", Flush()es for ~100 ms, then restarts into the Daisy bootloader's DFU mode (no timeout).
+[[noreturn]] void EnterDfu() {
     Log("dfu reset");
     for (int i = 0; i < 100; ++i) {
         Flush();
@@ -83,6 +88,8 @@ void EnterDfu() {
     for (;;) {
     }
 }
+
+}  // namespace
 
 void Serve(void (*onHello)(), bool (*onCommand)(uint8_t cmd, const uint8_t* payload, size_t n)) {
     Poll();

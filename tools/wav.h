@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "binary.h"
+
 namespace dkwav {
 
 struct Audio {
@@ -18,10 +20,6 @@ struct Audio {
 
 namespace detail {
 
-inline uint16_t Le16(const uint8_t* p) { return uint16_t(p[0] | p[1] << 8); }
-inline uint32_t Le32(const uint8_t* p) {
-    return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
-}
 inline void Put16(std::vector<uint8_t>& b, uint16_t v) {
     b.push_back(uint8_t(v));
     b.push_back(uint8_t(v >> 8));
@@ -37,6 +35,8 @@ inline void Put32(std::vector<uint8_t>& b, uint32_t v) {
 // odd-size padding). Returns false with *err set.
 inline bool Read(const std::string& path, Audio* out, std::string* err) {
     using namespace detail;
+    using dkbin::Le16;
+    using dkbin::Le32;
     std::ifstream f(path, std::ios::binary);
     if (!f) {
         *err = "cannot open";

@@ -23,6 +23,8 @@ namespace dkboard {
 
 constexpr uint8_t kBoardId = 1;  // the Identity Reply's board byte (link.h): 1 = HotHouse
 constexpr const char* kName = "hothouse";
+constexpr int kKnobs = 6;    // knobs 1-6
+constexpr int kToggles = 3;  // SW1-SW3
 
 class Board {
 public:
@@ -63,9 +65,8 @@ public:
     }
 
 private:
-    static constexpr int kKnobs = 6;
     // SW1-SW3, up pin then down pin.
-    static constexpr int kSwitchPins = 6;
+    static constexpr int kSwitchPins = 2 * kToggles;
     static constexpr daisy::Pin kSwitchPinList[kSwitchPins] = {daisy::seed::D9, daisy::seed::D10, daisy::seed::D7,
                                                                daisy::seed::D8, daisy::seed::D5,  daisy::seed::D6};
 

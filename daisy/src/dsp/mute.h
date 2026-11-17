@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cstddef>
 
+#include "../memory.h"
+
 namespace dkdsp {
 
 // A linear gain ramp between 1 and 0 over kRampSamples, applied per sample, so the result does not depend on the
@@ -16,13 +18,12 @@ public:
     void Init(bool muted) { gain_ = target_ = muted ? 0.0f : 1.0f; }
     // A change mid-ramp reverses from the current gain.
     void SetMuted(bool muted) { target_ = muted ? 0.0f : 1.0f; }
-    bool Muted() const { return target_ == 0.0f; }
     // The gain has landed on 0 (the ramp lands exactly on its target).
     bool Silent() const { return gain_ == 0.0f; }
 
     // out[i] = in[i] * gain, the gain first stepping by 1 / kRampSamples toward the target and clamped to it (it lands
     // exactly on 0 or 1). in and out may alias.
-    void Process(const float* in, float* out, size_t n) {
+    DK_ITCM void Process(const float* in, float* out, size_t n) {
         constexpr float kStep = 1.0f / kRampSamples;
         for (size_t i = 0; i < n; ++i) {
             if (gain_ < target_)

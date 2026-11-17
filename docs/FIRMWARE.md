@@ -48,22 +48,23 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 |---|---|---|
 | `daisy/src/ducky.cpp` | The pedal: the boot slot scan, `AudioCallback`, the preset switch (`servePresets`), the state record (`writeState`), the link's slot commands (`onCommand`, `writeSlot`) and replies (`serveReplies`), the main loop, the log lines. | no |
 | `daisy/src/bench.cpp` | `APP=bench`: the A2-Lite and IR device checks and the cycle timing of the engine, the IR, the EQ, the noise gate and the whole chain ("Bench"). | no |
-| `daisy/src/board.h` | `dkboard::Board`: the HotHouse pins, knobs, toggles, footswitches. `kBoardId` 1. | no |
+| `daisy/src/board.h` | `dkboard::Board`: the HotHouse pins, knobs, toggles, footswitches. `kBoardId` 1, `kKnobs` 6, `kToggles` 3. | no |
 | `daisy/src/firmware.h` | `dkfw::Start` (flush-to-zero, board init, MPU) and `kBuildId`. | no |
-| `daisy/src/usb_link.h/.cpp` | `dkusb`: USB-MIDI transport, a non-blocking double-buffered send, `Serve` (Identity, HELLO, DFU, then other commands to the caller's `onCommand`), `EnterDfu`. | no |
-| `daisy/src/link.h` | `dklink`: the SysEx wire format, the septet and Pack7 codecs, `TxBuffer` (LOG, SLOT, RESULT, STATUS, Identity), `SysExAssembler`, `PedalCommand`, and the protocol tables `kCommands`/`kResults` that `docs/MIDI.md` is generated from. The protocol reference. | yes |
+| `daisy/src/usb_link.h/.cpp` | `dkusb`: USB-MIDI transport, a non-blocking double-buffered send, `Serve` (Identity, HELLO, DFU restart, then other commands to the caller's `onCommand`). | no |
+| `daisy/src/link.h` | `dklink`: the SysEx wire format, the septet and Pack7 codecs, `TxBuffer` (LOG, SLOT, RESULT, STATUS, DATA, Identity), `SysExAssembler`, `PedalCommand`, and the protocol tables `kCommands`/`kResults` that `docs/MIDI.md` is generated from. The protocol reference. | yes |
 | `daisy/src/upload.h` | `dklink::Upload`: UPLOAD BEGIN/CHUNK staging (CRC per chunk, resends, gaps). | yes |
 | `daisy/src/controls.h` | `dkctl::ToggleFilter` (30 ms toggle hysteresis), `dkctl::Blinker` (LED2's N blinks, repeated after 5 s dark). | yes |
-| `daisy/src/dsp/blocks.h` | `dkdsp::kSampleRate` (48 kHz), `kBlockSize` (24), `kIrTaps` (2048). | yes |
+| `daisy/src/dsp/blocks.h` | `dkdsp::kSampleRate` (48 kHz), `kBlockSize` (24), `kBlockRate`, `kBlocksPerMs`, `kIrTaps` (2048); `Peak` (a block's peak) and `FpHere` (`docs/M7_PERFORMANCE.md`). | yes |
 | `daisy/src/dsp/mute.h` | `dkdsp::MuteRamp`: FS1's 5 ms linear mute, and the preset switch's fade. | yes |
 | `daisy/src/dsp/noise_gate.h` | `dkdsp::NoiseGate`, `GateSettings`, `kGateOff`, `GateValid`, `ClampGate`: the per-preset side-chained gate (`docs/FILTERS.md` "Noise gate"). | yes |
 | `daisy/src/dsp/gain.h` | `dkdsp::InputGain` (Knob 1), `OutputGain` (Knob 2), `LevelMatchGain`, `Smoother` (one-pole), `GainRamp` (per-block linear gain ramp). | yes |
-| `daisy/src/dsp/a2lite.h` | `dkdsp::A2Lite`: the A2-Lite network (`docs/NAM_FORMAT.md` "Engine"); `dkdsp::a2` holds the shape and memory layout; `dkdsp::FpHere`. | yes |
+| `daisy/src/dsp/a2lite.h` | `dkdsp::A2Lite`: the A2-Lite network (`docs/NAM_FORMAT.md` "Engine"); `dkdsp::a2` holds the shape and memory layout. | yes |
 | `daisy/src/dsp/convolver.h` | `dkdsp::IrConvolver`: the partitioned FFT IR convolver (`docs/FILTERS.md`). | yes |
 | `daisy/src/dsp/filters.h` | `dkdsp::Eq` (`CutFilter` ×2, `MidFilter`), `EdgeBypass`, the knob and toggle maps (`docs/FILTERS.md`). | yes |
-| `daisy/src/model.h` | `dkmodel::Parse`: validates and decodes a format-2 model binary; `Crc32`. | yes |
+| `daisy/src/model.h` | `dkmodel::Parse`: validates and decodes a format-2 model binary. | yes |
 | `daisy/src/ir.h` | `dkir::Parse`: validates and decodes a format-1 IR binary. | yes |
 | `daisy/src/preset.h` | `dkpreset`: the slot format (`Parse`, `PutGate`/`GetGate`/`SetGate` for its gate block), the state record (`StateValid`, `NewestState`, `BuildState`), slot stepping (`NextFilled`, `BootSlot`), the QSPI layout ("Preset store"). | yes |
+| `daisy/src/binary.h` | `dkbin`: `Crc32` and the little-endian readers and writer the binaries and the link share. | yes |
 | `daisy/cmsis_fft.mk` | The CMSIS-DSP FFT sources and table defines both builds compile. | |
 | `daisy/src/memory.h/.cpp` | `DK_ITCM`, `DK_DTCM`, `DK_DTCM_BSS`, `DK_D2`, `DK_SDRAM` placement and the boot-time TCM copy. | yes (`.h`) |
 | `daisy/src/spsc_ring.h` | The lock-free single-producer/single-consumer ring (USB IRQ → main loop). | yes |
@@ -83,7 +84,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `tests/fixtures/ir/` | `decay.wav` (generated: 44.1 kHz decaying noise, 4,410 frames) and `decay.bin` converted from it. | |
 | `tests/fixtures/preset/` | `A2_decay.bin`: `A2.bin` with `decay.bin`, named `A2 + decay`, built by `editor/src/preset/bank.ts`; both the host tests and the editor tests check it. | |
 
-- **Naming:** namespaces are `dkboard`, `dkfw`, `dkusb`, `dklink`, `dkctl`, `dkdsp`, `dkmodel`, `dkir`, `dkpreset` and (host only) `dkwav`. Macros use the `DK_` prefix, and the board define is `DUCKY_BOARD_HOTHOUSE`.
+- **Naming:** namespaces are `dkboard`, `dkfw`, `dkusb`, `dklink`, `dkctl`, `dkdsp`, `dkbin`, `dkmodel`, `dkir`, `dkpreset` and (host only) `dkwav`. Macros use the `DK_` prefix, and the board define is `DUCKY_BOARD_HOTHOUSE`.
 - **DSP code** goes under `daisy/src/dsp/`, host-portable and covered by `tests/`. The top-level `Makefile` rebuilds the tests and `render` whenever any `daisy/src/*.h`, `daisy/src/dsp/*.h`, `tests/*.h` or `tools/*.h` changes. Tests find fixtures through `DK_REPO_ROOT`, so `build/host/tests` runs from any directory.
 - **Before writing or optimising a DSP kernel,** read `docs/M7_PERFORMANCE.md`: what float code costs on this core, measured, and the rules that follow. Host tests cannot see performance; the bench can.
 
@@ -124,11 +125,11 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 
 | Region | Size | Holds now | Reserved for |
 |---|---|---|---|
-| ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages, the convolver, the mid and the gains inlined), `A2Lite::RunLayer`, `CutFilter::Process` (8 KB in all) | |
+| ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages, the convolver, the noise gate, the mid and the gains inlined), `A2Lite::RunLayer`, `CutFilter::Process` (about 9.4 KB in all) | |
 | DTCM `0x20000000` | 128 KB | The engine (92,116 bytes in `.dtcm_bss`: history 83,976, weights 7,480); callback state; the 16 KB stack reserve at the top | |
-| AXI SRAM `0x24000000` | 480 KB | Code (CMSIS-DSP's FFT included), `.data`, `.bss` with the IR convolver (68 KB): 226 KB in total | |
+| AXI SRAM `0x24000000` | 480 KB | Code (CMSIS-DSP's FFT included), `.data`, `.bss` with the IR convolver (68 KB): 224 KB in total | |
 | D2 SRAM `0x30008000` | 256 KB | — (the convolver measured slower here than in AXI SRAM, `docs/FILTERS.md`) | |
-| SDRAM `0xC0000000` | 64 MB | The 8 parsed presets (`gPresets`, 127,232 bytes; the gear texts stay in flash), the link's upload buffer (16,280), RENAME/SWAP scratch (2 × 16,280) and COMMIT's parse target (`gCheck`, 15,904): 191,976 bytes in `.sdram_bss` | |
+| SDRAM `0xC0000000` | 64 MB | The 8 parsed presets (`gPresets`, 127,296 bytes; the gear texts stay in flash), the link's upload buffer (16,288), RENAME/SWAP/GATE scratch (2 × 16,288) and COMMIT's parse target (`gCheck`, 15,912): 192,072 bytes in `.sdram_bss` | |
 | QSPI `0x90000000` | 8 MB | Image at `0x90040000`; preset slots at `0x90400000`; state records at `0x90480000` ("Preset store") | |
 
 - **TCM copy:** `.itcm_text` and `.dtcm_data` are copied from their SRAM load image in `.preinit_array` (`memory.cpp`), before any constructor runs; `.dtcm_bss` is zeroed there.
@@ -209,7 +210,7 @@ The browser editor: `docs/EDITOR.md`.
 ## Log lines
 
 ```
-ducky hothouse seed 1.2-pcm3060 sysclk 480 MHz audio 48000 Hz 24 bit block 48 06ea416        (boot / HELLO)
+ducky hothouse seed 1.2-pcm3060 sysclk 480 MHz audio 48000 Hz 24 bit block 24 06ea416        (boot / HELLO)
 slots ok ok empty ok empty empty empty empty                                                  (boot / HELLO)
 preset 1 "FNDR BFSR VB Edge WRM2 CAB FREE"                                                    (boot / HELLO)
 model loudness -15.9 dB level -2.1 dB input +15.0 dBu cal -10.5 dB "FNDR BFSR VB Edge WRM2 CAB FREE"  (boot / HELLO)

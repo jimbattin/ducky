@@ -33,7 +33,6 @@ TEST(MuteRamp, LinearFallLandsOnZero) {
     MuteRamp m;
     m.Init(false);
     m.SetMuted(true);
-    EXPECT_TRUE(m.Muted());
     const std::vector<float> in(480, 1.0f);
     std::vector<float> out(in.size());
     m.Process(in.data(), out.data(), in.size());
@@ -54,7 +53,6 @@ TEST(MuteRamp, ReversalMidRampHasNoJump) {
     std::vector<float> out(in.size());
     m.Process(in.data(), out.data(), 100);
     m.SetMuted(false);
-    EXPECT_FALSE(m.Muted());
     m.Process(in.data() + 100, out.data() + 100, in.size() - 100);
     EXPECT_NEAR(out[100], out[99] + kStep, 1e-6f);
     float prev = 1.0f;

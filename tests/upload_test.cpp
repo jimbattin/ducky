@@ -20,7 +20,7 @@ std::vector<uint8_t> BeginPayload(int slot, uint32_t size) {
 std::vector<uint8_t> ChunkPayload(uint32_t offset, const std::vector<uint8_t>& data) {
     std::vector<uint8_t> p(8 + Packed7Size(data.size()));
     PutSeptets(p.data(), offset, 3);
-    PutSeptets(p.data() + 3, dkmodel::Crc32(data.data(), data.size()), 5);
+    PutSeptets(p.data() + 3, dkbin::Crc32(data.data(), data.size()), 5);
     Pack7(data.data(), data.size(), p.data() + 8);
     return p;
 }
@@ -58,7 +58,7 @@ TEST(Upload, ChunkCrcVector) {
     EXPECT_EQ(std::vector<uint8_t>(p.begin() + 3, p.begin() + 8),
               (std::vector<uint8_t>{0x02, 0x48, 0x16, 0x18, 0x73}));
     const std::vector<uint8_t> img = Image(256);
-    EXPECT_EQ(dkmodel::Crc32(img.data(), img.size()), 0x29058C73u);
+    EXPECT_EQ(dkbin::Crc32(img.data(), img.size()), 0x29058C73u);
 }
 
 TEST(Upload, BadBeginLeavesNoUpload) {

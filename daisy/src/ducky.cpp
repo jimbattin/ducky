@@ -1,4 +1,4 @@
-// Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). M7: the left input goes through Knob 1's input trim,
+// Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). The left input goes through Knob 1's input trim,
 // the current preset's A2-Lite model (dsp/a2lite.h) and cab IR when it has one (dsp/convolver.h), the EQ
 // (dsp/filters.h: low-cut on Knobs 5-6 and SW1, the SW3 mid, high-cut on Knobs 4-3 and SW2), and Knob 2's output
 // volume times the model's level match and the preset's noise gate (dsp/gain.h, dsp/noise_gate.h: the gate listens to
@@ -9,10 +9,10 @@
 // not initialise, audio never starts: the pedal serves USB (DFU included) and logs "ir fft" once a second.
 //
 // Two threads of control:
-// - AudioCallback (the audio DMA interrupt, 48 kHz, 24-sample blocks): reads the controls (30 ms toggle hysteresis),
-//   toggles the mute on FS1, counts FS2 presses, smooths knobs 1-2, runs the gate's detector, the trim, the engine, the
-//   IR, the EQ and the output gain, runs the mute ramp and the preset fade, drives LED1 and LED2's blinks and measures
-//   the input and output peaks, the gate's level and cut, the load and the underruns.
+// - AudioCallback (the audio DMA interrupt, 48 kHz, 24-sample blocks): reads and publishes the controls (30 ms toggle
+//   hysteresis), toggles the mute on FS1, counts FS2 presses, steps the preset switch, runs the gate's detector, the
+//   trim, the engine, the IR, the EQ and the output gain, the mute ramp and the preset fade, measures the input and
+//   output peaks and the gate's level and cut, drives LED1 and LED2's blinks, and measures the load and the underruns.
 // - The main loop: USB (usb_link.h: Identity, HELLO, DFU; the slot commands in onCommand, their replies and the
 //   STATUS stream in serveReplies), the preset switch (servePresets), the state record (writeState), the slot writes
 //   (writeSlot) and the once-a-second log lines.
@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "binary.h"
 #include "board.h"
 #include "controls.h"
 #include "dsp/a2lite.h"
@@ -64,7 +65,7 @@ dkboard::Board hw;
 DK_DTCM Led gLed1, gLed2;  // Update once per block (Init at the block rate)
 DK_DTCM CpuLoadMeter gLoad;
 DK_DTCM uint32_t gBlockTicks;  // System::GetTick() ticks in one block period (set before StartAudio)
-DK_DTCM dkctl::ToggleFilter gToggleFilter[3];
+DK_DTCM dkctl::ToggleFilter gToggleFilter[dkboard::kToggles];
 DK_DTCM dkdsp::MuteRamp gMute;
 DK_DTCM_BSS dkdsp::A2Lite gEngine;  // the main loop loads it while the callback is parked (and before StartAudio)
 DK_DTCM float gLevel = 1.0f;  // the current model's level match
@@ -91,8 +92,8 @@ DK_DTCM float gGateLevelAcc = 0.0f, gGateGainAcc = 1.0f;    // the gate meter si
 
 // Shared with the main loop: in SRAM (AXI).
 // Callback -> main loop.
-std::atomic<float> gKnob[6];               // knobs 1-6, 0..1
-std::atomic<uint8_t> gToggle[3]{1, 1, 1};  // SW1-SW3 filtered: 0 down, 1 middle, 2 up
+std::atomic<float> gKnob[dkboard::kKnobs];                // knobs 1-6, 0..1
+std::atomic<uint8_t> gToggle[dkboard::kToggles]{1, 1, 1};  // SW1-SW3 filtered: 0 down, 1 middle, 2 up
 std::atomic<uint8_t> gFsHeld{0};           // bit 0 FS1, bit 1 FS2
 std::atomic<bool> gMutedPub{false};        // gMuted
 std::atomic<uint32_t> gUnderruns{0};       // blocks since boot whose callback ran longer than one block period
@@ -134,7 +135,7 @@ bool gReload = false;          // reload the target slot (its flash changed) eve
 // The link's slot commands (onCommand, serveReplies). Main loop only.
 DK_SDRAM uint8_t gUploadBuf[ps::kSizeWithIr];
 dklink::Upload gUpload(gUploadBuf);
-DK_SDRAM uint8_t gScratch[2][ps::kSizeWithIr];  // RENAME's and SWAP's copies of slot images
+DK_SDRAM uint8_t gScratch[2][ps::kSizeWithIr];  // RENAME's, SWAP's and GATE's copies of slot images
 DK_SDRAM ps::Preset gCheck;                     // COMMIT's validation target
 int gListNext = -1;                             // the next SLOT to send for LIST; 8: its RESULT; -1: none
 bool gResultDue = false;                        // a RESULT waiting for room in Tx()
@@ -150,8 +151,12 @@ bool gWatch = false;  // STATUS every kWatchPeriodMs
 uint32_t gWatchAt = 0;
 uint16_t gLoadAvgPm = 0, gLoadMaxPm = 0;  // the last `load` line's values
 
+// Slots and models.
+
 const uint8_t* mapped(uint32_t off) { return reinterpret_cast<const uint8_t*>(ps::kQspiBase + off); }
 uint32_t slotOff(int k) { return ps::kBankOffset + uint32_t(k) * ps::kSlotBytes; }
+// Slot k's 64 KB as mapped from QSPI.
+const uint8_t* slotData(int k) { return mapped(slotOff(k)); }
 
 float levelOf(const dkmodel::Model& m) {
     return dkdsp::LevelMatchGain((m.flags & dkmodel::kFlagHasLoudness) != 0, m.loudness);
@@ -160,33 +165,22 @@ float calOf(const dkmodel::Model& m) {
     return dkdsp::InputCalibrationGain((m.flags & dkmodel::kFlagHasInputLevel) != 0, m.input_level_dbu);
 }
 
-// Hands g to the callback, which applies it at its next block. Main loop (or before StartAudio).
-void publishGate(const dkdsp::GateSettings& g) {
-    uint8_t b[ps::kGateSize];
-    ps::PutGate(b, g);
-    for (int w = 0; w < 2; ++w) {
-        uint32_t v = 0;
-        for (int i = 0; i < 4; ++i) v |= uint32_t(b[4 * w + i]) << (8 * i);
-        gGateWord[w].store(v, std::memory_order_relaxed);
-    }
+// Log lines.
+
+// "+D.d" / "-D.d", clamped to +-999.9: newlib-nano's printf has no %f.
+void tenthsDb(char (&buf)[12], float db) {
+    const long t = std::clamp(lroundf(db * 10.0f), -9999L, 9999L);
+    const unsigned a = unsigned(t < 0 ? -t : t);
+    snprintf(buf, sizeof buf, "%c%u.%u", t < 0 ? '-' : '+', a / 10, a % 10);
 }
 
-// The engine and the IR from gPresets[slot], its gains, IR and model state into gNext*; slot < 0 (dry) only sets
-// gNext* to no model, no IR, unity gains. Only while the callback is parked or before StartAudio.
-void loadPreset(int slot) {
-    publishGate(slot < 0 ? dkdsp::kGateOff : gPresets[slot].gate);
-    if (slot < 0) {
-        gNextModelOn = gNextIrOn = false;
-        gNextLevel = gNextInCal = 1.0f;
-        return;
-    }
-    const ps::Preset& p = gPresets[slot];
-    gEngine.Load(p.model.weights, p.model.head_scale);
-    if (p.has_ir) gIr.Load(p.ir.taps);
-    gNextModelOn = true;
-    gNextIrOn = p.has_ir;
-    gNextLevel = levelOf(p.model);
-    gNextInCal = calOf(p.model);
+int pct(float v) { return int(lroundf(v * 100.0f)); }
+
+int dbfs(float peak) { return peak > 0.0f ? std::max(int(lroundf(20.0f * log10f(peak))), -120) : -120; }
+
+// A linear level as tenths of a dB below 1, 0..1200 (1200 for 0 and below -120 dB).
+uint16_t tenthsBelow(float lin) {
+    return lin > 0.0f ? uint16_t(std::clamp(lroundf(-200.0f * log10f(lin)), 0L, 1200L)) : 1200;
 }
 
 // The codec's sample word in bits.
@@ -199,7 +193,7 @@ unsigned bitDepth(SaiHandle::Config::BitDepth d) {
     return 0;
 }
 
-const char* SeedName(DaisySeed::BoardVersion v) {
+const char* seedName(DaisySeed::BoardVersion v) {
     switch (v) {
         case DaisySeed::BoardVersion::DAISY_SEED: return "rev4-ak4556";
         case DaisySeed::BoardVersion::DAISY_SEED_1_1: return "1.1-wm8731";
@@ -208,13 +202,6 @@ const char* SeedName(DaisySeed::BoardVersion v) {
         case DaisySeed::BoardVersion::DAISY_SEED_3: return "3-tac5242";
     }
     return "unknown";
-}
-
-// "+D.d" / "-D.d", clamped to +-999.9: newlib-nano's printf has no %f.
-void tenthsDb(char (&buf)[12], float db) {
-    const long t = std::clamp(lroundf(db * 10.0f), -9999L, 9999L);
-    const unsigned a = unsigned(t < 0 ? -t : t);
-    snprintf(buf, sizeof buf, "%c%u.%u", t < 0 ? '-' : '+', a / 10, a % 10);
 }
 
 // A model's loudness, level match, input level, input calibration and name; "model none" for nullptr. The name is
@@ -280,7 +267,7 @@ void logPreset(uint32_t loadUs) {
 
 void logBootLine() {
     dkusb::Log("ducky %s seed %s sysclk %u MHz audio %u Hz %u bit block %u %s", dkboard::kName,
-               SeedName(hw.seed.CheckBoardVersion()), unsigned(System::GetSysClkFreq() / 1000000),
+               seedName(hw.seed.CheckBoardVersion()), unsigned(System::GetSysClkFreq() / 1000000),
                unsigned(hw.seed.AudioSampleRate()), bitDepth(hw.seed.AudioSaiHandle().GetConfig().bit_depth),
                unsigned(hw.seed.AudioBlockSize()), dkfw::kBuildId);
 }
@@ -305,45 +292,44 @@ void logFatal() {
     dkusb::Log("ir fft");
 }
 
-DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
-    gLoad.OnBlockStart();
-    const uint32_t start = System::GetTick();
-    hw.Process();
-    if (hw.FootswitchRising(0)) {
-        gMuted = !gMuted;
-        gMute.SetMuted(gMuted);
-    }
-    if (hw.FootswitchRising(1)) gFs2Presses.fetch_add(1, std::memory_order_relaxed);
+void logControls() {
+    int k[dkboard::kKnobs];
+    for (int i = 0; i < dkboard::kKnobs; ++i) k[i] = pct(gKnob[i].load(std::memory_order_relaxed));
+    const uint8_t fs = gFsHeld.load(std::memory_order_relaxed);
+    dkusb::Log("ctl k %d %d %d %d %d %d sw %u %u %u fs %d %d", k[0], k[1], k[2], k[3], k[4], k[5],
+               unsigned(gToggle[0].load(std::memory_order_relaxed)),
+               unsigned(gToggle[1].load(std::memory_order_relaxed)),
+               unsigned(gToggle[2].load(std::memory_order_relaxed)), fs & 1, (fs >> 1) & 1);
+}
 
-    // The preset switch's handshake (servePresets).
-    if (gSwap == Swap::kPlaying) {
-        const uint32_t req = gSwapReq.load(std::memory_order_acquire);
-        if (req != gSwapSeen) {
-            gSwapSeen = req;
-            gSwapFade.SetMuted(true);
-            gSwap = Swap::kFadingOut;
-        }
-    } else if (gSwap == Swap::kParked && gSwapLoaded.load(std::memory_order_acquire) == gSwapSeen) {
-        gLevel = gNextLevel;
-        gInCal = gNextInCal;
-        gIrOn = gNextIrOn;
-        gModelOn = gNextModelOn;
-        gSwapFade.SetMuted(false);
-        gSwap = Swap::kPlaying;
-    }
+void logStatus() {
+    const float peak = gPeak.load(std::memory_order_relaxed), outPeak = gOutPeak.load(std::memory_order_relaxed);
+    gPeakReset.store(true, std::memory_order_relaxed);
+    const float avg = gLoadAvg.load(std::memory_order_relaxed), max = gLoadMax.load(std::memory_order_relaxed);
+    gLoadReset.store(true, std::memory_order_relaxed);
+    const int avgPm = int(avg * 1000), maxPm = int(max * 1000);
+    gLoadAvgPm = uint16_t(std::clamp(avgPm, 0, 16383));
+    gLoadMaxPm = uint16_t(std::clamp(maxPm, 0, 16383));
+    dkusb::Log("load avg %d max %d permille underruns %lu mute %s in %d dBFS out %d dBFS", avgPm, maxPm,
+               (unsigned long)gUnderruns.load(std::memory_order_relaxed),
+               gMutedPub.load(std::memory_order_relaxed) ? "on" : "off", dbfs(peak), dbfs(outPeak));
+}
 
-    for (int k = 0; k < 6; ++k) gKnob[k].store(hw.Knob(k), std::memory_order_relaxed);
-    uint8_t tog[3];
-    for (int t = 0; t < 3; ++t) {
-        tog[t] = gToggleFilter[t].Process(hw.Toggle(t));
-        gToggle[t].store(tog[t], std::memory_order_relaxed);
-    }
-    gFsHeld.store(uint8_t((hw.FootswitchPressed(0) ? 1 : 0) | (hw.FootswitchPressed(1) ? 2 : 0)),
-                  std::memory_order_relaxed);
+// Handoffs between the threads.
 
-    float peak = 0.0f;
-    for (size_t i = 0; i < size; i++) peak = std::fmax(peak, std::fabs(in[0][i]));
-    // The gate's settings (publishGate), then its detector on the raw input peak: its gain joins the output ramp.
+// Hands g to the callback, which applies it at its next block (takeGate). Main loop (or before StartAudio).
+void publishGate(const dkdsp::GateSettings& g) {
+    uint8_t b[ps::kGateSize];
+    ps::PutGate(b, g);
+    for (int w = 0; w < 2; ++w) {
+        uint32_t v = 0;
+        for (int i = 0; i < 4; ++i) v |= uint32_t(b[4 * w + i]) << (8 * i);
+        gGateWord[w].store(v, std::memory_order_relaxed);
+    }
+}
+
+// The callback's half of publishGate: a changed gGateWord pair goes to gGate.
+DK_ITCM void takeGate() {
     const uint32_t gw0 = gGateWord[0].load(std::memory_order_relaxed);
     const uint32_t gw1 = gGateWord[1].load(std::memory_order_relaxed);
     if (gw0 != gGateSeen[0] || gw1 != gGateSeen[1]) {
@@ -356,8 +342,97 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
         }
         gGate.Set(ps::GetGate(b));
     }
+}
+
+// The loaded preset's gains and flags (gNext*), taken by the callback when it fades in, and once at boot.
+DK_ITCM void takeNextPreset() {
+    gLevel = gNextLevel;
+    gInCal = gNextInCal;
+    gIrOn = gNextIrOn;
+    gModelOn = gNextModelOn;
+}
+
+// The audio callback (docs/FIRMWARE.md "Threads": its steps in order).
+
+// Steps 1-2: the controls, the toggles filtered, all published; FS1 toggles the mute; FS2 presses are counted.
+DK_ITCM void readControls(uint8_t (&tog)[dkboard::kToggles]) {
+    hw.Process();
+    for (int t = 0; t < dkboard::kToggles; ++t) {
+        tog[t] = gToggleFilter[t].Process(hw.Toggle(t));
+        gToggle[t].store(tog[t], std::memory_order_relaxed);
+    }
+    for (int k = 0; k < dkboard::kKnobs; ++k) gKnob[k].store(hw.Knob(k), std::memory_order_relaxed);
+    gFsHeld.store(uint8_t((hw.FootswitchPressed(0) ? 1 : 0) | (hw.FootswitchPressed(1) ? 2 : 0)),
+                  std::memory_order_relaxed);
+    if (hw.FootswitchRising(0)) {
+        gMuted = !gMuted;
+        gMute.SetMuted(gMuted);
+    }
+    if (hw.FootswitchRising(1)) gFs2Presses.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Step 3: the preset switch's handshake (servePresets).
+DK_ITCM void stepSwap() {
+    if (gSwap == Swap::kPlaying) {
+        const uint32_t req = gSwapReq.load(std::memory_order_acquire);
+        if (req != gSwapSeen) {
+            gSwapSeen = req;
+            gSwapFade.SetMuted(true);
+            gSwap = Swap::kFadingOut;
+        }
+    } else if (gSwap == Swap::kParked && gSwapLoaded.load(std::memory_order_acquire) == gSwapSeen) {
+        takeNextPreset();
+        gSwapFade.SetMuted(false);
+        gSwap = Swap::kPlaying;
+    }
+}
+
+// Step 6: the mute flag, the input and output peaks and the gate's level and cut, accumulated and published.
+DK_ITCM void publishMeters(float peak, float outPeak, float gate) {
+    gMutedPub.store(gMuted, std::memory_order_relaxed);
+    if (gPeakReset.exchange(false, std::memory_order_relaxed)) {
+        gPeakAcc = 0.0f;
+        gOutPeakAcc = 0.0f;
+    }
+    gPeakAcc = std::fmax(gPeakAcc, peak);
+    gPeak.store(gPeakAcc, std::memory_order_relaxed);
+    gOutPeakAcc = std::fmax(gOutPeakAcc, outPeak);
+    gOutPeak.store(gOutPeakAcc, std::memory_order_relaxed);
+    if (gGateMeterReset.exchange(false, std::memory_order_relaxed)) {
+        gGateLevelAcc = 0.0f;
+        gGateGainAcc = 1.0f;
+    }
+    gGateLevelAcc = std::fmax(gGateLevelAcc, gGate.level());
+    gGateLevel.store(gGateLevelAcc, std::memory_order_relaxed);
+    gGateGainAcc = std::fmin(gGateGainAcc, gate);
+    gGateGain.store(gGateGainAcc, std::memory_order_relaxed);
+}
+
+// Step 7: LED1 (on unless muted) and LED2's blinks.
+DK_ITCM void driveLeds() {
+    gLed1.Set(gMuted ? 0.0f : 1.0f);
+    gLed1.Update();
+    const uint32_t blink = gBlinkReq.load(std::memory_order_acquire);
+    if (blink != gBlinkSeen) {
+        gBlinkSeen = blink;
+        gBlinker.Start(gBlinkCount.load(std::memory_order_relaxed));
+    }
+    gLed2.Set(gBlinker.Tick() ? 1.0f : 0.0f);
+    gLed2.Update();
+}
+
+DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
+    gLoad.OnBlockStart();
+    const uint32_t start = System::GetTick();
+    uint8_t tog[dkboard::kToggles];
+    readControls(tog);
+    stepSwap();
+    // Step 4: the gate's settings (publishGate), then its detector on the raw input peak: its gain joins the output
+    // ramp.
+    const float peak = dkdsp::Peak(in[0], size);
+    takeGate();
     const float gate = gGate.Process(peak);
-    // out[0] is the working buffer; the engine accepts in == out.
+    // Step 5: the chain. out[0] is the working buffer; the engine accepts in == out.
     const float inTarget = gInCal * dkdsp::InputGain(gInKnob.Process(hw.Knob(0)));
     gInGain.Process(in[0], out[0], size, inTarget);
     if (gSwap == Swap::kParked) {
@@ -376,38 +451,11 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
         gSwap = Swap::kParked;
         gSwapParked.store(gSwapSeen, std::memory_order_release);
     }
+    // Step 6.
     std::copy(out[0], out[0] + size, out[1]);
-    float outPeak = 0.0f;
-    for (size_t i = 0; i < size; i++) outPeak = std::fmax(outPeak, std::fabs(out[0][i]));
-
-    gLed1.Set(gMuted ? 0.0f : 1.0f);
-    gLed1.Update();
-    const uint32_t blink = gBlinkReq.load(std::memory_order_acquire);
-    if (blink != gBlinkSeen) {
-        gBlinkSeen = blink;
-        gBlinker.Start(gBlinkCount.load(std::memory_order_relaxed));
-    }
-    gLed2.Set(gBlinker.Tick() ? 1.0f : 0.0f);
-    gLed2.Update();
-
-    gMutedPub.store(gMuted, std::memory_order_relaxed);
-    if (gPeakReset.exchange(false, std::memory_order_relaxed)) {
-        gPeakAcc = 0.0f;
-        gOutPeakAcc = 0.0f;
-    }
-    gPeakAcc = std::fmax(gPeakAcc, peak);
-    gPeak.store(gPeakAcc, std::memory_order_relaxed);
-    gOutPeakAcc = std::fmax(gOutPeakAcc, outPeak);
-    gOutPeak.store(gOutPeakAcc, std::memory_order_relaxed);
-    if (gGateMeterReset.exchange(false, std::memory_order_relaxed)) {
-        gGateLevelAcc = 0.0f;
-        gGateGainAcc = 1.0f;
-    }
-    gGateLevelAcc = std::fmax(gGateLevelAcc, gGate.level());
-    gGateLevel.store(gGateLevelAcc, std::memory_order_relaxed);
-    gGateGainAcc = std::fmin(gGateGainAcc, gate);
-    gGateGain.store(gGateGainAcc, std::memory_order_relaxed);
-
+    publishMeters(peak, dkdsp::Peak(out[0], size), gate);
+    driveLeds();
+    // Step 8.
     if (System::GetTick() - start > gBlockTicks) gUnderruns.fetch_add(1, std::memory_order_relaxed);
     // A Reset just before OnBlockEnd takes its first-cycle path: the published loads are never NaN.
     if (gLoadReset.exchange(false, std::memory_order_relaxed)) gLoad.Reset();
@@ -416,35 +464,36 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     gLoadMax.store(gLoad.GetMaxCpuLoad(), std::memory_order_relaxed);
 }
 
-int pct(float v) { return int(lroundf(v * 100.0f)); }
+// Presets.
 
-int dbfs(float peak) { return peak > 0.0f ? std::max(int(lroundf(20.0f * log10f(peak))), -120) : -120; }
-
-// A linear level as tenths of a dB below 1, 0..1200 (1200 for 0 and below -120 dB).
-uint16_t tenthsBelow(float lin) {
-    return lin > 0.0f ? uint16_t(std::clamp(lroundf(-200.0f * log10f(lin)), 0L, 1200L)) : 1200;
+// The engine and the IR from gPresets[slot], its gains, IR and model state into gNext*; slot < 0 (dry) only sets
+// gNext* to no model, no IR, unity gains. Only while the callback is parked or before StartAudio.
+void loadPreset(int slot) {
+    publishGate(slot < 0 ? dkdsp::kGateOff : gPresets[slot].gate);
+    if (slot < 0) {
+        gNextModelOn = gNextIrOn = false;
+        gNextLevel = gNextInCal = 1.0f;
+        return;
+    }
+    const ps::Preset& p = gPresets[slot];
+    gEngine.Load(p.model.weights, p.model.head_scale);
+    if (p.has_ir) gIr.Load(p.ir.taps);
+    gNextModelOn = true;
+    gNextIrOn = p.has_ir;
+    gNextLevel = levelOf(p.model);
+    gNextInCal = calOf(p.model);
 }
 
-void logControls() {
-    int k[6];
-    for (int i = 0; i < 6; ++i) k[i] = pct(gKnob[i].load(std::memory_order_relaxed));
-    const uint8_t fs = gFsHeld.load(std::memory_order_relaxed);
-    dkusb::Log("ctl k %d %d %d %d %d %d sw %u %u %u fs %d %d", k[0], k[1], k[2], k[3], k[4], k[5],
-               unsigned(gToggle[0].load(std::memory_order_relaxed)),
-               unsigned(gToggle[1].load(std::memory_order_relaxed)),
-               unsigned(gToggle[2].load(std::memory_order_relaxed)), fs & 1, (fs >> 1) & 1);
+// Sets the wanted slot and restarts LED2's repeating blinks for it; dry turns them off.
+void retarget(int s) {
+    gTarget = s;
+    gBlinkCount.store(uint8_t(s + 1), std::memory_order_relaxed);
+    gBlinkReq.store(++gBlinkSeq, std::memory_order_release);
 }
 
-void logStatus() {
-    const float peak = gPeak.load(std::memory_order_relaxed), outPeak = gOutPeak.load(std::memory_order_relaxed);
-    gPeakReset.store(true, std::memory_order_relaxed);
-    const float avg = gLoadAvg.load(std::memory_order_relaxed), max = gLoadMax.load(std::memory_order_relaxed);
-    gLoadReset.store(true, std::memory_order_relaxed);
-    gLoadAvgPm = uint16_t(std::clamp(int(avg * 1000), 0, 16383));
-    gLoadMaxPm = uint16_t(std::clamp(int(max * 1000), 0, 16383));
-    dkusb::Log("load avg %d max %d permille underruns %lu mute %s in %d dBFS out %d dBFS", int(avg * 1000),
-               int(max * 1000), (unsigned long)gUnderruns.load(std::memory_order_relaxed),
-               gMutedPub.load(std::memory_order_relaxed) ? "on" : "off", dbfs(peak), dbfs(outPeak));
+// A target slot that is no longer filled moves on to the next filled one (dry when none is).
+void settleTarget() {
+    if (gTarget >= 0 && !gFilled[gTarget]) retarget(ps::NextFilled(gFilled, gTarget));
 }
 
 // Writes slot as the newest state record, into the state sector not holding the newest one, and verifies it through
@@ -471,13 +520,6 @@ void writeState(int slot) {
     gStateSeq = seq;
     gStateSlot = slot;
     dkusb::Log("state slot %d seq %lu %lu ms", slot + 1, (unsigned long)seq, (unsigned long)(System::GetNow() - t0));
-}
-
-// Sets the wanted slot and restarts LED2's repeating blinks for it; dry turns them off.
-void retarget(int s) {
-    gTarget = s;
-    gBlinkCount.store(uint8_t(s + 1), std::memory_order_relaxed);
-    gBlinkReq.store(++gBlinkSeq, std::memory_order_release);
 }
 
 // FS2 steps gTarget through the filled slots (presses while dry are dropped) and starts LED2's blinks; a target other
@@ -516,19 +558,23 @@ void servePresets(uint32_t now) {
     }
 }
 
+// Slot storage.
+
 // Re-parses slot k from flash into gPresets[k], gSlotStatus[k] and gFilled[k].
 void rescan(int k) {
-    gSlotStatus[k] = ps::Parse(mapped(slotOff(k)), ps::kSlotBytes, &gPresets[k]);
+    gSlotStatus[k] = ps::Parse(slotData(k), ps::kSlotBytes, &gPresets[k]);
     gFilled[k] = gSlotStatus[k] == ps::Status::kOk;
-}
-
-// A target slot that is no longer filled moves on to the next filled one (dry when none is).
-void settleTarget() {
-    if (gTarget >= 0 && !gFilled[gTarget]) retarget(ps::NextFilled(gFilled, gTarget));
 }
 
 // A filled slot's image size.
 size_t imageSize(int k) { return gPresets[k].has_ir ? ps::kSizeWithIr : ps::kSizeNoIr; }
+
+// Copies filled slot k's image into dst; returns its size.
+size_t copySlot(int k, uint8_t* dst) {
+    const size_t n = imageSize(k);
+    std::memcpy(dst, slotData(k), n);
+    return n;
+}
 
 // Erases slot k's 64 KB block, writes data[0, size) there unless data is nullptr, and verifies the result through the
 // memory-mapped QSPI (the image, or an all-0xFF block for an erase). As in writeState, the callback reads nothing from
@@ -550,6 +596,19 @@ bool writeSlot(int k, uint8_t* data, size_t size) {
         if (w[i] != 0xFFFFFFFFu) return false;
     return true;
 }
+
+// writeSlot, timed into ms, then rescan(k) and settleTarget(); logs `slot write failed N` when it fails.
+bool rewriteSlot(int k, uint8_t* data, size_t size, uint32_t& ms) {
+    const uint32_t t0 = System::GetNow();
+    const bool ok = writeSlot(k, data, size);
+    ms = System::GetNow() - t0;
+    rescan(k);
+    settleTarget();
+    if (!ok) dkusb::Log("slot write failed %d", k + 1);
+    return ok;
+}
+
+// The link.
 
 // The RESULT for cmd, sent by serveReplies.
 void result(uint8_t cmd, dklink::Result code, uint32_t value) {
@@ -616,21 +675,16 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
                 return true;
             }
             const int s = gUpload.slot();
-            const uint32_t t0 = System::GetNow();
-            const bool ok = writeSlot(s, gUpload.data(), gUpload.size());
-            const uint32_t ms = System::GetNow() - t0;
+            uint32_t ms;
+            const bool ok = rewriteSlot(s, gUpload.data(), gUpload.size(), ms);
             gUpload.Clear();
-            rescan(s);
             if (ok) {
                 if (gTarget == s)
                     gReload = true;
                 else if (gTarget < 0)
                     retarget(s);
                 dkusb::Log("upload slot %d \"%s\" %lu ms", s + 1, gPresets[s].name, (unsigned long)ms);
-            } else {
-                dkusb::Log("slot write failed %d", s + 1);
             }
-            settleTarget();
             finishWrite(cmd, ok, ms);
             return true;
         }
@@ -640,15 +694,9 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
                 return true;
             }
             const int k = p[0];
-            const uint32_t t0 = System::GetNow();
-            const bool ok = writeSlot(k, nullptr, 0);
-            const uint32_t ms = System::GetNow() - t0;
-            rescan(k);
-            settleTarget();
-            if (ok)
-                dkusb::Log("erase slot %d %lu ms", k + 1, (unsigned long)ms);
-            else
-                dkusb::Log("slot write failed %d", k + 1);
+            uint32_t ms;
+            const bool ok = rewriteSlot(k, nullptr, 0, ms);
+            if (ok) dkusb::Log("erase slot %d %lu ms", k + 1, (unsigned long)ms);
             finishWrite(cmd, ok, ms);
             return true;
         }
@@ -664,18 +712,11 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
                 result(cmd, Result::kSlotState, 0);
                 return true;
             }
-            const size_t size = imageSize(k);
-            std::memcpy(gScratch[0], mapped(slotOff(k)), size);
+            const size_t size = copySlot(k, gScratch[0]);
             ps::Rename(gScratch[0], size, reinterpret_cast<const char*>(p + 1), n - 1);
-            const uint32_t t0 = System::GetNow();
-            const bool ok = writeSlot(k, gScratch[0], size);
-            const uint32_t ms = System::GetNow() - t0;
-            rescan(k);
-            settleTarget();
-            if (ok)
-                dkusb::Log("rename slot %d \"%s\" %lu ms", k + 1, gPresets[k].name, (unsigned long)ms);
-            else
-                dkusb::Log("slot write failed %d", k + 1);
+            uint32_t ms;
+            const bool ok = rewriteSlot(k, gScratch[0], size, ms);
+            if (ok) dkusb::Log("rename slot %d \"%s\" %lu ms", k + 1, gPresets[k].name, (unsigned long)ms);
             finishWrite(cmd, ok, ms);
             return true;
         }
@@ -692,9 +733,9 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
                 result(cmd, Result::kSlotState, 0);
                 return true;
             }
-            const size_t sizeA = gFilled[a] ? imageSize(a) : 0, sizeB = gFilled[b] ? imageSize(b) : 0;
-            if (sizeA > 0) std::memcpy(gScratch[0], mapped(slotOff(a)), sizeA);
-            if (sizeB > 0) std::memcpy(gScratch[1], mapped(slotOff(b)), sizeB);
+            // Both writes come before any rescan or settleTarget, which would retarget away from a half-swapped pair.
+            const size_t sizeA = gFilled[a] ? copySlot(a, gScratch[0]) : 0;
+            const size_t sizeB = gFilled[b] ? copySlot(b, gScratch[1]) : 0;
             const uint32_t t0 = System::GetNow();
             int failed = -1;
             if (!writeSlot(a, sizeB > 0 ? gScratch[1] : nullptr, sizeB))
@@ -738,7 +779,7 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
                 return true;
             }
             const size_t len = std::min<size_t>(dklink::kReadBytes, imageSize(k) - off);
-            std::memcpy(gReadBuf, mapped(slotOff(k)) + off, len);
+            std::memcpy(gReadBuf, slotData(k) + off, len);
             gReadDue = true;
             gReadSlot = uint8_t(k);
             gReadOff = off;
@@ -768,19 +809,13 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
                 result(cmd, Result::kSlotState, 0);
                 return true;
             }
-            const size_t size = imageSize(k);
-            std::memcpy(gScratch[0], mapped(slotOff(k)), size);
+            const size_t size = copySlot(k, gScratch[0]);
             ps::SetGate(gScratch[0], size, g);
-            const uint32_t t0 = System::GetNow();
-            const bool ok = writeSlot(k, gScratch[0], size);
-            const uint32_t ms = System::GetNow() - t0;
-            rescan(k);
-            settleTarget();
+            uint32_t ms;
+            const bool ok = rewriteSlot(k, gScratch[0], size, ms);
             if (ok) {
                 if (k == gCur && gFilled[k]) publishGate(gPresets[k].gate);
                 dkusb::Log("gate slot %d %s %lu ms", k + 1, g.enabled ? "on" : "off", (unsigned long)ms);
-            } else {
-                dkusb::Log("slot write failed %d", k + 1);
             }
             finishWrite(cmd, ok, ms);
             return true;
@@ -788,6 +823,10 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
         default: return false;
     }
 }
+
+static_assert(sizeof(dklink::StatusFrame::knob) / sizeof(uint16_t) == dkboard::kKnobs &&
+                  sizeof(dklink::StatusFrame::toggle) == dkboard::kToggles,
+              "STATUS carries every knob and toggle");
 
 // Once per main-loop pass, before dkusb::Serve: LIST's SLOTs then its RESULT, READ's DATA, the pending RESULT, and the
 // STATUS when WATCH is on and kWatchPeriodMs has passed. Whatever does not fit in Tx() waits for a later pass, in order.
@@ -807,7 +846,7 @@ void serveReplies(uint32_t now) {
         result(dklink::kList, dklink::Result::kOk, ps::kSlots);
         gListNext = -1;
     }
-    if (gReadDue && tx.AppendData(gReadSlot, gReadOff, dkmodel::Crc32(gReadBuf, gReadLen), gReadBuf, gReadLen))
+    if (gReadDue && tx.AppendData(gReadSlot, gReadOff, dkbin::Crc32(gReadBuf, gReadLen), gReadBuf, gReadLen))
         gReadDue = false;
     if (gResultDue && !gReadDue && tx.AppendResult(gResultCmd, gResultCode, gResultValue)) gResultDue = false;
     if (gWatch && now - gWatchAt >= dklink::kWatchPeriodMs) {
@@ -817,9 +856,9 @@ void serveReplies(uint32_t now) {
         s.underruns = gUnderruns.load(std::memory_order_relaxed);
         s.slot = gCur < 0 ? 0x7F : uint8_t(gCur);
         s.muted = gMutedPub.load(std::memory_order_relaxed);
-        for (int k = 0; k < 6; ++k)
+        for (int k = 0; k < dkboard::kKnobs; ++k)
             s.knob[k] = uint16_t(std::clamp(lroundf(gKnob[k].load(std::memory_order_relaxed) * 1000.0f), 0L, 1000L));
-        for (int t = 0; t < 3; ++t) s.toggle[t] = gToggle[t].load(std::memory_order_relaxed);
+        for (int t = 0; t < dkboard::kToggles; ++t) s.toggle[t] = gToggle[t].load(std::memory_order_relaxed);
         s.footswitches = gFsHeld.load(std::memory_order_relaxed);
         s.gate_level = tenthsBelow(gGateLevel.load(std::memory_order_relaxed));
         s.gate_cut = tenthsBelow(gGateGain.load(std::memory_order_relaxed));
@@ -834,8 +873,8 @@ void serveReplies(uint32_t now) {
 
 int main() {
     dkfw::Start(hw, dkdsp::kBlockSize, SaiHandle::Config::SampleRate::SAI_48KHZ);
-    gLed1.Init(dkboard::Board::kLed1, false, dkdsp::kSampleRate / dkdsp::kBlockSize);
-    gLed2.Init(dkboard::Board::kLed2, false, dkdsp::kSampleRate / dkdsp::kBlockSize);
+    gLed1.Init(dkboard::Board::kLed1, false, dkdsp::kBlockRate);
+    gLed2.Init(dkboard::Board::kLed2, false, dkdsp::kBlockRate);
 
     dkusb::Init(hw.seed);
     if (!gIr.Init()) {
@@ -852,30 +891,21 @@ int main() {
         }
     }
 
-    for (int k = 0; k < ps::kSlots; ++k) {
-        gSlotStatus[k] = ps::Parse(mapped(ps::kBankOffset + k * ps::kSlotBytes), ps::kSlotBytes, &gPresets[k]);
-        gFilled[k] = gSlotStatus[k] == ps::Status::kOk;
-    }
+    for (int k = 0; k < ps::kSlots; ++k) rescan(k);
     gStateIndex = ps::NewestState(mapped(ps::kStateOffset[0]), mapped(ps::kStateOffset[1]), gStateSeq, gStateSlot);
     if (gStateIndex < 0) gStateSlot = -1;
-    gCur = gTarget = ps::BootSlot(gFilled, gStateSlot);
+    gCur = ps::BootSlot(gFilled, gStateSlot);
+    retarget(gCur);
     loadPreset(gCur);
-    gLevel = gNextLevel;
-    gInCal = gNextInCal;
-    gIrOn = gNextIrOn;
-    gModelOn = gNextModelOn;
-    if (gCur >= 0) {
-        gBlinkCount.store(uint8_t(gCur + 1), std::memory_order_relaxed);
-        gBlinkReq.store(++gBlinkSeq, std::memory_order_relaxed);
-    }
+    takeNextPreset();
     logBoot();
 
     gSwapFade.Init(false);
     gMute.Init(false);
-    gInKnob.Init(dkdsp::kSampleRate / dkdsp::kBlockSize, dkdsp::kKnobSmoothS, 0.5f);
+    gInKnob.Init(dkdsp::kBlockRate, dkdsp::kKnobSmoothS, 0.5f);
     gInGain.Init(gInCal);
     // The output fades in from silence at boot.
-    gOutKnob.Init(dkdsp::kSampleRate / dkdsp::kBlockSize, dkdsp::kKnobSmoothS, 0.0f);
+    gOutKnob.Init(dkdsp::kBlockRate, dkdsp::kKnobSmoothS, 0.0f);
     gOutGain.Init(0.0f);
     gLoad.Init(hw.seed.AudioSampleRate(), hw.seed.AudioBlockSize());
     gBlockTicks = uint32_t(uint64_t(System::GetTickFreq()) * dkdsp::kBlockSize / uint32_t(dkdsp::kSampleRate));

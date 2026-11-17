@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "binary.h"
 #include "dsp/noise_gate.h"
 #include "ir.h"
 #include "model.h"
@@ -81,9 +82,8 @@ static_assert(kOffName + kNameSize == kOffGate, "name, then the gate");
 static_assert(kOffGate + kGateSize == kHeaderSize, "the gate, then the model");
 static_assert(kOffIr == 7992, "the IR follows the model");
 
-inline void PutLe32(uint8_t* p, uint32_t v) {
-    for (int i = 0; i < 4; ++i) p[i] = uint8_t(v >> (8 * i));
-}
+// The CRC at size - 4 of image[0, size), recomputed.
+inline void Reseal(uint8_t* image, size_t size) { dkbin::PutLe32(image + size - 4, dkbin::Crc32(image, size - 4)); }
 
 }  // namespace detail
 
@@ -107,8 +107,8 @@ inline dkdsp::GateSettings GetGate(const uint8_t* p) {
 // Validates and decodes the slot data[0, n). *out holds valid data only on kOk.
 inline Status Parse(const uint8_t* data, size_t n, Preset* out) {
     using namespace detail;
-    using dkmodel::detail::Le16;
-    using dkmodel::detail::Le32;
+    using dkbin::Le16;
+    using dkbin::Le32;
     if (n < 4) return Status::kSize;
     if (data[0] == 0xFF && data[1] == 0xFF && data[2] == 0xFF && data[3] == 0xFF) return Status::kEmpty;
     if (std::memcmp(data, "DKPS", 4) != 0) return Status::kMagic;
@@ -118,7 +118,7 @@ inline Status Parse(const uint8_t* data, size_t n, Preset* out) {
     const bool has_ir = (flags & kFlagHasIr) != 0;
     const uint32_t size = Le32(data + kOffSize);
     if (size != (has_ir ? kSizeWithIr : kSizeNoIr) || size > n) return Status::kSize;
-    if (Le32(data + size - 4) != dkmodel::Crc32(data, size - 4)) return Status::kCrc;
+    if (Le32(data + size - 4) != dkbin::Crc32(data, size - 4)) return Status::kCrc;
     if (dkmodel::Parse(data + kOffModel, dkmodel::kBinSize, &out->model) != dkmodel::Status::kOk) return Status::kModel;
     if (has_ir && dkir::Parse(data + kOffIr, dkir::kBinSize, &out->ir) != dkir::Status::kOk) return Status::kIr;
     out->has_ir = has_ir;
@@ -130,8 +130,8 @@ inline Status Parse(const uint8_t* data, size_t n, Preset* out) {
 
 // A record with kStateMagic, its CRC and slot < kSlots; seq and slot are its fields (untouched when invalid).
 inline bool StateValid(const uint8_t* rec, uint32_t& seq, int& slot) {
-    using dkmodel::detail::Le32;
-    if (Le32(rec) != kStateMagic || Le32(rec + 12) != dkmodel::Crc32(rec, 12)) return false;
+    using dkbin::Le32;
+    if (Le32(rec) != kStateMagic || Le32(rec + 12) != dkbin::Crc32(rec, 12)) return false;
     const uint32_t s = Le32(rec + 8);
     if (s >= uint32_t(kSlots)) return false;
     seq = Le32(rec + 4);
@@ -155,10 +155,10 @@ inline int NewestState(const uint8_t* a, const uint8_t* b, uint32_t& seq, int& s
 
 // kStateBytes bytes into out.
 inline void BuildState(uint8_t* out, uint32_t seq, int slot) {
-    detail::PutLe32(out, kStateMagic);
-    detail::PutLe32(out + 4, seq);
-    detail::PutLe32(out + 8, uint32_t(slot));
-    detail::PutLe32(out + 12, dkmodel::Crc32(out, 12));
+    dkbin::PutLe32(out, kStateMagic);
+    dkbin::PutLe32(out + 4, seq);
+    dkbin::PutLe32(out + 8, uint32_t(slot));
+    dkbin::PutLe32(out + 12, dkbin::Crc32(out, 12));
 }
 
 // Sets the name of the preset image[0, size) (a parsed slot, size its size field): name[64] zero-filled, then len
@@ -167,13 +167,13 @@ inline void Rename(uint8_t* image, size_t size, const char* name, size_t len) {
     if (len > kNameSize - 1) len = kNameSize - 1;
     std::memset(image + detail::kOffName, 0, kNameSize);
     std::memcpy(image + detail::kOffName, name, len);
-    detail::PutLe32(image + size - 4, dkmodel::Crc32(image, size - 4));
+    detail::Reseal(image, size);
 }
 
 // Sets the gate of the preset image[0, size) (a parsed slot, size its size field), and rewrites the CRC at size - 4.
 inline void SetGate(uint8_t* image, size_t size, const dkdsp::GateSettings& g) {
     PutGate(image + detail::kOffGate, g);
-    detail::PutLe32(image + size - 4, dkmodel::Crc32(image, size - 4));
+    detail::Reseal(image, size);
 }
 
 // The next filled slot after from, wrapping: from itself when it is the only filled slot; -1 when none is filled.

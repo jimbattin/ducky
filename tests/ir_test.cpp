@@ -26,7 +26,7 @@ void Put32(std::vector<uint8_t>& b, size_t off, uint32_t v) {
     for (int i = 0; i < 4; ++i) b[off + i] = uint8_t(v >> (8 * i));
 }
 
-void FixCrc(std::vector<uint8_t>& b) { Put32(b, 8288, dkmodel::Crc32(b.data(), 8288)); }
+void FixCrc(std::vector<uint8_t>& b) { Put32(b, 8288, dkbin::Crc32(b.data(), 8288)); }
 
 Status ParseBytes(const std::vector<uint8_t>& b) {
     auto ir = std::make_unique<Ir>();

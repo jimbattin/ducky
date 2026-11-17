@@ -85,8 +85,8 @@ public:
     // high_pass: the low-cut. toggle: the slope switch position (SlopeFromToggle). No fade: starts settled.
     void Init(bool high_pass, float freq_knob, float res_knob, uint8_t toggle) {
         high_pass_ = high_pass;
-        freq_.Init(kSampleRate / float(kBlockSize), kKnobSmoothS, freq_knob);
-        res_.Init(kSampleRate / float(kBlockSize), kKnobSmoothS, res_knob);
+        freq_.Init(kBlockRate, kKnobSmoothS, freq_knob);
+        res_.Init(kBlockRate, kKnobSmoothS, res_knob);
         bypass_.Init(high_pass, freq_knob);
         target_ = SlopeFromToggle(toggle);
         for (int j = 0; j < 3; ++j) from_[j] = j == int(target_) ? 1.0f : 0.0f;
@@ -219,7 +219,7 @@ private:
 class MidFilter {
 public:
     void Init(uint8_t toggle) {
-        db_.Init(kSampleRate / float(kBlockSize), kKnobSmoothS, MidGainDb(toggle));
+        db_.Init(kBlockRate, kKnobSmoothS, MidGainDb(toggle));
         g_ = Prewarp(kMidHz);
         ic1_ = ic2_ = 0.0f;
     }

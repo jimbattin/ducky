@@ -29,7 +29,7 @@ void Put32(std::vector<uint8_t>& b, size_t off, uint32_t v) {
     for (int i = 0; i < 4; ++i) b[off + i] = uint8_t(v >> (8 * i));
 }
 // The slot CRC over the first size - 4 bytes, at size - 4.
-void FixCrc(std::vector<uint8_t>& b) { Put32(b, b.size() - 4, dkmodel::Crc32(b.data(), b.size() - 4)); }
+void FixCrc(std::vector<uint8_t>& b) { Put32(b, b.size() - 4, dkbin::Crc32(b.data(), b.size() - 4)); }
 
 Status ParseBytes(const std::vector<uint8_t>& b) {
     auto p = std::make_unique<Preset>();

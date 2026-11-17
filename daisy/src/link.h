@@ -101,7 +101,12 @@ public:
     static constexpr size_t kCapacity = 1024;
 
     // Printable ASCII; other bytes become '?'. Truncated to kMaxLog chars.
-    bool AppendLog(const char* text) { return AppendText(kLog, text, kMaxLog); }
+    bool AppendLog(const char* text) {
+        uint8_t p[kMaxLog];
+        size_t n = 0;
+        for (; n < kMaxLog && text[n]; n++) p[n] = Printable(uint8_t(text[n]));
+        return AppendSysEx(kLog, p, n);
+    }
     // Identity Reply: board, then buildId (printable ASCII; other bytes become '?'; truncated to kMaxBuildId chars;
     // empty becomes "unknown").
     bool AppendIdentity(uint8_t board, const char* buildId) {
@@ -193,12 +198,6 @@ private:
         q[0] = cin;
         for (size_t i = 0; i < 3; i++) q[1 + i] = i < n ? b[i] : 0;
         size_ += 4;
-    }
-    bool AppendText(uint8_t cmd, const char* text, size_t max) {
-        uint8_t p[kMaxLog];
-        size_t n = 0;
-        for (; n < max && text[n]; n++) p[n] = Printable(uint8_t(text[n]));
-        return AppendSysEx(cmd, p, n);
     }
 
     uint8_t buf_[kCapacity];

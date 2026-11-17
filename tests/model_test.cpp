@@ -10,7 +10,7 @@
 
 #include "test_files.h"
 
-using dkmodel::Crc32;
+using dkbin::Crc32;
 using dkmodel::Model;
 using dkmodel::Parse;
 using dkmodel::Status;
