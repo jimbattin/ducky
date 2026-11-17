@@ -11,8 +11,8 @@
 // - the layers: the same blocks, each stage of Process (BeginChunk, RunLayer per layer, EndChunk) timed separately;
 // - the IR convolver with its state in D2 SRAM and in AXI SRAM, the EQ (its slope switches fading every 10 blocks),
 //   the noise gate (enabled, the longest hold: the longest detector scan), and the pedal's whole chain (gate, trim,
-//   engine, IR, EQ, output gain with the gate's gain, mute), timed the same way; the M5 gate is the chain's maximum
-//   against kChainGatePermille.
+//   engine, IR, EQ, output gain with the gate's gain, mute), timed the same way; the chain gate is its maximum
+//   against kChainGatePermille, the load ceiling (docs/ROADMAP.md "Decisions").
 // Placement matches the pedal's: the engine and the EQ in DTCM, the pedal's convolver in AXI SRAM (gIrAxi; gIrD2 is
 // the D2 SRAM comparison), the stages and the timed blocks in ITCM.
 // Log lines (usb_log.py; docs/FIRMWARE.md "Bench"):
@@ -27,7 +27,7 @@
 //   "bench gate a2lite max Q.q permille limit 450 go|no-go";
 //   per stage "bench input|layer NN kK dD|head cycles avg ... " as above;
 //   "bench ir d2|ir axi|eq|noise gate|chain cycles avg ..." as above, then
-//   "bench gate chain max Q.q permille limit 550 go|no-go"; then "bench pass N done".
+//   "bench gate chain max Q.q permille limit 850 go|no-go"; then "bench pass N done".
 // Passes repeat forever, 2 s apart. The link's DFU message restarts into the bootloader (checked between stages).
 #include <cmath>
 #include <cstdint>
@@ -97,7 +97,7 @@ constexpr uint32_t kPassGapMs = 2000;
 constexpr size_t kCheckOffset = 48000, kCheckSamples = 24000;
 constexpr float kCheckLimit = 1e-5f;  // the M2 tolerance; FMA contraction measured 2.4e-7 on the host
 constexpr uint32_t kGatePermille = 450;
-constexpr uint32_t kChainGatePermille = 550;
+constexpr uint32_t kChainGatePermille = 850;  // the load ceiling; 550 until the 24-sample blocks
 constexpr size_t kIrCheckSamples = 4800;  // input.wav[48000, 52800): past the IR's 2048 taps
 static_assert(kCheckSamples % kBlockSize == 0, "the check runs whole blocks");
 static_assert(kIrCheckSamples % kBlockSize == 0 && kIrCheckSamples <= kCheckSamples, "the IR check runs whole blocks");

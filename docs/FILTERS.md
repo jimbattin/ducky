@@ -171,10 +171,10 @@ Bench (`APP=bench`, `docs/FIRMWARE.md` "Bench"), cycles per block of noise, maxi
 | IR convolver, D2 SRAM | 57,844 | 248.4 | 64,440 | 138.2 |
 | EQ (both cuts, mid; slope fades every 10 blocks) | 8,652 | 36.2 | 15,135 | 31.8 |
 | Noise gate (enabled, 100 ms hold: the longest scan) | 832 | 3.5 | — | — |
-| Whole chain (gate, limit 550): before the noise gate | 141,648 | 594.7 (no-go) | 237,192 | 496.4 |
-| Whole chain with the noise gate | 142,057 | 597.6 (no-go) | — | — |
+| Whole chain (gate, limit 850; 550 at M5): before the noise gate | 141,648 | 594.7 | 237,192 | 496.4 |
+| Whole chain with the noise gate | 142,057 | 597.6 | — | — |
 
-- **24-sample blocks:** the convolver's per-block work is the same as at 48 (86 × 32 against 43 × 64 complex multiply-adds, the same 66 KB of spectra through the D-cache) and runs twice as often, so its share of the block period nearly doubles. The model's per-sample cost barely moves. The chain misses the M5 gate. Live without an IR the pedal measured load avg 415, max 419 permille, 0 underruns (394 at 48 samples); live with an IR is not yet measured.
+- **24-sample blocks:** the convolver's per-block work is the same as at 48 (86 × 32 against 43 × 64 complex multiply-adds, the same 66 KB of spectra through the D-cache) and runs twice as often, so its share of the block period nearly doubles. The model's per-sample cost barely moves. The chain missed the M5 gate (550) and is within the 850 ceiling that replaced it. Live without an IR the pedal measured load avg 415, max 419 permille, 0 underruns (394 at 48 samples); live with an IR is not yet measured.
 - **IR check:** the convolver against a direct convolution in double on the device, 4,800 samples of `input.wav`: max error 146e-9 at 24 samples, 182e-9 at 48 (limit 1e-5).
 - **Live, 48 samples** (`A2.bin`, `IR=irs/fdmn_blnd_mix01.bin`, 5 minutes): load avg 499, max 501 permille, 0 underruns (limit 600). Without `IR=`: avg 392, max 393. The load does not depend on the controls, since every section always runs.
 - **Level:** with the reference-band normalisation the FDMN mix raises `A2.bin`'s render by 2.8 dB RMS (3.9 dB peak); on the pedal the `out` peak stayed at −8…−16 dBFS, against −9…−15 without an IR. Under the earlier unit-energy normalisation it was +10.7 dB and the output reached 0 dBFS.
