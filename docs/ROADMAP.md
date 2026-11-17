@@ -213,7 +213,7 @@ Replace the M5 EQ (cuts and the 515 Hz mid) with low-cut → three bells → hig
 - **Screenshots:** `docs/EDITOR.md`'s five retaken at M10 from a simulated pedal (a fake Web MIDI answering the M10 protocol with the A2 fixture slots), in managed Chromium at 1250 px and 1.5× scale.
 - **Docs:** `docs/EQ.md` (new); `docs/FILTERS.md` (the cuts only, the M10 cost); `docs/FIRMWARE.md` ("Settings record" version 2, the source layout, the bench); `docs/EDITOR.md` (Controls and EQ tabs); `docs/MIDI.md` (generated); `CLAUDE.md`.
 
-### M11: Optical compressor (OTC-201) (done)
+### M11: Optical compressor (OTC-201) (done, `496338c`)
 The reduced model of `docs/compressor-spec.md` ("DSP model") ahead of Knob 1 (spec, "Fitting it into Ducky"). Code `daisy/src/dsp/compressor.h`, `tests/compressor_test.cpp`, `tools/comp_reference.py` (appendix B verbatim; writes `tests/fixtures/comp/`), `editor/src/components/CompTab.tsx`, `CompMeter.tsx`.
 
 - **Decided:**
