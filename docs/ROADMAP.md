@@ -145,11 +145,11 @@ graph LR
 - Imports `.nam` files (checked with the M1 converter) and WAV IRs (resampled, trimmed, normalised).
 - Manages 8 slots and shows model metadata, including `input_level_dbu` and gear type.
 - Panel showing the log, CPU load meter, and knob/switch states. DFU button.
-- Added after M8: an EQ tab drawing the response of the cuts, the mid and the output volume from the live controls, after bad_tape's EQ graph (`docs/FIRMWARE.md` "Editor").
+- Added after M8: an EQ tab drawing the response of the cuts, the mid and the output volume from the live controls, after bad_tape's EQ graph (`docs/EDITOR.md`).
 - **Done when:** a full preset round trip works from the browser, and the editor works when hosted inside a multi-firmware launcher.
 - **Decided:** model binary format 2 adds `gear_type`, `gear_make`, `gear_model` and `modeled_by` (64 bytes each) after the name, so the preset slot becomes format 2 (7,988 / 16,280 bytes); format-1 slots read `version` and must be uploaded again. A new READ command returns up to 160 bytes of an ok slot's image per DATA reply, so the editor and `tools/pedal.ts info` show stored slots' full metadata (`editor/src/preset/info.ts`: 4 READs per slot, 5 with an IR). The sidebar is read-only and shows the firmware's tapers in units (dB, Hz, Q). Requests go through one queue (`usePedal.ts` `serial`), since the pedal answers one at a time.
 - **Verified (Seed 1.2, Chromium):** the editor links, syncs (Identity, LIST, slot infos, WATCH) and shows the build. A `.nam` + 48 kHz `.wav` import showed gear type, `input_level_dbu`, and the cab and truncation warnings; the upload's progress rose to 100 % (flash 158 ms) and slot 3's read-back details matched the import panel. Rename, ↑/↓ (the playing lamp and FS2 followed the playing preset) and erase each ended with a status line, and `pedal.ts list` agreed with the table. The sidebar followed the knobs, toggles and footswitches. DFU mode put the pedal into `0483:df11`; after `flash_when_ready.sh` the editor relinked and re-enabled WATCH on its own. Served from a local iframe page at `/editors/ducky`, the single-file build (no external `src`/`href`) linked, listed, uploaded, and showed DFU's confirm dialog.
-- **Docs:** `docs/MIDI.md` (READ, DATA); `docs/NAM_FORMAT.md` "Ducky model binary (format 2)"; `docs/FIRMWARE.md` "Editor", "Preset store", "Link protocol", "Source layout"; `docs/FILTERS.md` "Getting an IR onto the pedal".
+- **Docs:** `docs/MIDI.md` (READ, DATA); `docs/NAM_FORMAT.md` "Ducky model binary (format 2)"; `docs/EDITOR.md`; `docs/FIRMWARE.md` "Preset store", "Link protocol", "Source layout"; `docs/FILTERS.md` "Getting an IR onto the pedal".
 
 ### Noise gate (added after M8, done, `d086cd1`)
 - A per-preset guitar noise gate, side-chained from the input jack and applied at the output, edited in the browser (sliders, a meter) and from `tools/pedal.ts gate`.
@@ -161,7 +161,7 @@ graph LR
 - **Found on hardware:** the first STATUS after WATCH on carried the gate's largest cut since the previous STATUS, which could be seconds old (70 dB with the gate auditioned off). WATCH on now restarts the gate meter and sends its first STATUS 100 ms later. The log sliders' arrow keys (Slider's 1 % position step) rounded back to the same value near a taper's low end (Hold 20 ms → 20.47 → 20); the gate box's arrow keys now step each setting by its resolution.
 - **By ear:** on a high-gain preset the gate works as intended (user check on the pedal).
 - **Not yet checked:** an FS2 switch away and back re-auditioning an unsaved gate in the editor (needs the footswitch).
-- **Docs:** `docs/FILTERS.md` "Noise gate"; `docs/MIDI.md` (GATE, GATE TRY, STATUS); `docs/FIRMWARE.md` "Threads", "Preset store", "Link protocol", "Editor", "Log lines", "Bench".
+- **Docs:** `docs/FILTERS.md` "Noise gate"; `docs/MIDI.md` (GATE, GATE TRY, STATUS); `docs/EDITOR.md`; `docs/FIRMWARE.md` "Threads", "Preset store", "Link protocol", "Log lines", "Bench".
 
 ### M9: Hardening and release prep
 - Stress tests: fast FS2 presses, uploading while playing, power loss during writes, rapid knob sweeps.

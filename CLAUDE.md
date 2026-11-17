@@ -27,7 +27,8 @@ Presets contain the NAM Model, optional IR and noise gate settings. They do not 
 - SW 3: Mid at 515hz (up +5db boost, middle bypass, down -7db scoop)
 
 Roadmap, decisions, and milestones: `docs/ROADMAP.md`
-Firmware build/flash/log, source layout, memory map, log lines, bench (`APP=bench`), the browser editor (serve, build, sync, hosting): `docs/FIRMWARE.md`
+Firmware build/flash/log, source layout, memory map, log lines, bench (`APP=bench`): `docs/FIRMWARE.md`
+Browser editor (running it, each tab with screenshots, link and sync, drafts and saving, gate audition, source layout, conventions): `docs/EDITOR.md`
 USB-MIDI SysEx link (commands, upload, slot read-back, status stream, playback rules), generated from `daisy/src/link.h` by `make midi-doc`: `docs/MIDI.md`
 NAM A2 format, A2-Lite shape check, weight order, forward pass, Ducky model binary, converter, reference renders, engine: `docs/NAM_FORMAT.md`
 IR convolver, cut/mid filters, noise gate, IR binary, `.wav` converter, getting an IR onto the pedal: `docs/FILTERS.md`
