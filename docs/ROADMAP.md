@@ -193,7 +193,7 @@ Knobs 1 and 2 stay fixed (input trim, output volume). Knobs 3–6 and SW1–SW3 
 - **Found on hardware:** at power-up the knob readings rise from 0 over the first blocks, so with one parameter on a knob and a switch the knob usually ends up with it, not the switch.
 - **Docs:** `CLAUDE.md` "Controls"; `docs/MIDI.md` (generated: the commands, "Parameters", "Controls"); `docs/EDITOR.md` "Controls tab"; `docs/FIRMWARE.md` "Threads", "Settings record", "Memory", "Link protocol", "Log lines", "Measured (M9)".
 
-### M10: Parametric EQ (done)
+### M10: Parametric EQ (done, `6cd8baf`)
 Replace the M5 EQ (cuts and the 515 Hz mid) with low-cut → three bells → high-cut, set directly from the editor. Spec `docs/EQ.md`; code `daisy/src/dsp/eq.h`, `daisy/src/dsp/filters.h`, `tests/eq_model.h`, `tests/eq_test.cpp`, `editor/src/eqModel.ts`, `EqGraph.tsx`, `EqTab.tsx`.
 
 - **Decided:**
