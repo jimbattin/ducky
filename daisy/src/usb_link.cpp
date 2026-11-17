@@ -9,6 +9,20 @@
 #include "firmware.h"
 #include "hid/usb_midi.h"
 #include "spsc_ring.h"
+#include "usbd_core.h"
+
+// A SETUP aborts the control transfer before it (USB 2.0 8.5.3), but ST's HAL leaves that transfer's unsent IN packet
+// in EP0's TxFIFO. When the host re-sends a SETUP (its first ACK lost), the device loads the reply twice and every
+// later control read returns the reply before its own: string 2 (the product) reads as string 0's langid table,
+// U+0409 "Љ", so the MIDI port is named "Љ MIDI 1". daisy/Makefile links every USBD_LL_SetupStage call (libDaisy's
+// usbd_conf.c) through this wrapper, which drops the stale packet first.
+extern "C" USBD_StatusTypeDef __real_USBD_LL_SetupStage(USBD_HandleTypeDef* pdev, uint8_t* psetup);
+extern "C" USBD_StatusTypeDef __wrap_USBD_LL_SetupStage(USBD_HandleTypeDef* pdev, uint8_t* psetup) {
+    USB_OTG_GlobalTypeDef* const usb = static_cast<PCD_HandleTypeDef*>(pdev->pData)->Instance;
+    const auto* in0 = reinterpret_cast<const USB_OTG_INEndpointTypeDef*>(uintptr_t(usb) + USB_OTG_IN_ENDPOINT_BASE);
+    if ((in0->DIEPTSIZ & USB_OTG_DIEPTSIZ_PKTCNT) != 0) USB_FlushTxFifo(usb, 0);
+    return __real_USBD_LL_SetupStage(pdev, psetup);
+}
 
 using namespace daisy;
 

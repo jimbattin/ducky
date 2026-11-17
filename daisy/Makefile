@@ -92,3 +92,5 @@ endif
 
 # Relink when the linker script changes: the core link rule lists only $(OBJECTS) and Makefile as prerequisites.
 $(BUILD_DIR)/$(TARGET).elf: $(LDSCRIPT)
+# src/usb_link.cpp flushes EP0's stale IN packet on each SETUP: libDaisy's calls to USBD_LL_SetupStage go through it.
+LDFLAGS += -Wl,--wrap=USBD_LL_SetupStage
