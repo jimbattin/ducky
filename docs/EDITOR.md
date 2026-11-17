@@ -82,8 +82,6 @@ The EQ (`docs/EQ.md`: low-cut, bells 1–3, high-cut) set directly, as bad_tape'
 - **Rows:** a Stage box with `eq_enable`, then a box per band (Low-cut, Bell 1–3, High-cut) with its parameters: the controls each is on, a slider (continuous) or a button group (a choice), and its value. A change is sent at once as SET (`editor/src/useParamEdits.ts`: coalesced to the latest value per parameter, one request in flight) and heard at once. It holds every control on that parameter; a parameter on no control keeps the value. The sliders work as the noise gate's; double-click resets to the parameter's default. A resonance is dimmed when it has no effect, and every row but `eq_enable` while the EQ is off.
 - **Save** as on the Controls tab.
 
-The Controls tab's screenshot above and this tab's below are from before M10 (the cuts, the 515 Hz mid, the Parameters box on the Controls tab) and are not yet retaken.
-
 ![EQ tab](images/editor/eq.png)
 
 ## Log tab
