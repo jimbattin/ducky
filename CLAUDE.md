@@ -28,7 +28,7 @@ Presets contain the NAM Model, optional IR and noise gate settings. They do not 
 - Knobs 3-6 and SW1-SW3 are assignable: each drives one parameter of the table (`daisy/src/params.h`) or none, chosen in the editor's Controls tab or with `tools/pedal.ts param assign`, and kept across power cycles by an explicit save (the settings record). A switch takes only choice parameters (`loop_mode` on a switch: down MISO, middle pre-model, up post-model). Every control is unassigned by default; the compressor is set from the editor's Compressor tab (a gain-reduction meter and a row per parameter), the EQ from its EQ tab (a draggable response graph and a row per parameter) and the loop from its Loop tab (the mode's signal flow and a row per parameter), or any of them with `tools/pedal.ts param set`
 
 Roadmap, decisions, and milestones: `docs/ROADMAP.md`
-Firmware build/flash/log, source layout, memory map, preset store, settings record, log lines, bench (`APP=bench`): `docs/FIRMWARE.md`
+Firmware build/flash/log, source layout, memory map, preset store, settings record, log lines, bench (`APP=bench`), latency image (`APP=latency`): `docs/FIRMWARE.md`
 Browser editor (running it, each tab with screenshots, link and sync, drafts and saving, gate audition, the Controls, EQ and Loop tabs, source layout, conventions): `docs/EDITOR.md`
 The FX loop modes (MISO, loop pre-model, loop post-model: signal flow, cabling, the gate's placement, fades, the latency image `APP=latency`, measured round trip and crosstalk): `docs/LOOP.md`
 USB-MIDI SysEx link (commands, the parameter table, the controls and their pickup rule, upload, slot read-back, status stream, playback rules), generated from `daisy/src/link.h` and `daisy/src/params.h` by `make midi-doc`: `docs/MIDI.md`

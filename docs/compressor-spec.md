@@ -499,7 +499,7 @@ Eichas and Zölzer's approach for a similar circuit: a generic feed-forward comp
 
 ## Fitting it into Ducky
 
-- **Position (built):** it is a guitar-level pedal, so between the input jack and the input trim, ahead of the model. The noise gate's detector reads the raw jack and is unaffected.
+- **Position (built):** it is a guitar-level pedal, so between the input jack and the input trim, ahead of the model; in the pre-model loop mode its output feeds the send (`docs/LOOP.md`). The noise gate's detector reads the raw jack and is unaffected.
 - **Calibration (open):** the model works in volts, and Ducky knows its input scale only from datasheets (+4.5 dBu at 0 dBFS, not measured). An error there moves every threshold by the same number of dB.
 - **Levels into the amp model:** a compressed signal sits at 0.5–1.0 V peak (−11 to −5 dBFS) whatever the guitar, and quiet playing arrives up to 20 dB hotter. Knob 1 follows the compressor and can trim it.
 - **Noise (not yet heard):** up to +20 dB on everything below threshold, the input noise included (−84 dBFS with nothing plugged in, `docs/ROADMAP.md` M4), ahead of a high-gain model.

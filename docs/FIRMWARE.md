@@ -139,8 +139,8 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 
 | Region | Size | Holds now | Reserved for |
 |---|---|---|---|
-| ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages, the convolver, the noise gate, the EQ's and the compressor's sample loops, the gains and the parameter store inlined), `A2Lite::RunLayer`, `Eq::Control`, `Compressor::Control`, `Compressor::SideChain` (17,800 bytes in all) | |
-| DTCM `0x20000000` | 128 KB | The engine (92,116 bytes in `.dtcm_bss`: history 83,976, weights 7,480); callback state, the parameter store, the EQ and the compressor included; the 16 KB stack reserve at the top: 110,768 bytes in all | |
+| ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages, the convolver, the noise gate, the EQ's and the compressor's sample loops, the gains, the loop's send and return ramps, the fades and the parameter store inlined), `A2Lite::RunLayer`, `Eq::Control`, `Compressor::Control`, `Compressor::SideChain` (19,392 bytes in all) | |
+| DTCM `0x20000000` | 128 KB | The engine (92,116 bytes in `.dtcm_bss`: history 83,976, weights 7,480); callback state, the parameter store, the EQ and the compressor included; the 16 KB stack reserve at the top: 110,824 bytes in all | |
 | AXI SRAM `0x24000000` | 480 KB | Code (CMSIS-DSP's FFT included), `.data`, `.bss` with the IR convolver (68 KB): 238 KB in total | |
 | D2 SRAM `0x30008000` | 256 KB | — (the convolver measured slower here than in AXI SRAM, `docs/FILTERS.md`) | |
 | SDRAM `0xC0000000` | 64 MB | The 8 parsed presets (`gPresets`, 127,296 bytes; the gear texts stay in flash), the link's upload buffer (16,288), RENAME/SWAP/GATE scratch (2 × 16,288) and COMMIT's parse target (`gCheck`, 15,912): 192,072 bytes in `.sdram_bss` | |
