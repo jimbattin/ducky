@@ -4,7 +4,7 @@ The cab IR and the EQ that follow the model, and the preset's noise gate. Code: 
 
 ## Signal chain
 
-`AudioCallback` (`daisy/src/ducky.cpp`): the compressor from the input into the left output buffer, then in place on it:
+`AudioCallback` (`daisy/src/ducky.cpp`) in MISO, `loop_mode`'s default: the compressor from the input into the left output buffer, then in place on it:
 
 ```mermaid
 graph LR
@@ -13,6 +13,8 @@ graph LR
 ```
 
 The compressor (M11, `daisy/src/dsp/compressor.h`, `docs/compressor-spec.md` "DSP model") comes first, before Knob 1's trim; the gate's detector reads the raw jack, before the compressor. The IR stage runs only when the current preset has an IR (`docs/FIRMWARE.md` "Preset store"). The EQ's sixteen settings and the compressor's five are parameters (`daisy/src/params.h`, `docs/MIDI.md` "Parameters", `docs/EQ.md`): the editor, the link or any of Knobs 3–6 and SW1–SW3 assigned to one sets each of them.
+
+The loop modes (M12, `docs/LOOP.md`) insert an effects loop on R Out and R In before the model (pre-model) or between the model and the IR (post-model), and play on L Out only.
 
 ## IR convolver
 
@@ -118,7 +120,7 @@ The few dB left are the cabs' low-mid resonances, where a guitar signal has more
 
 ## Noise gate
 
-A per-preset, side-chained downward expander (`dkdsp::NoiseGate`). The detector reads the raw input at the jack (each block's `max|in|`, before the compressor, Knob 1, the model and the IR), so the threshold is in dBFS at the input, independent of the compressor, the trim and the model's calibration. Its gain multiplies the output gain's target (`gOutGain`), which ramps linearly across the block: no per-sample work, no latency, no lookahead. A pick that crosses the open threshold anywhere in a block opens the gate over that same block.
+A per-preset, side-chained downward expander (`dkdsp::NoiseGate`). The detector reads the raw input at the jack (each block's `max|in|`, before the compressor, Knob 1, the model and the IR), so the threshold is in dBFS at the input, independent of the compressor, the trim and the model's calibration. In MISO and pre-model its gain multiplies the output gain's target (`gOutGain`); in post-model it multiplies the send's (`gSendGain`), so the loop pedals' tails come back ungated (`docs/LOOP.md`). Either ramps linearly across the block: no per-sample work, no latency, no lookahead. A pick that crosses the open threshold anywhere in a block opens the gate over that same block.
 
 `Process` runs once per 24-sample block (0.5 ms), dry and parked included:
 

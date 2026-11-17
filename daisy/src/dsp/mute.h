@@ -34,6 +34,20 @@ public:
         }
     }
 
+    // a[i] *= gain and b[i] *= gain with one gain sequence, stepping as Process: both buffers in place with one ramp,
+    // so the send and the output fade together.
+    DK_ITCM void ProcessPair(float* a, float* b, size_t n) {
+        constexpr float kStep = 1.0f / kRampSamples;
+        for (size_t i = 0; i < n; ++i) {
+            if (gain_ < target_)
+                gain_ = std::min(gain_ + kStep, target_);
+            else if (gain_ > target_)
+                gain_ = std::max(gain_ - kStep, target_);
+            a[i] *= gain_;
+            b[i] *= gain_;
+        }
+    }
+
 private:
     float gain_ = 1.0f, target_ = 1.0f;
 };

@@ -4,6 +4,8 @@
 # editor (docs/FIRMWARE.md "Preset store").
 # APP=bench: the A2-Lite, IR and EQ benchmark and device check (src/bench.cpp, no audio),
 # build/<BOARD>-bench/ducky_bench.bin.
+# APP=latency: the FX loop's round trip and the channels' crosstalk (src/latency.cpp; docs/LOOP.md),
+# build/<BOARD>-latency/ducky_latency.bin.
 
 # The app runs from SRAM, loaded from QSPI by the Daisy bootloader.
 export APP_TYPE = BOOT_SRAM
@@ -27,8 +29,12 @@ else ifeq ($(APP),bench)
 TARGET = ducky_bench
 CPP_SOURCES = src/bench.cpp src/usb_link.cpp src/memory.cpp
 override BUILD_DIR = build/$(BOARD)-bench
+else ifeq ($(APP),latency)
+TARGET = ducky_latency
+CPP_SOURCES = src/latency.cpp src/usb_link.cpp src/memory.cpp
+override BUILD_DIR = build/$(BOARD)-latency
 else
-$(error APP must be ducky or bench, not '$(APP)')
+$(error APP must be ducky, bench or latency, not '$(APP)')
 endif
 $(shell mkdir -p $(BUILD_DIR))
 

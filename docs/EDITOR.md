@@ -1,6 +1,6 @@
 # Editor
 
-The browser editor manages the pedal's 8 preset slots, assigns its knobs and switches to parameters, and shows its live state over USB-MIDI. It is written in Preact and TypeScript, built with Bun into one self-contained file, `editor/dist/editor.html` (scripts and styles inlined, no external URLs). It needs Chrome: Web MIDI with SysEx. It follows the conventions of bad_tape's editor (`../bad_tape`): the Platinum look, a read-only sidebar of the pedal's controls, and tabs over a panel.
+The browser editor manages the pedal's 8 preset slots, assigns its knobs and switches to parameters, sets the compressor, the EQ and the FX loop, and shows its live state over USB-MIDI. It is written in Preact and TypeScript, built with Bun into one self-contained file, `editor/dist/editor.html` (scripts and styles inlined, no external URLs). It needs Chrome: Web MIDI with SysEx. It follows the conventions of bad_tape's editor (`../bad_tape`): the Platinum look, a read-only sidebar of the pedal's controls, and tabs over a panel.
 
 It sets slots (presets), which parameter each of Knobs 3–6 and SW1–SW3 drives, and the parameters' values; while you edit a preset it auditions the playing preset's noise gate. A value set from the editor holds until its control moves, and then the pedal is "what you see is what you get" again. Knobs 1 and 2 are never set.
 
@@ -61,11 +61,11 @@ The sliders:
 
 ![Controls tab](images/editor/controls.png)
 
-The pedal's parameter table and its live assignments and values, read from the pedal (DUMP, then the VALUES stream): nothing about the parameters is built into the editor except how to draw the EQ (`docs/MIDI.md` "Parameters", "Controls"). The parameters' values are set on the EQ and Compressor tabs.
+The pedal's parameter table and its live assignments and values, read from the pedal (DUMP, then the VALUES stream): nothing about the parameters is built into the editor except how to draw the EQ (`docs/MIDI.md` "Parameters", "Controls"). The parameters' values are set on the Compressor, EQ and Loop tabs.
 
-- **Controls:** a menu per control, K3–K6 and SW1–SW3, with the value of the parameter it drives. Every control starts unassigned (`None`). A knob takes any parameter; a switch's menu lists only the choice parameters (`eq_enable`, the slopes, `comp_enable`, `comp_level`, `comp_mode`). A parameter may be on several controls. Choosing one sends ASSIGN: the parameter keeps its value, and the control is **Held** until it moves.
+- **Controls:** a menu per control, K3–K6 and SW1–SW3, with the value of the parameter it drives. Every control starts unassigned (`None`). A knob takes any parameter; a switch's menu lists only the choice parameters (`eq_enable`, the slopes, `comp_enable`, `comp_level`, `comp_mode`, `loop_mode`). A parameter may be on several controls. Choosing one sends ASSIGN: the parameter keeps its value, and the control is **Held** until it moves.
 - **Held** ends when the control moves: a knob by more than 3 % of its travel, a switch to another position. The parameter then follows the control.
-- **Save** writes the assignments and the values to the pedal's settings record (SAVE, `docs/FIRMWARE.md` "Settings record"); until then they last until power-off, the line beside the button reads `Not saved on the pedal`, and leaving the page asks first. At power-up a parameter on a control takes the control's position, so a saved value matters for parameters on no control. The Compressor and EQ tabs have the same Save.
+- **Save** writes the assignments and the values to the pedal's settings record (SAVE, `docs/FIRMWARE.md` "Settings record"); until then they last until power-off, the line beside the button reads `Not saved on the pedal`, and leaving the page asks first. At power-up a parameter on a control takes the control's position, so a saved value matters for parameters on no control. The Compressor, EQ and Loop tabs have the same Save.
 - Firmware from before the parameter table does not answer DUMP: the tab says so, and the rest of the editor works.
 
 ## Compressor tab
@@ -93,6 +93,16 @@ The EQ (`docs/EQ.md`: low-cut, bells 1–3, high-cut) set directly, as bad_tape'
 - **Save** as on the Controls tab.
 
 ![EQ tab](images/editor/eq.png)
+
+## Loop tab
+
+![Loop tab](images/editor/loop.png)
+
+The FX loop (`docs/LOOP.md`): which jack carries what in the pedal's loop mode, then the mode and the send and return levels.
+
+- **Signal flow:** a drawing of the chain in the shown `loop_mode` (`LoopDiagram.tsx`), from the input's tip to the output's tip, the jacks outlined amber. In MISO the output's ring carries the same signal. In pre-model and post-model the chain breaks between Send level and Return level, where the loop pedals sit, sent on the output's ring and returned on the input's ring. Under it, what the mode is for and, in the loop modes, how to cable it: an insert cable on each jack.
+- **Rows:** a Mode box with `loop_mode` (MISO, pre-model, post-model), and a Levels box with `loop_send` and `loop_return` (−12…+12 dB, 0 dB at noon), dimmed in MISO, where they do nothing. They work as the EQ tab's rows; a mode change is heard at once, through a 5 ms fade out and in.
+- **Save** as on the Controls tab.
 
 ## Log tab
 
@@ -125,13 +135,13 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 | `biome.jsonc`, `tsconfig.json` | Lint, format and type-check settings (Code conventions). |
 | `package.json`, `bun.lock` | Preact; TypeScript, Biome and Bun's types for development. |
 | `src/editor.html`, `src/main.tsx` | The page and its entry point. |
-| `src/App.tsx` | The window: tabs (Presets, Controls, Compressor, EQ, Log), the slot actions (swap, erase, save, discard, DFU), the drafts, and the settings actions (assign, save). |
+| `src/App.tsx` | The window: tabs (Presets, Controls, Compressor, EQ, Loop, Log), the slot actions (swap, erase, save, discard, DFU), the drafts, and the settings actions (assign, save). |
 | `src/ducky.css` | The Platinum styles. |
 | `src/midi.ts` | `PedalLink`: Web MIDI ports, SysEx reassembly, the HELLO keep-alive, the link status, the session's transport. |
 | `src/usePedal.ts` | The link's lifecycle: the reducer it feeds, the sync and its retries, the `serial` request queue. |
 | `src/state.ts` | The reducer: link, identity, slots, slot infos, STATUS (`compCutDb` among its fields), load, log, the parameter table, VALUES, and whether the settings are unsaved. |
 | `src/useGateAudition.ts` | GATE TRY auditions of the gate box's changes on the playing slot. |
-| `src/useParamEdits.ts` | SETs from the EQ and Compressor tabs, coalesced per parameter, and the value shown while one is in flight. |
+| `src/useParamEdits.ts` | SETs from the Compressor, EQ and Loop tabs, coalesced per parameter, and the value shown while one is in flight. |
 | `src/draft.ts` | Per-slot unsaved drafts, what the slot table shows for them, and Save (`saveDraft`). |
 | `src/importer.ts` | `.nam` and `.wav` files through the converters; rejection text and import warnings. |
 | `src/controls.ts` | Knob 1's and Knob 2's readouts in the firmware's tapers; a toggle's position; level match and input calibration. |
@@ -150,6 +160,8 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 | `src/components/CompTab.tsx` | The Compressor tab: the meter, the Stage, Compressor and Output boxes of parameter rows, and Save. |
 | `src/components/CompMeter.tsx` | The compressor's gain reduction (STATUS `compCutDb`) and its state. |
 | `src/components/EqTab.tsx` | The EQ tab: the graph, the Stage box and a box of parameter rows per band, and Save. |
+| `src/components/LoopTab.tsx` | The Loop tab: the signal flow and what the mode is for, the Mode and Levels boxes of parameter rows, and Save. |
+| `src/components/LoopDiagram.tsx` | The Loop tab's signal-flow drawing for a `loop_mode` (static SVG). |
 | `src/components/ParamRow.tsx` | One parameter: label, controls on it, slider or button group, readout. |
 | `src/components/SettingsActions.tsx` | The settings record's state line and Save. |
 | `src/components/AssignSelect.tsx` | A control's menu of the parameters it accepts. |

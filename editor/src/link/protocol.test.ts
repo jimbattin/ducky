@@ -212,8 +212,10 @@ test("PARAM parses a linear row", () => {
 
 test("VALUES parses", () => {
   // tests/link_test.cpp Values.Bytes.
-  const codes = [1, 0, 8192, 1, 8192, 16383, 0, 8192, 8192, 0, 8192, 8192, 0, 16383, 8192, 1, 0, 12287, 1, 0, 16383];
-  const p = [...Array<number>(7).fill(0x7f), 0x05, 0x15, ...codes.flatMap((c) => [c >> 7, c & 0x7f])];
+  const codes = [
+    1, 0, 8192, 1, 8192, 16383, 0, 8192, 8192, 0, 8192, 8192, 0, 16383, 8192, 1, 0, 12287, 1, 0, 16383, 0, 8192, 8192,
+  ];
+  const p = [...Array<number>(7).fill(0x7f), 0x05, 0x18, ...codes.flatMap((c) => [c >> 7, c & 0x7f])];
   expect(parseMessage(pedalMsg(CMD.values, p))).toEqual({
     type: "values",
     assign: Array(7).fill(null),

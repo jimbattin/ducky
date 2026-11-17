@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "dsp/filters.h"
+#include "dsp/gain.h"
 #include "memory.h"
 
 namespace dkparam {
@@ -42,6 +43,9 @@ enum ParamId : uint8_t {
     kCompLevel,
     kCompMode,
     kCompBalance,
+    kLoopMode,
+    kLoopSend,
+    kLoopReturn,
     kParamCount
 };
 enum class Taper : uint8_t { kLog = 0, kChoice = 1, kLinear = 2 };  // wire values
@@ -68,10 +72,11 @@ struct ParamDef {
 };
 
 inline constexpr const char* kSlopeLabels = "24 dB/oct,12 dB/oct,6 dB/oct";  // the cut slopes' choice labels
+constexpr uint8_t kLoopMiso = 0, kLoopPre = 1, kLoopPost = 2;               // loop_mode's indices
 constexpr float kCompSustainMaxDb = 20.827854f;  // 20 log10(11): the stage's gain at Sustain's 100 kOhm (compressor.h)
 // The bells' default positions: 250 Hz, 1 kHz and 3 kHz, Q 1. The compressor's: off, Sustain +15.6 dB (position 0.75),
 // Level 0 dB (the toggle's middle), blend, Balance fully compressed. Balance is the knob's rotation; the DSP applies
-// the audio taper.
+// the audio taper. The loop's (docs/LOOP.md): MISO, send and return 0 dB at noon.
 inline constexpr ParamDef kParams[kParamCount] = {
     {kEqEnable, "eq_enable", "EQ", "off,on", "EQ", 0.0f, 1.0f, 1.0f, Taper::kChoice, OffEnd::kNone},
     {kLowCutFreq, "low_cut_freq", "Low-cut frequency", "Hz", "EQ", dkdsp::kLowCutMinHz, dkdsp::kLowCutMaxHz, 0.0f,
@@ -111,6 +116,12 @@ inline constexpr ParamDef kParams[kParamCount] = {
      OffEnd::kNone},
     {kCompMode, "comp_mode", "Mode", "blend,direct", "Compressor", 0.0f, 1.0f, 0.0f, Taper::kChoice, OffEnd::kNone},
     {kCompBalance, "comp_balance", "Balance", "%", "Compressor", 0.0f, 100.0f, 1.0f, Taper::kLinear, OffEnd::kNone},
+    {kLoopMode, "loop_mode", "Loop mode", "MISO,pre-model,post-model", "Loop", 0.0f, 2.0f, 0.0f, Taper::kChoice,
+     OffEnd::kNone},
+    {kLoopSend, "loop_send", "Send level", "dB", "Loop", -dkdsp::kTrimRangeDb, dkdsp::kTrimRangeDb, 0.5f,
+     Taper::kLinear, OffEnd::kNone},
+    {kLoopReturn, "loop_return", "Return level", "dB", "Loop", -dkdsp::kTrimRangeDb, dkdsp::kTrimRangeDb, 0.5f,
+     Taper::kLinear, OffEnd::kNone},
 };
 
 constexpr bool TableValid() {

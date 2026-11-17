@@ -5,6 +5,7 @@ import { EqTab } from "./components/EqTab";
 import { FrontPanel } from "./components/FrontPanel";
 import { GateEditor } from "./components/GateEditor";
 import { LogView } from "./components/LogView";
+import { LoopTab } from "./components/LoopTab";
 import { SlotEditor } from "./components/SlotEditor";
 import { SlotTable } from "./components/SlotTable";
 import { NO_STATUS, type Status, StatusLine } from "./components/StatusLine";
@@ -20,12 +21,13 @@ import { useGateAudition } from "./useGateAudition";
 import { useParamEdits } from "./useParamEdits";
 import { usePedal } from "./usePedal";
 
-type TabId = "presets" | "controls" | "comp" | "eq" | "log";
+type TabId = "presets" | "controls" | "comp" | "eq" | "loop" | "log";
 const TABS: readonly NavTab<TabId>[] = [
   { id: "presets", label: "Presets" },
   { id: "controls", label: "Controls" },
   { id: "comp", label: "Compressor" },
   { id: "eq", label: "EQ" },
+  { id: "loop", label: "Loop" },
   { id: "log", label: "Log" },
 ];
 const without = (ds: Drafts, ...slots: number[]): Partial<Record<number, Draft>> => {
@@ -248,7 +250,7 @@ export function App() {
           <div class="tabpanel" role="tabpanel" id="tabpanel" aria-labelledby={`tab-${tab}`}>
             {tab === "log" ? (
               <LogView lines={s.log} />
-            ) : (tab === "eq" || tab === "comp" || tab === "controls") && !linked ? (
+            ) : (tab === "eq" || tab === "comp" || tab === "loop" || tab === "controls") && !linked ? (
               <p class="tab-empty">Waiting for the pedal.</p>
             ) : tab === "comp" ? (
               <CompTab
@@ -265,6 +267,17 @@ export function App() {
             ) : tab === "eq" ? (
               <EqTab
                 status={s.status}
+                params={s.params}
+                paramsError={s.paramsError}
+                values={s.values}
+                shownCode={shownCode}
+                enabled={ready}
+                edited={s.settingsEdited}
+                onSet={setParam}
+                onSave={onSaveSettings}
+              />
+            ) : tab === "loop" ? (
+              <LoopTab
                 params={s.params}
                 paramsError={s.paramsError}
                 values={s.values}

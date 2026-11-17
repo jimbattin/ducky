@@ -17,6 +17,7 @@ const GAIN = { ...EQ, taper: "linear", defCode: 8192, min: -12, max: 12, unit: "
 const BELL_Q = { ...EQ, taper: "log", defCode: 5011, min: Math.fround(0.4), max: 8, unit: "Q" } as const;
 const HZ = { ...EQ, taper: "log", unit: "Hz" } as const;
 const COMP = { off: "none", group: "Compressor" } as const;
+const LOOP = { off: "none", group: "Loop" } as const;
 
 /** The pedal's parameter table as DUMP sends it (daisy/src/params.h kParams; docs/MIDI.md "Parameters"). */
 export const PARAMS: ParamInfo[] = [
@@ -99,5 +100,38 @@ export const PARAMS: ParamInfo[] = [
     min: 0,
     max: 100,
     unit: "%",
+  },
+  {
+    ...LOOP,
+    id: 21,
+    name: "loop_mode",
+    label: "Loop mode",
+    taper: "choice",
+    defCode: 0,
+    min: 0,
+    max: 2,
+    unit: "MISO,pre-model,post-model",
+  },
+  {
+    ...LOOP,
+    id: 22,
+    name: "loop_send",
+    label: "Send level",
+    taper: "linear",
+    defCode: 8192,
+    min: -12,
+    max: 12,
+    unit: "dB",
+  },
+  {
+    ...LOOP,
+    id: 23,
+    name: "loop_return",
+    label: "Return level",
+    taper: "linear",
+    defCode: 8192,
+    min: -12,
+    max: 12,
+    unit: "dB",
   },
 ];

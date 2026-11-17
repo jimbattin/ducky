@@ -1,6 +1,6 @@
 // The pedal host the firmware is built for, chosen at compile time (daisy/Makefile BOARD=):
 //   DUCKY_BOARD_HOTHOUSE: Cleveland Music Co. HotHouse. Knobs 1-6, three on/off/on toggles SW1-SW3, FS1/FS2,
-//   LED1/LED2; stereo I/O, used dual mono (left in, both outputs).
+//   LED1/LED2; stereo I/O: mono in and both outputs the same, or a mono effects loop on the rings (docs/LOOP.md).
 // Pins on the Daisy Seed (Cleveland Music Co.'s published pinout: github.com/clevelandmusicco/HothouseExamples):
 //   knobs 1-6 = D16-D21, FS1 = D25, FS2 = D26, LED1 = D22, LED2 = D23;
 //   SW1 up/down = D9/D10, SW2 = D7/D8, SW3 = D5/D6.

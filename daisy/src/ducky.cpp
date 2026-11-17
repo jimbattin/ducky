@@ -1,33 +1,39 @@
 // Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). The left input goes through the compressor
 // (dsp/compressor.h), Knob 1's input trim, the current preset's A2-Lite model (dsp/a2lite.h) and cab IR when it has
-// one (dsp/convolver.h), the EQ (dsp/eq.h: low-cut, three bells, high-cut; the compressor and the EQ are driven by
-// the parameters, set over the link or by the controls assigned to them, Knobs 3-6 and SW1-SW3: params.h,
+// one (dsp/convolver.h), the EQ (dsp/eq.h: low-cut, three bells, high-cut; the compressor, the EQ and the loop are
+// driven by the parameters, set over the link or by the controls assigned to them, Knobs 3-6 and SW1-SW3: params.h,
 // param_store.h; the assignments and values are kept in the settings record, settings.h), and Knob 2's output volume
 // times the model's level match and the preset's noise gate (dsp/gain.h, dsp/noise_gate.h: the gate listens to the
-// input before the compressor), then FS1's mute ramp and the preset switch's fade, and is copied to both outputs
-// (dual mono). Presets live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU, or slot by slot over
-// the link: docs/MIDI.md) and are parsed into SDRAM at boot and after every slot change; corrupt or empty slots are
-// skipped. With no valid slot the pedal plays dry (compressor, trim, EQ, volume, mute; no gate). If the IR
-// convolver's FFT does not initialise, audio never starts: the pedal serves USB (DFU included) and logs "ir fft" once
-// a second.
+// input before the compressor), then FS1's mute ramp and the preset switch's fade. loop_mode routes it (docs/LOOP.md):
+// - MISO: the result is copied to both outputs (dual mono); the right input is not used.
+// - pre-model: the compressor's output, times the send level, goes out on R (the send); R In (the return), times the
+//   return level, feeds the trim, the model, the IR, the EQ and the output gain to L Out.
+// - post-model: the model's output, times the level match, the gate and the send level, goes out on R; R In, times the
+//   return level, feeds the IR, the EQ and Knob 2's volume to L Out.
+// FS1 mutes L Out only; a loop_mode change fades both outputs out, reroutes and fades them in (gModeFade). Presets
+// live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU, or slot by slot over the link:
+// docs/MIDI.md) and are parsed into SDRAM at boot and after every slot change; corrupt or empty slots are skipped.
+// With no valid slot the pedal plays dry (compressor, trim, EQ, volume, mute; no gate). If the IR convolver's FFT does
+// not initialise, audio never starts: the pedal serves USB (DFU included) and logs "ir fft" once a second.
 //
 // Two threads of control:
 // - AudioCallback (the audio DMA interrupt, 48 kHz, 24-sample blocks): reads and publishes the controls (30 ms toggle
 //   hysteresis), toggles the mute on FS1, counts FS2 presses, applies the link's parameter edits and arbitrates the
-//   control slots (param_store.h), steps the preset switch, runs the gate's detector, the compressor, the trim, the
-//   engine, the IR, the EQ and the output gain, the mute ramp and the preset fade, measures the input and output peaks,
-//   the gate's level and cut and the compressor's gain reduction, drives LED1 and LED2's blinks, and measures the load
-//   and the underruns.
+//   control slots (param_store.h), steps the preset switch and the loop mode, runs the gate's detector, the
+//   compressor, the trim, the engine, the IR, the EQ, the loop's send and return levels and the output gain, the mute
+//   ramp, the preset fade and the mode fade, measures the input and output peaks (both channels), the gate's level and
+//   cut and the compressor's gain reduction, drives LED1 and LED2's blinks, and measures the load and the underruns.
 // - The main loop: USB (usb_link.h: Identity, HELLO, DFU; the slot and parameter commands in onCommand, their replies
 //   and the STATUS and VALUES stream in serveReplies), the preset switch (servePresets), the state record
-//   (writeState), the settings record (saveSettings), the slot writes (writeSlot) and the once-a-second log lines.
+//   (writeState), the settings record (saveSettings), the slot writes (writeSlot), the once-a-second log lines and
+//   the `loop` line when loop_mode changes.
 // A preset switch: the main loop raises gSwapReq; the callback fades out (gSwapFade), then parks (writes silence,
 // touches neither the engine nor the IR) and acks with gSwapParked; the main loop loads the next preset into the engine
 // and the IR and publishes its gains with gSwapLoaded; the callback takes them and fades in.
 // They share only atomics, each with one writer, and one single-producer single-consumer ring:
-// - callback -> main loop (relaxed): gKnob, gToggle, gFsHeld, gMutedPub, gUnderruns, gPeak, gOutPeak, gLoadAvg,
-//   gLoadMax, gFs2Presses, gGateLevel, gGateGain, gCompGain, gParamPub, gAssignPub, gHeldPub; gSwapParked and
-//   gEditsDone (release/acquire);
+// - callback -> main loop (relaxed): gKnob, gToggle, gFsHeld, gMutedPub, gUnderruns, gPeak, gOutPeak, gRinPeak,
+//   gRoutPeak, gLoadAvg, gLoadMax, gFs2Presses, gGateLevel, gGateGain, gCompGain, gParamPub, gAssignPub, gHeldPub;
+//   gSwapParked and gEditsDone (release/acquire);
 // - main loop -> callback (relaxed): gPeakReset, gLoadReset, gBlinkCount, gGateWord (publishGate), gMeterReset;
 //   gSwapReq, gSwapLoaded (publishing gNextLevel, gNextInCal, gNextIrOn, gNextModelOn) and gBlinkReq
 //   (release/acquire); gEdits (the ring: SET and ASSIGN, applied at the next block).
@@ -105,6 +111,11 @@ DK_DTCM dkdsp::NoiseGate gGate;                             // the playing prese
 DK_DTCM uint32_t gGateSeen[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};  // the last gGateWord pair taken
 DK_DTCM float gGateLevelAcc = 0.0f, gGateGainAcc = 1.0f;    // the gate meter since the last STATUS
 DK_DTCM float gCompGainAcc = 1.0f;                          // the compressor's lowest gain() since the last STATUS
+DK_DTCM uint8_t gLoop = dkparam::kLoopMiso;  // the routing in use; follows loop_mode at a fade's silence
+DK_DTCM dkdsp::MuteRamp gModeFade;           // a loop_mode change: both outputs out, reroute, in
+DK_DTCM dkdsp::Smoother gSendKnob, gReturnKnob;  // loop_send, loop_return positions
+DK_DTCM dkdsp::GainRamp gSendGain, gReturnGain;
+DK_DTCM float gRinPeakAcc, gRoutPeakAcc;  // R input and R output peaks since the main loop last read them
 
 // Shared with the main loop: in SRAM (AXI).
 // Callback -> main loop.
@@ -115,6 +126,8 @@ std::atomic<bool> gMutedPub{false};        // gMuted
 std::atomic<uint32_t> gUnderruns{0};       // blocks since boot whose callback ran longer than one block period
 std::atomic<float> gPeak{0.0f};            // gPeakAcc, published every block
 std::atomic<float> gOutPeak{0.0f};         // gOutPeakAcc, published every block
+std::atomic<float> gRinPeak{0.0f};         // gRinPeakAcc, published every block
+std::atomic<float> gRoutPeak{0.0f};        // gRoutPeakAcc, published every block
 std::atomic<float> gLoadAvg{0.0f}, gLoadMax{0.0f};  // gLoad's, published every block
 std::atomic<float> gGateLevel{0.0f};       // gGateLevelAcc, published every block
 std::atomic<float> gGateGain{1.0f};        // gGateGainAcc, published every block
@@ -126,7 +139,7 @@ std::atomic<uint8_t> gAssignPub[dkparam::kControlSlots];  // gStore's assignment
 std::atomic<uint8_t> gHeldPub{0};                         // gStore's held bits, published every block
 std::atomic<uint32_t> gEditsDone{0};  // gEditsTaken once those edits' values are published (release)
 // Main loop -> callback.
-std::atomic<bool> gPeakReset{false};  // restart gPeakAcc and gOutPeakAcc
+std::atomic<bool> gPeakReset{false};  // restart gPeakAcc, gOutPeakAcc, gRinPeakAcc and gRoutPeakAcc
 std::atomic<bool> gLoadReset{false};  // restart gLoad
 std::atomic<uint32_t> gSwapReq{0};     // a new value asks the callback to fade out and park (release)
 std::atomic<uint32_t> gSwapLoaded{0};  // gSwapReq's value once the next preset is loaded (release): fade in
@@ -177,6 +190,7 @@ int gSettingsIndex = -1;                  // the settings sector holding the new
 uint32_t gSettingsSeq = 0;
 int gDumpNext = -1;       // the next PARAM to send for DUMP; kParamCount: its VALUES; kParamCount + 1: its RESULT
 bool gValuesDue = false;  // WATCH's VALUES, after its STATUS
+uint8_t gLoopLogged = dkparam::kLoopMiso;  // the loop_mode the last `loop` line named
 
 // Slots and models.
 
@@ -306,9 +320,16 @@ void logSlots() {
     dkusb::Log("slots %s %s %s %s %s %s %s %s", s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
 }
 
-// The settings record in use (`settings factory` with none) and the live layout: each control slot's parameter. Seven
-// parameters on one control each fit a log line; a longer layout (a parameter on several controls) is cut at 120
-// characters.
+// The published loop mode, as a `loop` line; it becomes gLoopLogged.
+void logLoop() {
+    static const char* const kLoopNames[3] = {"miso", "pre-model", "post-model"};
+    gLoopLogged = uint8_t(gParamPub[dkparam::kLoopMode].load(std::memory_order_relaxed));
+    dkusb::Log("loop %s", kLoopNames[gLoopLogged < 3 ? gLoopLogged : 0]);
+}
+
+// The settings record in use (`settings factory` with none), the live layout: each control slot's parameter, and the
+// loop mode. Seven parameters on one control each fit a log line; a longer layout (a parameter on several controls) is
+// cut at 120 characters.
 void logSettings() {
     if (gSettingsIndex < 0)
         dkusb::Log("settings factory");
@@ -320,6 +341,7 @@ void logSettings() {
         n[c] = id < dkparam::kParamCount ? dkparam::kParams[id].name : "none";
     }
     dkusb::Log("layout k3 %s k4 %s k5 %s k6 %s sw1 %s sw2 %s sw3 %s", n[0], n[1], n[2], n[3], n[4], n[5], n[6]);
+    logLoop();
 }
 
 // At boot and on HELLO: the boot line, each slot's status, the current preset, the settings and the layout.
@@ -348,15 +370,18 @@ void logControls() {
 
 void logStatus() {
     const float peak = gPeak.load(std::memory_order_relaxed), outPeak = gOutPeak.load(std::memory_order_relaxed);
+    const float rinPeak = gRinPeak.load(std::memory_order_relaxed);
+    const float routPeak = gRoutPeak.load(std::memory_order_relaxed);
     gPeakReset.store(true, std::memory_order_relaxed);
     const float avg = gLoadAvg.load(std::memory_order_relaxed), max = gLoadMax.load(std::memory_order_relaxed);
     gLoadReset.store(true, std::memory_order_relaxed);
     const int avgPm = int(avg * 1000), maxPm = int(max * 1000);
     gLoadAvgPm = uint16_t(std::clamp(avgPm, 0, 16383));
     gLoadMaxPm = uint16_t(std::clamp(maxPm, 0, 16383));
-    dkusb::Log("load avg %d max %d permille underruns %lu mute %s in %d dBFS out %d dBFS", avgPm, maxPm,
-               (unsigned long)gUnderruns.load(std::memory_order_relaxed),
-               gMutedPub.load(std::memory_order_relaxed) ? "on" : "off", dbfs(peak), dbfs(outPeak));
+    dkusb::Log("load avg %d max %d permille underruns %lu mute %s in %d dBFS out %d dBFS rin %d dBFS rout %d dBFS",
+               avgPm, maxPm, (unsigned long)gUnderruns.load(std::memory_order_relaxed),
+               gMutedPub.load(std::memory_order_relaxed) ? "on" : "off", dbfs(peak), dbfs(outPeak), dbfs(rinPeak),
+               dbfs(routPeak));
 }
 
 // Handoffs between the threads.
@@ -459,18 +484,32 @@ DK_ITCM void stepSwap() {
     }
 }
 
-// Step 7: the mute flag, the input and output peaks, the gate's level and cut and the compressor's gain reduction,
-// accumulated and published.
-DK_ITCM void publishMeters(float peak, float outPeak, float gate) {
+// Step 4b: the loop mode. A change fades both outputs out; at silence the routing follows loop_mode and they fade back
+// in. A mode that flips back before the fade lands just fades back in.
+DK_ITCM void stepLoop() {
+    const uint8_t want = uint8_t(gStore.Value(dkparam::kLoopMode));
+    if (want != gLoop && gModeFade.Silent()) gLoop = want;
+    gModeFade.SetMuted(want != gLoop);
+}
+
+// Step 7: the mute flag, the input and output peaks (both channels), the gate's level and cut and the compressor's
+// gain reduction, accumulated and published.
+DK_ITCM void publishMeters(float peak, float outPeak, float rinPeak, float routPeak, float gate) {
     gMutedPub.store(gMuted, std::memory_order_relaxed);
     if (gPeakReset.exchange(false, std::memory_order_relaxed)) {
         gPeakAcc = 0.0f;
         gOutPeakAcc = 0.0f;
+        gRinPeakAcc = 0.0f;
+        gRoutPeakAcc = 0.0f;
     }
     gPeakAcc = std::fmax(gPeakAcc, peak);
     gPeak.store(gPeakAcc, std::memory_order_relaxed);
     gOutPeakAcc = std::fmax(gOutPeakAcc, outPeak);
     gOutPeak.store(gOutPeakAcc, std::memory_order_relaxed);
+    gRinPeakAcc = std::fmax(gRinPeakAcc, rinPeak);
+    gRinPeak.store(gRinPeakAcc, std::memory_order_relaxed);
+    gRoutPeakAcc = std::fmax(gRoutPeakAcc, routPeak);
+    gRoutPeak.store(gRoutPeakAcc, std::memory_order_relaxed);
     if (gMeterReset.exchange(false, std::memory_order_relaxed)) {
         gGateLevelAcc = 0.0f;
         gGateGainAcc = 1.0f;
@@ -504,34 +543,59 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     readControls(tog);
     stepParams(tog);
     stepSwap();
+    stepLoop();
     // Step 5: the gate's settings (publishGate), then its detector on the raw input peak: its gain joins the output
-    // ramp.
+    // ramp (the send's in post-model).
     const float peak = dkdsp::Peak(in[0], size);
     takeGate();
     const float gate = gGate.Process(peak);
-    // Step 6: the chain. out[0] is the working buffer; the compressor and the engine accept in == out. The
-    // compressor's and the EQ's controls are parameters (stepParams).
-    gComp.Process(in[0], out[0], size, gStore.Values());
+    // Step 6: the chain, routed by gLoop. out[0] is the working buffer, out[1] the send in the loop modes; the
+    // compressor, the engine and the IR accept in == out. The compressor's, the EQ's and the loop's controls are
+    // parameters (stepParams). The knobs' smoothers run every block in every mode, so they stay settled; the send and
+    // return gains are computed only in the loop modes.
+    const float* v = gStore.Values();
+    const float sendPos = gSendKnob.Process(v[dkparam::kLoopSend]);
+    const float returnPos = gReturnKnob.Process(v[dkparam::kLoopReturn]);
     const float inTarget = gInCal * dkdsp::InputGain(gInKnob.Process(hw.Knob(0)));
-    gInGain.Process(out[0], out[0], size, inTarget);
-    if (gSwap == Swap::kParked) {
-        std::fill(out[0], out[0] + size, 0.0f);  // the main loop owns the engine and the IR
-    } else if (gModelOn) {
-        gEngine.Process(out[0], out[0], size);
-        if (gIrOn) gIr.Process(out[0], out[0]);  // size is kBlockSize: dkfw::Start sets the block size
+    const float vol = dkdsp::OutputGain(gOutKnob.Process(hw.Knob(1)));
+    const bool parked = gSwap == Swap::kParked;  // the main loop owns the engine and the IR
+    const bool pre = gLoop == dkparam::kLoopPre, post = gLoop == dkparam::kLoopPost;
+    // In pre-model the compressor's output, times the send level, is the send: independent of the preset, so the swap
+    // fade leaves it alone. The return feeds the rest of the chain.
+    gComp.Process(in[0], pre ? out[1] : out[0], size, v);
+    if (pre) {
+        gSendGain.Process(out[1], out[1], size, dkdsp::InputGain(sendPos));
+        gReturnGain.Process(in[1], out[0], size, dkdsp::InputGain(returnPos));
     }
-    gEq.Process(out[0], size, gStore.Values());
-    const float outTarget = gLevel * dkdsp::OutputGain(gOutKnob.Process(hw.Knob(1))) * gate;
-    gOutGain.Process(out[0], out[0], size, outTarget);
-    gMute.Process(out[0], out[0], size);
-    gSwapFade.Process(out[0], out[0], size);
+    gInGain.Process(out[0], out[0], size, inTarget);
+    if (!parked && gModelOn) gEngine.Process(out[0], out[0], size);
+    if (post) {
+        // The send: the model's output times the level match, the gate and the send level. The return feeds the IR.
+        gSendGain.Process(out[0], out[1], size, gLevel * gate * dkdsp::InputGain(sendPos));
+        gReturnGain.Process(in[1], out[0], size, dkdsp::InputGain(returnPos));
+    }
+    // In MISO gSendGain and gReturnGain rest; a loop mode resumes them behind the mode fade.
+    if (parked)
+        std::fill(out[0], out[0] + size, 0.0f);
+    else if (gModelOn && gIrOn)
+        gIr.Process(out[0], out[0]);  // size is kBlockSize: dkfw::Start sets the block size
+    gEq.Process(out[0], size, v);
+    // Knob 2's volume, times the level match and the gate unless they rode the send.
+    gOutGain.Process(out[0], out[0], size, post ? vol : gLevel * vol * gate);
+    gMute.Process(out[0], out[0], size);  // FS1 mutes L Out only
+    // In post-model the preset switch fades the send too: both stay silent while parked.
+    if (gLoop == dkparam::kLoopPost)
+        gSwapFade.ProcessPair(out[0], out[1], size);
+    else
+        gSwapFade.Process(out[0], out[0], size);
     if (gSwap == Swap::kFadingOut && gSwapFade.Silent()) {
         gSwap = Swap::kParked;
         gSwapParked.store(gSwapSeen, std::memory_order_release);
     }
     // Step 7.
-    std::copy(out[0], out[0] + size, out[1]);
-    publishMeters(peak, dkdsp::Peak(out[0], size), gate);
+    if (gLoop == dkparam::kLoopMiso) std::copy(out[0], out[0] + size, out[1]);
+    gModeFade.ProcessPair(out[0], out[1], size);
+    publishMeters(peak, dkdsp::Peak(out[0], size), dkdsp::Peak(in[1], size), dkdsp::Peak(out[1], size), gate);
     driveLeds();
     // Step 9.
     if (System::GetTick() - start > gBlockTicks) gUnderruns.fetch_add(1, std::memory_order_relaxed);
@@ -1100,9 +1164,15 @@ int main() {
     gMute.Init(false);
     gInKnob.Init(dkdsp::kBlockRate, dkdsp::kKnobSmoothS, 0.5f);
     gInGain.Init(gInCal);
-    // The output fades in from silence at boot.
+    // The output and the send fade in from silence at boot.
     gOutKnob.Init(dkdsp::kBlockRate, dkdsp::kKnobSmoothS, 0.0f);
     gOutGain.Init(0.0f);
+    gLoop = uint8_t(gStore.Value(dkparam::kLoopMode));
+    gModeFade.Init(false);
+    gSendKnob.Init(dkdsp::kBlockRate, dkdsp::kKnobSmoothS, gStore.Value(dkparam::kLoopSend));
+    gReturnKnob.Init(dkdsp::kBlockRate, dkdsp::kKnobSmoothS, gStore.Value(dkparam::kLoopReturn));
+    gSendGain.Init(0.0f);
+    gReturnGain.Init(dkdsp::InputGain(gStore.Value(dkparam::kLoopReturn)));
     gLoad.Init(hw.seed.AudioSampleRate(), hw.seed.AudioBlockSize());
     gBlockTicks = uint32_t(uint64_t(System::GetTickFreq()) * dkdsp::kBlockSize / uint32_t(dkdsp::kSampleRate));
     for (dkctl::ToggleFilter& f : gToggleFilter) f.Init(1);
@@ -1120,6 +1190,7 @@ int main() {
         dkusb::Serve(logBoot, onCommand);
         const uint32_t now = System::GetNow();
         servePresets(now);
+        if (uint8_t(gParamPub[dkparam::kLoopMode].load(std::memory_order_relaxed)) != gLoopLogged) logLoop();
         if (now - lastLog >= 1000) {
             lastLog = now;
             logControls();

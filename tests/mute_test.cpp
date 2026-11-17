@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -81,4 +82,28 @@ TEST(MuteRamp, BlockSizeIndependent) {
         else
             for (size_t i = 0; i < kN; ++i) ASSERT_EQ(out[i], ref[i]) << "block " << block << " sample " << i;
     }
+}
+
+TEST(MuteRamp, PairMatchesOneRampOnEach) {
+    MuteRamp m;
+    m.Init(false);
+    m.SetMuted(true);
+    const std::vector<float> ones(300, 1.0f);
+    std::vector<float> scratch(ones.size());
+    for (size_t i = 0; i < ones.size(); i += 7)
+        m.Process(ones.data() + i, scratch.data() + i, std::min<size_t>(7, ones.size() - i));
+    m.SetMuted(false);
+    MuteRamp m1 = m, m2 = m, pair = m;
+    const std::vector<float> a = Sine(480);
+    std::vector<float> b(a.size());
+    for (size_t i = 0; i < b.size(); ++i) b[i] = -0.25f * a[a.size() - 1 - i];
+    std::vector<float> a1(a.size()), b1(b.size()), a2 = a, b2 = b;
+    m1.Process(a.data(), a1.data(), a.size());
+    m2.Process(b.data(), b1.data(), b.size());
+    pair.ProcessPair(a2.data(), b2.data(), a.size());
+    for (size_t i = 0; i < a.size(); ++i) {
+        ASSERT_EQ(a2[i], a1[i]) << i;
+        ASSERT_EQ(b2[i], b1[i]) << i;
+    }
+    EXPECT_EQ(a1.back(), a.back());
 }

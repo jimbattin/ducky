@@ -855,3 +855,43 @@ dl.details dd {
   letter-spacing: 0.12em;
   fill: var(--rh-dim);
 }
+
+/* ---- Loop tab: the signal flow (LoopDiagram) ---- */
+
+.loop-diagram svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.loop-box {
+  fill: var(--rh-well);
+  stroke: var(--rh-dim);
+  stroke-width: 1;
+}
+.loop-diagram .jack .loop-box {
+  stroke: var(--rh-amber);
+}
+.loop-diagram .loop .loop-box {
+  stroke: var(--rh-accent);
+}
+.loop-label {
+  font: 13px var(--rh-ui);
+  fill: var(--rh-text);
+}
+.loop-sub {
+  font: 11px var(--rh-ui);
+  fill: var(--rh-dim);
+}
+.loop-arrow {
+  stroke: var(--rh-dim);
+  stroke-width: 1.5;
+  fill: none;
+  marker-end: url(#loop-head);
+}
+.loop-head {
+  fill: var(--rh-dim);
+}
+.loop-caption {
+  margin: 0;
+  padding: 0.25rem;
+}

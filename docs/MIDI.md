@@ -101,6 +101,9 @@ The table DUMP sends (daisy/src/params.h); ids are append-only. A continuous par
 |18|`comp_level`|Level|choice|0 -3 dB, 1 0 dB, 2 +3 dB|-|1|Compressor|
 |19|`comp_mode`|Mode|choice|0 blend, 1 direct|-|0|Compressor|
 |20|`comp_balance`|Balance|linear|0 to 100 %|-|16383|Compressor|
+|21|`loop_mode`|Loop mode|choice|0 MISO, 1 pre-model, 2 post-model|-|0|Loop|
+|22|`loop_send`|Send level|linear|-12 to 12 dB|-|8192|Loop|
+|23|`loop_return`|Return level|linear|-12 to 12 dB|-|8192|Loop|
 
 ## Controls
 

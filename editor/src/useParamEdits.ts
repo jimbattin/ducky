@@ -1,6 +1,6 @@
-// SETs from the EQ and Compressor tabs: a parameter's value heard while its slider or graph handle moves, coalesced to
-// the latest code per parameter with one request in flight, and shown at once (the pedal's VALUES arrive every
-// 100 ms).
+// SETs from the Compressor, EQ and Loop tabs: a parameter's value heard while its slider or graph handle moves,
+// coalesced to the latest code per parameter with one request in flight, and shown at once (the pedal's VALUES arrive
+// every 100 ms).
 import { useRef, useState } from "preact/hooks";
 import type { Action, State } from "./state";
 import type { Pedal } from "./usePedal";
