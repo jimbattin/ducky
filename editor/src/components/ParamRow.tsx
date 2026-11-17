@@ -1,5 +1,5 @@
 import { typographic } from "../format";
-import { CODE_MAX, choiceLabels, formatParam } from "../link/params";
+import { CODE_MAX, choiceLabels, formatParam, togglePositions } from "../link/params";
 import type { ParamInfo } from "../link/protocol";
 import { Segmented } from "./Segmented";
 import { Slider } from "./Slider";
@@ -17,7 +17,10 @@ interface Props {
   onSet: (id: number, code: number) => void;
 }
 
-/** One parameter: its label, the controls on it, a slider (continuous) or a button group (choice), its readout. */
+/**
+ * One parameter: its label, the controls on it, a slider (continuous) or a button group (choice, each value captioned
+ * with the toggle position that selects it on a switch), its readout.
+ */
 export function ParamRow({ p, code, controlsOn, inactive, enabled, onSet }: Props) {
   const text = typographic(formatParam(p, code));
   return (
@@ -30,6 +33,7 @@ export function ParamRow({ p, code, controlsOn, inactive, enabled, onSet }: Prop
           options={choiceLabels(p).map(typographic)}
           value={code}
           disabled={!enabled}
+          captions={togglePositions(p)}
           onSelect={(i) => onSet(p.id, i)}
         />
       ) : (

@@ -3,7 +3,7 @@
 //   LED1/LED2; stereo I/O: mono in and both outputs the same, or a mono effects loop on the rings (docs/LOOP.md).
 // Pins on the Daisy Seed (Cleveland Music Co.'s published pinout: github.com/clevelandmusicco/HothouseExamples):
 //   knobs 1-6 = D16-D21, FS1 = D25, FS2 = D26, LED1 = D22, LED2 = D23;
-//   SW1 up/down = D9/D10, SW2 = D7/D8, SW3 = D5/D6.
+//   SW1 up/down = D9/D10, SW2 = D7/D8, SW3 = D5/D6 (checked on the pedal: all three levers down read 0).
 // Every switch pin is a libDaisy Switch (momentary, inverted, pull-up): a pin is Pressed() when grounded. A toggle is
 // up when its up pin is pressed, down when its down pin is, middle otherwise (an unwired toggle reads middle).
 #pragma once

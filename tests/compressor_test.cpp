@@ -39,13 +39,13 @@ struct Rig {
     Compressor c;
     Rig() {
         for (int i = 0; i < kParamCount; ++i) v[i] = kParams[i].def;
-        v[kCompEnable] = 1.0f;
+        v[kCompMode] = kCompBlend;
     }
-    // Sustain in %, Level's index (0 -3 dB, 1 0 dB, 2 +3 dB), Mode, Balance's position.
+    // Sustain in %, Level's index (0 -3 dB, 1 0 dB, 2 +3 dB), blend or direct, Balance's position.
     Rig& Set(double sustainPct, int level, bool direct, float balance) {
         v[kCompSustain] = SustainPos(sustainPct);
         v[kCompLevel] = float(level);
-        v[kCompMode] = direct ? 1.0f : 0.0f;
+        v[kCompMode] = direct ? kCompDirect : kCompBlend;
         v[kCompBalance] = balance;
         return *this;
     }
@@ -337,7 +337,7 @@ TEST(Compressor, BypassIsBitExact) {
     const std::vector<float> x = Noise(Samples(0.5), 0.5f, 3);
     {
         Rig r;
-        r.v[kCompEnable] = 0.0f;
+        r.v[kCompMode] = kCompOff;
         r.Init();
         const std::vector<float> y = r.Run(x, 7);
         EXPECT_TRUE(Same(y.data(), x.data(), x.size())) << "out of place";
@@ -352,11 +352,11 @@ TEST(Compressor, BypassIsBitExact) {
         const size_t change = Samples(0.1);
         std::vector<float> y(x.size());
         r.Run(x.data(), y.data(), change);
-        r.v[kCompEnable] = 0.0f;
+        r.v[kCompMode] = kCompOff;
         r.Run(x.data() + change, y.data() + change, x.size() - change);
         const size_t from = change + Compressor::kFadeSamples + kBlockSize;
         EXPECT_FALSE(Same(y.data(), x.data(), change)) << "on";
-        EXPECT_TRUE(Same(y.data() + from, x.data() + from, x.size() - from)) << "comp_enable off";
+        EXPECT_TRUE(Same(y.data() + from, x.data() + from, x.size() - from)) << "comp_mode off";
     }
 }
 
@@ -366,27 +366,31 @@ double MaxStep(const std::vector<float>& y, size_t from, size_t to) {
     return m;
 }
 
-// The criterion of Eq.NoClickOnParamJump: over the 50 ms after a jump of each setting between its ends, the largest
-// sample-to-sample step stays within 1.25 x the steady state's, the larger of the 50 ms before and the last 50 ms.
+// The criterion of Eq.NoClickOnParamJump: over the 50 ms after a jump of each setting between its ends (a choice:
+// between any two of its values), the largest sample-to-sample step stays within 1.25 x the steady state's, the larger
+// of the 50 ms before and the last 50 ms.
 TEST(Compressor, NoClickOnSettingJump) {
     const size_t settle = Samples(0.301), after = Samples(0.25), window = Samples(0.05);
     const std::vector<float> in = Sine(10.0, 220.0, settle + after);
-    for (int id = kCompEnable; id <= kCompBalance; ++id) {
+    for (int id = kCompMode; id <= kCompBalance; ++id) {
         const ParamDef& d = kParams[id];
-        const float ends[2] = {0.0f, d.taper == Taper::kChoice ? d.max : 1.0f};
-        for (int dir = 0; dir < 2; ++dir) {
-            Rig r;
-            r.Set(50.0, 1, false, 0.5f);
-            r.v[id] = ends[dir];
-            r.Init();
-            std::vector<float> y(in.size());
-            r.Run(in.data(), y.data(), settle);
-            r.v[id] = ends[1 - dir];
-            r.Run(in.data() + settle, y.data() + settle, after);
-            const double steady =
-                std::max(MaxStep(y, settle - window, settle), MaxStep(y, settle + after - window, y.size()));
-            EXPECT_LE(MaxStep(y, settle, settle + window), 1.25 * steady)
-                << d.name << " " << ends[dir] << " -> " << ends[1 - dir];
+        const bool choice = d.taper == Taper::kChoice;
+        const int values = choice ? int(d.max) + 1 : 2;
+        for (int from = 0; from < values; ++from) {
+            for (int to = 0; to < values; ++to) {
+                if (from == to) continue;
+                Rig r;
+                r.Set(50.0, 1, false, 0.5f);
+                r.v[id] = float(from);
+                r.Init();
+                std::vector<float> y(in.size());
+                r.Run(in.data(), y.data(), settle);
+                r.v[id] = float(to);
+                r.Run(in.data() + settle, y.data() + settle, after);
+                const double steady =
+                    std::max(MaxStep(y, settle - window, settle), MaxStep(y, settle + after - window, y.size()));
+                EXPECT_LE(MaxStep(y, settle, settle + window), 1.25 * steady) << d.name << " " << from << " -> " << to;
+            }
         }
     }
 }
@@ -394,7 +398,7 @@ TEST(Compressor, NoClickOnSettingJump) {
 // The compressor's settings at random: a choice's index, a continuous position.
 void Randomise(Rig& r, std::mt19937& rng) {
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
-    for (int id = kCompEnable; id <= kCompBalance; ++id) {
+    for (int id = kCompMode; id <= kCompBalance; ++id) {
         const ParamDef& d = kParams[id];
         const float u = unit(rng);
         r.v[id] = d.taper == Taper::kChoice ? std::min(std::floor(u * (d.max + 1.0f)), d.max) : u;

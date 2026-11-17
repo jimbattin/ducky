@@ -49,13 +49,13 @@ export const PARAMS: ParamInfo[] = [
   {
     ...COMP,
     id: 16,
-    name: "comp_enable",
-    label: "Compressor",
+    name: "comp_mode",
+    label: "Compressor mode",
     taper: "choice",
     defCode: 0,
     min: 0,
-    max: 1,
-    unit: "off,on",
+    max: 2,
+    unit: "Off,Blend,Direct",
   },
   {
     ...COMP,
@@ -82,17 +82,6 @@ export const PARAMS: ParamInfo[] = [
   {
     ...COMP,
     id: 19,
-    name: "comp_mode",
-    label: "Mode",
-    taper: "choice",
-    defCode: 0,
-    min: 0,
-    max: 1,
-    unit: "blend,direct",
-  },
-  {
-    ...COMP,
-    id: 20,
     name: "comp_balance",
     label: "Balance",
     taper: "linear",
@@ -103,7 +92,7 @@ export const PARAMS: ParamInfo[] = [
   },
   {
     ...LOOP,
-    id: 21,
+    id: 20,
     name: "loop_mode",
     label: "Loop mode",
     taper: "choice",
@@ -114,7 +103,7 @@ export const PARAMS: ParamInfo[] = [
   },
   {
     ...LOOP,
-    id: 22,
+    id: 21,
     name: "loop_send",
     label: "Send level",
     taper: "linear",
@@ -125,7 +114,7 @@ export const PARAMS: ParamInfo[] = [
   },
   {
     ...LOOP,
-    id: 23,
+    id: 22,
     name: "loop_return",
     label: "Return level",
     taper: "linear",

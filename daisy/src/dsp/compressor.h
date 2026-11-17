@@ -6,13 +6,15 @@
 // photocells, a trapezoidal C6, clamped at the op-amp's rails (wet); per sample the wet output drives two detector
 // pairs through a 46 Hz coupling, and per tick (24 samples) each pair's charge feeds its reservoir, the reservoir its
 // LED (3 Newton steps), the LED its cell, and the cells Gf's target for the next tick, which Gf ramps to linearly.
-// The output is the mix of dry and wet (Mode, Balance), sign-flipped back, so the block does not invert.
+// The output is the mix of dry and wet (comp_mode's blend or direct, Balance), sign-flipped back, so the block does not
+// invert.
 // Settings: Sustain is the stage's gain in dB (Rsus = 10 kOhm (10^(dB/20) - 1)); Level picks the Level stage's gain
 // and its input corner; Balance is the knob's rotation, through the audio taper (81^v - 1) / 80. Sustain (dB), the
 // Level stage's gain and corner and the two mix weights glide (kKnobSmoothS); the gain and weights ramp linearly
 // across each tick, so the output has no steps.
-// comp_enable crossfades over kFadeSamples; off and faded out, the output is the input bit for bit and nothing runs,
-// and turning it on restarts it from rest (the side chain dark) at the current settings.
+// comp_mode off and on crossfades over kFadeSamples (a fade out keeps the last mix that was on); off and faded out,
+// the output is the input bit for bit and nothing runs, and turning it on restarts it from rest (the side chain dark)
+// at the current settings.
 // Every update counts samples from the tick's start, so the output does not depend on how the caller splits its
 // blocks. Covered by tests/compressor_test.cpp against the reference implementation (tools/comp_reference.py).
 #pragma once
@@ -30,14 +32,14 @@ namespace dkdsp {
 
 class Compressor {
 public:
-    static constexpr int kFadeSamples = 960;  // comp_enable crossfade (20 ms)
+    static constexpr int kFadeSamples = 960;  // comp_mode off and on crossfade (20 ms)
 
     // v: kParamCount values indexed by dkparam::ParamId, already Quantize()d. Settled at v, the side chain at rest.
     void Init(const float* v) {
         gC5_ = OnePole(float(1.0 / (2.0 * M_PI * 8.2e3 * 10e-9)));
         gDet_ = OnePole(float(1.0 / (2.0 * M_PI * 33e-9 * 104.7e3)));
         for (int l = 0; l < 3; ++l) gInLevel_[l] = OnePole(kInHz[l]);
-        enable_ = v[dkparam::kCompEnable] > 0.5f;
+        ReadMode(v);
         fade_ = enable_ ? kFadeSamples : 0;
         Start(v);
     }
@@ -103,15 +105,21 @@ private:
     Targets TargetsOf(const float* v) const {
         using namespace dkparam;
         const int lv = int(v[kCompLevel]);
-        const bool blend = v[kCompMode] < 0.5f;
         const float x = (std::pow(kBalanceBase, v[kCompBalance]) - 1.0f) / 80.0f;
         Targets t;
         t.db = Units(kParams[kCompSustain], v[kCompSustain]);
         t.kd = -kLevelGain[lv] * kBuffer;
         t.gIn = gInLevel_[lv];
-        t.wDry = blend ? -(1.0f - x) / kVfs : 0.0f;
+        t.wDry = blend_ ? -(1.0f - x) / kVfs : 0.0f;
         t.wWet = -x / kVfs;
         return t;
+    }
+
+    // comp_mode: on or off, and while on, blend or direct.
+    void ReadMode(const float* v) {
+        const float m = v[dkparam::kCompMode];
+        enable_ = m > 0.5f;
+        if (enable_) blend_ = m < 1.5f;
     }
 
     // 1 / Rsus for Sustain at db (a short at 0 dB clamps to 1 S).
@@ -142,7 +150,7 @@ private:
 
     // Once per control tick: the enable, the glides and their ramps, Gf's ramp to the cells' last conductance.
     [[gnu::noinline]] DK_ITCM void Control(const float* v) {
-        enable_ = v[dkparam::kCompEnable] > 0.5f;
+        ReadMode(v);
         if (fade_ == 0) {
             if (!enable_) {  // nothing runs
                 gain_ = 1.0f;
@@ -268,7 +276,7 @@ private:
     Smoother sustainDb_, kd_, gIn_, wDry_, wWet_;    // kd: -gL gB; wDry, wWet: the mix weights over -kVfs
     float kd0_ = 0.0f, kd1_ = 0.0f, wd0_ = 0.0f, wd1_ = 0.0f, ww0_ = 0.0f, ww1_ = 0.0f;  // the tick's ramps
     float gInNow_ = 0.0f, gSus_ = 1.0f, gain_ = 1.0f;
-    bool enable_ = false;
+    bool enable_ = false, blend_ = true;  // blend_: the mix of the last tick that was on
     int fade_ = 0;
     size_t at_ = 0;
 };

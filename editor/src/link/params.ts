@@ -77,13 +77,23 @@ export const accepts = (control: number, p: ParamInfo | null): boolean =>
   p === null || (CONTROLS[control]?.knob ?? false) || p.taper === "choice";
 
 /**
- * A choice's labels by toggle position, up first. Three values: the index is the position (2 up). Two values: 0 in
- * the middle, 1 up or down.
+ * A choice's labels by toggle position, down first: the index is STATUS's position (0 down, 1 middle, 2 up). Three
+ * values: the index is the position. Two values: 0 in the middle, 1 up or down.
  */
 export function switchLabels(p: ParamInfo): [string, string, string] {
   const l = choiceLabels(p);
-  return l.length >= 3 ? [l[2]!, l[1]!, l[0]!] : [l[1] ?? "", l[0] ?? "", l[1] ?? ""];
+  return l.length >= 3 ? [l[0]!, l[1]!, l[2]!] : [l[1] ?? "", l[0] ?? "", l[1] ?? ""];
 }
+
+/** A toggle's positions as the editor captions them. */
+export const POSITION = { up: "↑ up", middle: "– middle", down: "↓ down", upOrDown: "↑↓ up or down" } as const;
+
+/**
+ * The toggle position that selects each of a choice's values, in index order (params.h FromToggle): three values
+ * down, middle, up; two values middle (the first), then up or down.
+ */
+export const togglePositions = (p: ParamInfo): string[] =>
+  choiceLabels(p).length >= 3 ? [POSITION.down, POSITION.middle, POSITION.up] : [POSITION.middle, POSITION.upOrDown];
 
 const labelKey = (text: string): string => text.toLowerCase().replaceAll(" ", "").replaceAll("−", "-");
 

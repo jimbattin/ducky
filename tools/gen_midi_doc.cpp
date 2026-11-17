@@ -121,9 +121,16 @@ int main() {
     std::printf("- At power-up every parameter on a control takes its control's position (with several controls on "
                 "it, one of theirs); one on no control takes its saved value.\n");
     std::printf("- ASSIGN and SET act at once but are lost at power-off. SAVE writes the assignments and the values "
-                "to the settings record (docs/FIRMWARE.md \"Settings record\"); with no record the pedal starts with "
-                "no control assigned and every parameter at its default. The settings are global: presets hold "
-                "neither assignments nor values.\n\n");
+                "to the settings record (docs/FIRMWARE.md \"Settings record\"); with no record the pedal starts in the "
+                "factory layout with every parameter at its default. The settings are global: presets hold "
+                "neither assignments nor values.\n");
+    std::printf("- Factory layout (params.h kFactoryAssign):");
+    for (int c = 0; c < dkparam::kControlSlots; ++c) {
+        const uint8_t id = dkparam::kFactoryAssign[c];
+        const char* name = id == dkparam::kNoParam ? "none" : dkparam::kParams[id].name;
+        std::printf("%s `%s` `%s`", c == 0 ? "" : ",", dkparam::kControlNames[c], name);
+    }
+    std::printf(".\n\n");
 
     std::printf("## Upload\n\n");
     std::printf("An image is a complete format-3 preset slot (docs/FIRMWARE.md \"Preset store\"): %zu bytes without "

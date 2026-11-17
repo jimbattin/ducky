@@ -252,10 +252,9 @@ DK_ITCM const float* compValues() {
     using namespace dkparam;
     const bool flip = (gCompBlocks++ / 10) % 2 != 0;
     float* v = gValues;
-    v[kCompEnable] = 1.0f;
+    v[kCompMode] = kCompBlend;
     v[kCompSustain] = flip ? 1.0f : 0.25f;
     v[kCompLevel] = flip ? 2.0f : 0.0f;
-    v[kCompMode] = 0.0f;
     v[kCompBalance] = flip ? 0.75f : 0.25f;
     return v;
 }

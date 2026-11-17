@@ -53,9 +53,9 @@ export function ControlsTab({ params, paramsError, values, shownCode, enabled, e
       </div>
       <SettingsActions enabled={enabled} edited={edited} onSave={onSave} />
       <p class="hint">
-        Knobs 1 and 2 are fixed. Every control starts unassigned. A value set on the Compressor, EQ and Loop tabs holds
-        until its control moves: a knob more than 3 % of its travel, a switch to another position. Save keeps the
-        assignments and the values for the next power-up.
+        Knobs 1 and 2 are fixed. With nothing saved, the pedal starts in its factory layout. A value set on the
+        Compressor, EQ and Loop tabs holds until its control moves: a knob more than 3 % of its travel, a switch to
+        another position. Save keeps the assignments and the values for the next power-up.
       </p>
     </GroupBox>
   );

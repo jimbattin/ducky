@@ -264,6 +264,27 @@ input[type="text"] {
   box-shadow: var(--rh-sunken);
 }
 
+/* A toggle position under each segment (Segmented, Positions: togglePositions) */
+.segmented-captioned {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.segmented-captions {
+  display: flex;
+  color: var(--rh-dim);
+  font-size: 0.5625rem;
+  line-height: 0.75rem;
+}
+.segmented-captions > span {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+
 /* ---- Meter: a recessed bar with a fill and markers, over a lamp line (CPU load, gate input) ---- */
 
 .meter {

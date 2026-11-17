@@ -25,14 +25,15 @@ interface Props {
 }
 
 /**
- * The Compressor tab: its gain-reduction meter, then the stage's switch and its settings (set here, heard at once),
- * and Save, which keeps the values (and the Controls tab's assignments) for the next power-up.
+ * The Compressor tab: its gain-reduction meter, then its mode (Off, Blend, Direct: one three-way switch) and its settings
+ * (set here, heard at once), and Save, which keeps the values (and the Controls tab's assignments) for the next
+ * power-up.
  */
 export function CompTab({ status, params, paramsError, values, shownCode, enabled, edited, onSet, onSave }: Props) {
   if (params === null || values === null) return <p class="tab-empty">{paramsError ?? "Reading the pedal…"}</p>;
   const codes = params.map((p) => shownCode(p.id) ?? p.defCode);
-  const enable = params.find((p) => p.name === "comp_enable");
-  const off = enable !== undefined && codes[enable.id] === 0;
+  const mode = params.find((p) => p.name === "comp_mode");
+  const off = mode !== undefined && codes[mode.id] === 0;
   const rows = (names: readonly string[]) =>
     names.flatMap((name) => {
       const p = params.find((x) => x.name === name);
@@ -44,7 +45,7 @@ export function CompTab({ status, params, paramsError, values, shownCode, enable
           p={p}
           code={codes[p.id]!}
           controlsOn={on}
-          inactive={off && p !== enable}
+          inactive={off && p !== mode}
           enabled={enabled}
           onSet={onSet}
         />,
@@ -53,14 +54,14 @@ export function CompTab({ status, params, paramsError, values, shownCode, enable
   return (
     <>
       <CompMeter status={status} on={!off} />
-      <GroupBox title="Stage">
-        <div class="group-body">{rows(["comp_enable"])}</div>
+      <GroupBox title="Mode">
+        <div class="group-body">{rows(["comp_mode"])}</div>
       </GroupBox>
       <GroupBox title="Compressor">
         <div class="group-body">{rows(["comp_sustain", "comp_level"])}</div>
       </GroupBox>
       <GroupBox title="Output">
-        <div class="group-body">{rows(["comp_mode", "comp_balance"])}</div>
+        <div class="group-body">{rows(["comp_balance"])}</div>
       </GroupBox>
       <SettingsActions enabled={enabled} edited={edited} onSave={onSave} />
     </>

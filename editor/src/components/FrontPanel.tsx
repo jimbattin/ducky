@@ -1,7 +1,7 @@
-import { FIXED_KNOBS, knobPosition, positionIndex } from "../controls";
+import { FIXED_KNOBS, knobPosition } from "../controls";
 import { resonanceInactive } from "../eqModel";
 import { typographic } from "../format";
-import { CONTROLS, formatParam, switchLabels } from "../link/params";
+import { CONTROLS, formatParam, POSITION, switchLabels } from "../link/params";
 import type { ParamInfo } from "../link/protocol";
 import type { State } from "../state";
 import { CpuMeter } from "./CpuMeter";
@@ -12,8 +12,10 @@ import { Lamp } from "./Lamp";
 import { Positions } from "./Positions";
 
 const INACTIVE_TITLE = "No effect: 6 dB/oct slope or the filter is off";
-/** A switch with no parameter: its positions by name. */
-const POSITIONS = ["Up", "Middle", "Down"] as const;
+/** A switch with no parameter: its positions by name, in STATUS's order (0 down, 1 middle, 2 up). */
+const POSITIONS = ["Down", "Middle", "Up"] as const;
+/** A switch with a parameter: the position under each of its values (down first). */
+const DOWN_FIRST = [POSITION.down, POSITION.middle, POSITION.up] as const;
 const KNOB_SLOTS = CONTROLS.flatMap((control, c) => (control.knob ? [{ control, c }] : []));
 const SWITCH_SLOTS = CONTROLS.flatMap((control, c) => (control.knob ? [] : [{ control, c }]));
 
@@ -115,7 +117,8 @@ export function FrontPanel({ s }: { s: State }) {
                 <Positions
                   label={`${control.id} ${nameOf(p)}${unit}`}
                   options={options}
-                  value={st ? positionIndex(st.toggles[t]!) : -1}
+                  value={st ? st.toggles[t]! : -1}
+                  captions={p ? DOWN_FIRST : undefined}
                 />
               </div>
             );

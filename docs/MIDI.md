@@ -96,14 +96,13 @@ The table DUMP sends (daisy/src/params.h); ids are append-only. A continuous par
 |13|`high_cut_freq`|High-cut frequency|log|1500 to 20000 Hz|max|16383|EQ|
 |14|`high_cut_res`|High-cut resonance|log|0.5 to 2 Q|-|8192|EQ|
 |15|`high_cut_slope`|High-cut slope|choice|0 24 dB/oct, 1 12 dB/oct, 2 6 dB/oct|-|1|EQ|
-|16|`comp_enable`|Compressor|choice|0 off, 1 on|-|0|Compressor|
+|16|`comp_mode`|Compressor mode|choice|0 Off, 1 Blend, 2 Direct|-|0|Compressor|
 |17|`comp_sustain`|Sustain|linear|0 to 20.8279 dB|-|12287|Compressor|
 |18|`comp_level`|Level|choice|0 -3 dB, 1 0 dB, 2 +3 dB|-|1|Compressor|
-|19|`comp_mode`|Mode|choice|0 blend, 1 direct|-|0|Compressor|
-|20|`comp_balance`|Balance|linear|0 to 100 %|-|16383|Compressor|
-|21|`loop_mode`|Loop mode|choice|0 MISO, 1 pre-model, 2 post-model|-|0|Loop|
-|22|`loop_send`|Send level|linear|-12 to 12 dB|-|8192|Loop|
-|23|`loop_return`|Return level|linear|-12 to 12 dB|-|8192|Loop|
+|19|`comp_balance`|Balance|linear|0 to 100 %|-|16383|Compressor|
+|20|`loop_mode`|Loop mode|choice|0 MISO, 1 pre-model, 2 post-model|-|0|Loop|
+|21|`loop_send`|Send level|linear|-12 to 12 dB|-|8192|Loop|
+|22|`loop_return`|Return level|linear|-12 to 12 dB|-|8192|Loop|
 
 ## Controls
 
@@ -112,7 +111,8 @@ The table DUMP sends (daisy/src/params.h); ids are append-only. A continuous par
 - A switch takes choice parameters only. A three-value parameter's index is the position: 0 down, 1 middle, 2 up. A two-value one is 0 in the middle and 1 up or down.
 - Pickup: a control writes its parameter when it moves. SET, and ASSIGN of a control, hold the control: the parameter keeps its value until a knob has moved more than 3 % of its travel from where it was, or a switch changes position. When a parameter is on several controls, the one moved last has it and the others are held. VALUES' held bits show the held controls.
 - At power-up every parameter on a control takes its control's position (with several controls on it, one of theirs); one on no control takes its saved value.
-- ASSIGN and SET act at once but are lost at power-off. SAVE writes the assignments and the values to the settings record (docs/FIRMWARE.md "Settings record"); with no record the pedal starts with no control assigned and every parameter at its default. The settings are global: presets hold neither assignments nor values.
+- ASSIGN and SET act at once but are lost at power-off. SAVE writes the assignments and the values to the settings record (docs/FIRMWARE.md "Settings record"); with no record the pedal starts in the factory layout with every parameter at its default. The settings are global: presets hold neither assignments nor values.
+- Factory layout (params.h kFactoryAssign): `k3` `bell2_gain`, `k4` `low_cut_freq`, `k5` `high_cut_freq`, `k6` `comp_balance`, `sw1` `low_cut_slope`, `sw2` `comp_mode`, `sw3` `comp_level`.
 
 ## Upload
 

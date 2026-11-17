@@ -44,19 +44,22 @@ void Seal(std::vector<uint8_t>& r, size_t n) {
 
 }  // namespace
 
-TEST(Settings, FactoryAssignsNothing) {
+TEST(Settings, FactoryIsTheFactoryLayoutAtTheDefaults) {
     const Settings s = FactorySettings();
-    for (int c = 0; c < kControlSlots; ++c) EXPECT_EQ(s.assign[c], kNoParam) << c;
+    for (int c = 0; c < kControlSlots; ++c) EXPECT_EQ(s.assign[c], kFactoryAssign[c]) << c;
     for (int i = 0; i < kParamCount; ++i) EXPECT_EQ(s.value[i], kParams[i].def) << i;
 }
 
-// A record of the first table's layout (version 1) is ignored: its ids mean other parameters.
-TEST(Settings, VersionOneIsInvalid) {
-    std::vector<uint8_t> r = Record(3, Sample());
-    r[8] = 1;
-    Seal(r, kParamCount);
-    uint32_t seq = 0;
-    EXPECT_FALSE(SettingsValid(r.data(), seq));
+// A record of an earlier table's layout (version 1: M9's cuts; 2: comp_enable and comp_mode apart) is ignored: its
+// ids mean other parameters.
+TEST(Settings, EarlierVersionsAreInvalid) {
+    for (uint8_t version : {1, 2}) {
+        std::vector<uint8_t> r = Record(3, Sample());
+        r[8] = version;
+        Seal(r, kParamCount);
+        uint32_t seq = 0;
+        EXPECT_FALSE(SettingsValid(r.data(), seq)) << int(version);
+    }
 }
 
 TEST(Settings, RoundTrip) {

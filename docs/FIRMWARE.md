@@ -106,7 +106,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
   4. steps the preset switch's handshake ("Preset switch" below), then the loop mode (`stepLoop`): when `loop_mode` differs from the routing in use (`gLoop`), both outputs fade out over 5 ms (`gModeFade`), the routing follows at silence, and they fade back in;
   5. measures the input peak (the raw jack, before the compressor), takes new gate settings (`gGateWord`, published by the main loop) and runs the gate's detector on that peak (`NoiseGate::Process`, every block, dry and parked included);
   6. runs the chain, routed by `gLoop` (`docs/LOOP.md`). The send and return levels (`loop_send`, `loop_return`) are smoothed every block in every mode and ramped like the knobs. In MISO, on the left input, into the left output buffer, then in place:
-     - `Compressor::Process` on the compressor's five parameters (step 3), from the input buffer into the output buffer (`docs/compressor-spec.md` "DSP model"). `comp_enable` off is a bit-exact bypass after a 20 ms crossfade and runs nothing; turning it on restarts the side chain from rest;
+     - `Compressor::Process` on the compressor's four parameters (step 3), from the input buffer into the output buffer (`docs/compressor-spec.md` "DSP model"). `comp_mode` off is a bit-exact bypass after a 20 ms crossfade (the fade out keeps the blend or direct mix it had) and runs nothing; turning it on restarts the side chain from rest;
      - the input trim: the model's input calibration times Knob 1, smoothed (one-pole, 20 ms) and ramped linearly across the block, −12…+12 dB around the calibration, which is at noon;
      - while a switch is parked, silence instead of the engine and the IR; otherwise, with a preset loaded:
        - `A2Lite::Process`, also while muted, so the load stays constant and the model stays warm;
@@ -205,7 +205,7 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 |---|---|
 | 0 | magic `DKSG` |
 | 4 | u32 seq |
-| 8 | u8 version (2) |
+| 8 | u8 version (3) |
 | 9 | u8 control slots (7) |
 | 10 | u8 parameter count N |
 | 11 | u8 0 |
@@ -215,9 +215,9 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 | 20 + 4N | CRC-32 of bytes [0, 20 + 4N) |
 
 - **Two copies,** as for the state record: each of the two 4 KB sectors holds one record at its start. The valid record with the higher seq is the newest. SAVE (the link's command) erases and writes the other sector, then reads it back through the memory-mapped QSPI (`settings seq S T ms`, or `settings write failed` and RESULT `flash`), so a torn write leaves the previous record readable. Nothing else writes it: ASSIGN and SET change only the running pedal.
-- **At boot** the newest record sets the assignments and the values (`settings seq S`); with none, no control is assigned and every parameter is at its default (`settings factory`). The first audio block then writes every parameter on a control from that control, so a saved value matters only for a parameter on no control.
+- **At boot** the newest record sets the assignments and the values (`settings seq S`); with none, the controls take the factory layout (`kFactoryAssign`, `docs/MIDI.md` "Controls") and every parameter is at its default (`settings factory`). The first audio block then writes every parameter on a control from that control, so a saved value matters only for a parameter on no control.
 - **Decoding is defensive:** a stored value is clamped into its range, a choice rounded to an index, and a non-finite value replaced by the default; an assignment its slot does not accept (an unknown id, a continuous parameter on a switch) becomes none.
-- **Across firmware versions:** parameter ids are append-only within a version. A record with fewer parameters than the firmware leaves the later ones at their defaults; one with more has the extra values ignored. SAVE always writes the running firmware's count. A table whose ids change bumps the version, and a record of another version is ignored: version 2 is M10's EQ table (16 parameters), M11's compressor (ids 16–20 appended, 21 parameters; a 16-value record leaves the compressor's five at their defaults) and M12's loop (ids 21–23 appended, 24 parameters; a 21-value record leaves `loop_mode` at MISO and both levels at 0 dB); a version-1 record (M9's cuts and 515 Hz mid) reads as no record.
+- **Across firmware versions:** parameter ids are append-only within a version. A record with fewer parameters than the firmware leaves the later ones at their defaults; one with more has the extra values ignored. SAVE always writes the running firmware's count. A table whose ids change bumps the version, and a record of another version is ignored, so the first boot after such a change reads `settings factory`. Version 3 merged M11's `comp_enable` (id 16) and `comp_mode` (id 19) into `comp_mode` (id 16: off, blend, direct, one toggle's three positions), moving `comp_balance` and the loop's three down one (23 parameters). Version 2 was M10's EQ table (16 parameters), M11's compressor (ids 16–20 appended) and M12's loop (ids 21–23 appended, 24 parameters). Version 1 was M9's cuts and 515 Hz mid.
 
 ## Link protocol
 

@@ -2,10 +2,10 @@
 // value, global to the pedal (presets hold neither), written by the link's SAVE into two 4 KB QSPI sectors after the
 // preset store's state sectors. As with the state record, every write goes to the sector not holding the newest
 // record, so a torn write leaves the previous one readable; at boot the valid record with the higher seq wins, and
-// with none (or only records of another version) no control is assigned and the defaults apply. Host-portable (no
-// libDaisy, no allocation), covered by tests/settings_test.cpp.
+// with none (or only records of another version) the factory layout (params.h kFactoryAssign) and the defaults apply.
+// Host-portable (no libDaisy, no allocation), covered by tests/settings_test.cpp.
 //
-// Record (little-endian): "DKSG", u32 seq, u8 version (2), u8 control slots (7), u8 parameter count N, u8 0,
+// Record (little-endian): "DKSG", u32 seq, u8 version (3), u8 control slots (7), u8 parameter count N, u8 0,
 // assign[7] (a parameter id or kNoParam per control slot), u8 0, f32 value[N] (by id), then the CRC-32 of the bytes
 // before it. A record from firmware with fewer parameters leaves the later ones at their defaults; one with more has
 // its extra values ignored.
@@ -22,7 +22,7 @@ namespace dkparam {
 
 constexpr uint32_t kSettingsOffset[2] = {0x482000, 0x483000};  // QSPI chip offsets of the two settings sectors
 constexpr uint32_t kSettingsMagic = 0x47534B44;                // "DKSG"
-constexpr uint8_t kSettingsVersion = 2;  // 2: the parametric EQ's table (version 1's ids are not read)
+constexpr uint8_t kSettingsVersion = 3;  // 3: comp_enable and comp_mode merged (versions 1 and 2 are not read)
 constexpr size_t kSettingsHeader = 20;
 constexpr size_t kSettingsBytes = kSettingsHeader + 4 * kParamCount + 4;
 
@@ -41,10 +41,10 @@ struct Settings {
     float value[kParamCount];
 };
 
-// No control assigned and every parameter at its default: the settings with no record.
+// The factory layout (kFactoryAssign) and every parameter at its default: the settings with no record.
 inline Settings FactorySettings() {
     Settings s;
-    for (int c = 0; c < kControlSlots; ++c) s.assign[c] = kNoParam;
+    for (int c = 0; c < kControlSlots; ++c) s.assign[c] = kFactoryAssign[c];
     for (int i = 0; i < kParamCount; ++i) s.value[i] = kParams[i].def;
     return s;
 }

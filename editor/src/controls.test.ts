@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { FIXED_KNOBS, inputCalDb, levelMatchDb, positionIndex } from "./controls";
+import { FIXED_KNOBS, inputCalDb, levelMatchDb } from "./controls";
 
 const readout = (id: string, permille: number): string =>
   FIXED_KNOBS.find((k) => k.id === id)!.readout(permille / 1000);
@@ -10,10 +10,6 @@ test("knob readouts follow the firmware's tapers", () => {
   expect(readout("K2", 250)).toBe("−18.1 dB");
   expect(readout("K2", 500)).toBe("+0.0 dB");
   expect(readout("K2", 1000)).toBe("+12.0 dB");
-});
-
-test("switch positions list up first", () => {
-  expect(positionIndex(2)).toBe(0);
 });
 
 test("level match and input calibration", () => {

@@ -32,9 +32,6 @@ export const FIXED_KNOBS: readonly Knob[] = [
   { id: "K2", label: "Output volume", readout: (k) => (k === 0 ? "Off" : signedDb(outputDb(k))) },
 ];
 
-/** STATUS's toggle (0 down, 1 middle, 2 up) as an index into a switch's positions (up first). */
-export const positionIndex = (toggle: number): number => 2 - toggle;
-
 /** The model's level-match gain in dB (to -18 dB loudness); null without a loudness: unity. */
 export const levelMatchDb = (loudness: number | null): number | null =>
   loudness === null ? null : LEVEL_TARGET_DB - loudness;

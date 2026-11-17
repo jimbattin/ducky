@@ -9,6 +9,7 @@ import {
   paramValue,
   parseParamValue,
   switchLabels,
+  togglePositions,
   unitsOf,
 } from "./params";
 import type { ParamInfo } from "./protocol";
@@ -53,9 +54,14 @@ test("codeOfUnits inverts unitsOf on log and linear tapers, clamped", () => {
   expect(codeOfUnits(param("bell2_freq"), 1000)).toBe(8192);
 });
 
-test("switchLabels list up first; a two-value choice is off in the middle", () => {
-  expect(switchLabels(param("low_cut_slope"))).toEqual(["6 dB/oct", "12 dB/oct", "24 dB/oct"]);
+test("switchLabels list down first; a two-value choice is off in the middle", () => {
+  expect(switchLabels(param("low_cut_slope"))).toEqual(["24 dB/oct", "12 dB/oct", "6 dB/oct"]);
   expect(switchLabels(param("eq_enable"))).toEqual(["on", "off", "on"]);
+});
+
+test("togglePositions follows the firmware's toggle mapping (params.h FromToggle)", () => {
+  expect(togglePositions(param("comp_mode"))).toEqual(["↓ down", "– middle", "↑ up"]);
+  expect(togglePositions(param("eq_enable"))).toEqual(["– middle", "↑↓ up or down"]);
 });
 
 test("parseParamValue takes units, labels, indexes and off", () => {

@@ -481,14 +481,13 @@ The waveform error is mostly not the compressor: the dry path alone differs by �
 
 ### Settings (as built)
 
-The parameters `comp_enable`, `comp_sustain`, `comp_level`, `comp_mode` and `comp_balance` (`daisy/src/params.h`, ids 16–20; `docs/MIDI.md` "Parameters"):
+The parameters `comp_mode`, `comp_sustain`, `comp_level` and `comp_balance` (`daisy/src/params.h`, ids 16–19; `docs/MIDI.md` "Parameters"):
 
 | Setting | Range | Maps to |
 |---|---|---|
-| Enabled | off / on (default off) | off is the input, untouched (bit-exact, after a 20 ms crossfade); turned on, the stage restarts from rest |
+| Mode | Off / Blend (SB) / Direct (Z) (a toggle down, middle, up; default Off) | Off is the input, untouched (bit-exact, after a 20 ms crossfade that keeps the mix it had); turned on, the stage restarts from rest; Blend and Direct pick the mix equation |
 | Sustain | 0 to +20.8 dB, linear (default +15.6 dB) | the stage's gain `g`: `Rsus = 10 kΩ · (10^(g/20) − 1)`; 0 dB shorts the feedback |
 | Level | −3 / 0 / +3 dB (a toggle down, middle, up) | `gL`, and `fin` at +3 dB |
-| Mode | blend (SB) / direct (Z) | the mix equation |
 | Balance | 0–100 % of the knob's rotation (default 100 %) | `b = (81^v − 1) / 80`, an audio taper: 0.1 at noon |
 
 Sustain, the Level stage's gain and corner and the two mix weights glide with the knobs' 20 ms time constant and ramp across each block, so moving a setting does not click.
@@ -503,8 +502,8 @@ Eichas and Zölzer's approach for a similar circuit: a generic feed-forward comp
 - **Calibration (open):** the model works in volts, and Ducky knows its input scale only from datasheets (+4.5 dBu at 0 dBFS, not measured). An error there moves every threshold by the same number of dB.
 - **Levels into the amp model:** a compressed signal sits at 0.5–1.0 V peak (−11 to −5 dBFS) whatever the guitar, and quiet playing arrives up to 20 dB hotter. Knob 1 follows the compressor and can trim it.
 - **Noise (not yet heard):** up to +20 dB on everything below threshold, the input noise included (−84 dBFS with nothing plugged in, `docs/ROADMAP.md` M4), ahead of a high-gain model.
-- **Controls (built):** the settings ("Settings (as built)") are global parameters (`docs/ROADMAP.md` M9), set from the editor's Compressor tab and `tools/pedal.ts param` or from a knob or switch assigned to them; no slot format bump, and the settings record stays version 2.
-- **Which controls to keep (decided):** all five. Level matters: Ducky has no other gain ahead of the compressor. Sustain is in dB of stage gain, not the pot's percent. Balance takes the audio taper.
+- **Controls (built):** the settings ("Settings (as built)") are global parameters (`docs/ROADMAP.md` M9), set from the editor's Compressor tab and `tools/pedal.ts param` or from a knob or switch assigned to them; no slot format bump. M11 had the on/off switch and the mix as two parameters (`comp_enable`, `comp_mode`); M13 merged them into `comp_mode` so one three-way toggle sets both, which bumped the settings record to version 3.
+- **Which controls to keep (decided):** all of the circuit's. Level matters: Ducky has no other gain ahead of the compressor. Sustain is in dB of stage gain, not the pot's percent. Balance takes the audio taper.
 - **CPU (measured):** 30.0 permille; the bench chain is at 657.4 against the 850 ceiling ("Cost").
 - **Off state (decided):** bit-exact bypass, as the gate's disabled state and the EQ's bells at 0 dB are, so the load depends on the setting (31 permille live).
 - **Meter:** STATUS carries the largest drop of the stage's low-frequency gain below Sustain's since the previous STATUS (`docs/MIDI.md` STATUS `comp cut`), which the editor's Compressor tab shows.

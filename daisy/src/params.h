@@ -38,10 +38,9 @@ enum ParamId : uint8_t {
     kHighCutFreq,
     kHighCutRes,
     kHighCutSlope,
-    kCompEnable,
+    kCompMode,
     kCompSustain,
     kCompLevel,
-    kCompMode,
     kCompBalance,
     kLoopMode,
     kLoopSend,
@@ -73,10 +72,12 @@ struct ParamDef {
 
 inline constexpr const char* kSlopeLabels = "24 dB/oct,12 dB/oct,6 dB/oct";  // the cut slopes' choice labels
 constexpr uint8_t kLoopMiso = 0, kLoopPre = 1, kLoopPost = 2;               // loop_mode's indices
+constexpr uint8_t kCompOff = 0, kCompBlend = 1, kCompDirect = 2;            // comp_mode's indices
 constexpr float kCompSustainMaxDb = 20.827854f;  // 20 log10(11): the stage's gain at Sustain's 100 kOhm (compressor.h)
 // The bells' default positions: 250 Hz, 1 kHz and 3 kHz, Q 1. The compressor's: off, Sustain +15.6 dB (position 0.75),
-// Level 0 dB (the toggle's middle), blend, Balance fully compressed. Balance is the knob's rotation; the DSP applies
-// the audio taper. The loop's (docs/LOOP.md): MISO, send and return 0 dB at noon.
+// Level 0 dB (the toggle's middle), Balance fully compressed. comp_mode is both the stage's switch and the output's
+// mix, so one toggle sets it: down off, middle blend, up direct. Balance is the knob's rotation; the DSP applies the
+// audio taper. The loop's (docs/LOOP.md): MISO, send and return 0 dB at noon.
 inline constexpr ParamDef kParams[kParamCount] = {
     {kEqEnable, "eq_enable", "EQ", "off,on", "EQ", 0.0f, 1.0f, 1.0f, Taper::kChoice, OffEnd::kNone},
     {kLowCutFreq, "low_cut_freq", "Low-cut frequency", "Hz", "EQ", dkdsp::kLowCutMinHz, dkdsp::kLowCutMaxHz, 0.0f,
@@ -109,12 +110,12 @@ inline constexpr ParamDef kParams[kParamCount] = {
      Taper::kLog, OffEnd::kNone},
     {kHighCutSlope, "high_cut_slope", "High-cut slope", kSlopeLabels, "EQ", 0.0f, 2.0f, 1.0f, Taper::kChoice,
      OffEnd::kNone},
-    {kCompEnable, "comp_enable", "Compressor", "off,on", "Compressor", 0.0f, 1.0f, 0.0f, Taper::kChoice, OffEnd::kNone},
+    {kCompMode, "comp_mode", "Compressor mode", "Off,Blend,Direct", "Compressor", 0.0f, 2.0f, 0.0f, Taper::kChoice,
+     OffEnd::kNone},
     {kCompSustain, "comp_sustain", "Sustain", "dB", "Compressor", 0.0f, kCompSustainMaxDb, 0.75f, Taper::kLinear,
      OffEnd::kNone},
     {kCompLevel, "comp_level", "Level", "-3 dB,0 dB,+3 dB", "Compressor", 0.0f, 2.0f, 1.0f, Taper::kChoice,
      OffEnd::kNone},
-    {kCompMode, "comp_mode", "Mode", "blend,direct", "Compressor", 0.0f, 1.0f, 0.0f, Taper::kChoice, OffEnd::kNone},
     {kCompBalance, "comp_balance", "Balance", "%", "Compressor", 0.0f, 100.0f, 1.0f, Taper::kLinear, OffEnd::kNone},
     {kLoopMode, "loop_mode", "Loop mode", "MISO,pre-model,post-model", "Loop", 0.0f, 2.0f, 0.0f, Taper::kChoice,
      OffEnd::kNone},
@@ -149,11 +150,28 @@ inline float Units(const ParamDef& d, float v) {
 }
 
 // Control slot `slot` may drive parameter id: any slot takes kNoParam, a knob any parameter, a switch a choice.
-inline bool Accepts(int slot, uint8_t id) {
+constexpr bool Accepts(int slot, uint8_t id) {
     if (slot < 0 || slot >= kControlSlots) return false;
     if (id == kNoParam) return true;
     return id < kParamCount && (slot < kKnobSlots || kParams[id].taper == Taper::kChoice);
 }
+
+// The factory layout, by control slot: what Knobs 3-6 and SW1-SW3 drive with no settings record.
+inline constexpr uint8_t kFactoryAssign[kControlSlots] = {
+    kBell2Gain,    // K3
+    kLowCutFreq,   // K4
+    kHighCutFreq,  // K5
+    kCompBalance,  // K6
+    kLowCutSlope,  // SW1
+    kCompMode,     // SW2: down Off, middle Blend, up Direct
+    kCompLevel,    // SW3
+};
+constexpr bool FactoryValid() {
+    for (int c = 0; c < kControlSlots; ++c)
+        if (!Accepts(c, kFactoryAssign[c])) return false;
+    return true;
+}
+static_assert(FactoryValid(), "kFactoryAssign: a choice on each switch, a parameter or none on each slot");
 
 // v as a value of d: clamped into range, a choice rounded to an index; a non-finite v becomes the default.
 DK_ITCM inline float Quantize(const ParamDef& d, float v) {

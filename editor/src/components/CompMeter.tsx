@@ -5,7 +5,7 @@ import { Meter } from "./Meter";
 interface Props {
   /** The latest STATUS; null before the first. */
   status: StatusMessage | null;
-  /** The compressor is on (comp_enable). */
+  /** The compressor is on (comp_mode blend or direct). */
   on: boolean;
 }
 
