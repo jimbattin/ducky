@@ -231,7 +231,7 @@ The reduced model of `docs/compressor-spec.md` ("DSP model") ahead of Knob 1 (sp
 - **Not yet checked (needs a guitar and ears):** the meter while compressing, how it sounds, and the +20 dB of input noise ahead of a high-gain model.
 - **Docs:** `docs/compressor-spec.md` (status built, measured cost, float32 checked); `docs/FILTERS.md` "Signal chain"; `docs/FIRMWARE.md`; `docs/EDITOR.md` (Compressor tab); `docs/MIDI.md` (generated); `CLAUDE.md`.
 
-### M12: FX loop modes (done)
+### M12: FX loop modes (done, `f9bdda6`)
 A global IO mode for a mono effects loop: MISO (as before), loop pre-model and loop post-model. R Out is the send, R In the return, and the pedal plays on L Out only in the loop modes. Code `daisy/src/ducky.cpp` (`stepLoop`, step 6), `daisy/src/params.h` (parameters 21–23), `daisy/src/dsp/mute.h` (`ProcessPair`), `daisy/src/latency.cpp` (`APP=latency`), `editor/src/components/LoopTab.tsx`, `LoopDiagram.tsx`. `docs/LOOP.md`.
 
 - **Hardware (checked in `../hothouse_pcb/open-source-pedals/hothouse/eagle/hothouse-io-no-branding.sch`):** both jacks are TRS. The input's tip is L In and its ring R In, the output's tip L Out and its ring R Out; the input's tip and ring normals go to ground. So the loop needs two insert (TRS to 2 × TS) cables: input = guitar + return, output = amp + send. With no plug or a mono plug the return reads silence, so loop mode cannot be detected from the jacks and must be an explicit setting.
