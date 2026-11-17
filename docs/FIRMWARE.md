@@ -47,7 +47,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | Path | Contents | Host-portable |
 |---|---|---|
 | `daisy/src/ducky.cpp` | The pedal: the boot slot scan, `AudioCallback`, the preset switch (`servePresets`), the state record (`writeState`), the link's slot commands (`onCommand`, `writeSlot`) and replies (`serveReplies`), the main loop, the log lines. | no |
-| `daisy/src/bench.cpp` | `APP=bench`: the A2-Lite and IR device checks and the cycle timing of the engine, the IR, the EQ and the whole chain ("Bench"). | no |
+| `daisy/src/bench.cpp` | `APP=bench`: the A2-Lite and IR device checks and the cycle timing of the engine, the IR, the EQ, the noise gate and the whole chain ("Bench"). | no |
 | `daisy/src/board.h` | `dkboard::Board`: the HotHouse pins, knobs, toggles, footswitches. `kBoardId` 1. | no |
 | `daisy/src/firmware.h` | `dkfw::Start` (flush-to-zero, board init, MPU) and `kBuildId`. | no |
 | `daisy/src/usb_link.h/.cpp` | `dkusb`: USB-MIDI transport, a non-blocking double-buffered send, `Serve` (Identity, HELLO, DFU, then other commands to the caller's `onCommand`), `EnterDfu`. | no |
@@ -56,13 +56,14 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `daisy/src/controls.h` | `dkctl::ToggleFilter` (30 ms toggle hysteresis), `dkctl::Blinker` (LED2's N blinks, repeated after 5 s dark). | yes |
 | `daisy/src/dsp/blocks.h` | `dkdsp::kSampleRate` (48 kHz), `kBlockSize` (24), `kIrTaps` (2048). | yes |
 | `daisy/src/dsp/mute.h` | `dkdsp::MuteRamp`: FS1's 5 ms linear mute, and the preset switch's fade. | yes |
+| `daisy/src/dsp/noise_gate.h` | `dkdsp::NoiseGate`, `GateSettings`, `kGateOff`, `GateValid`, `ClampGate`: the per-preset side-chained gate (`docs/FILTERS.md` "Noise gate"). | yes |
 | `daisy/src/dsp/gain.h` | `dkdsp::InputGain` (Knob 1), `OutputGain` (Knob 2), `LevelMatchGain`, `Smoother` (one-pole), `GainRamp` (per-block linear gain ramp). | yes |
 | `daisy/src/dsp/a2lite.h` | `dkdsp::A2Lite`: the A2-Lite network (`docs/NAM_FORMAT.md` "Engine"); `dkdsp::a2` holds the shape and memory layout; `dkdsp::FpHere`. | yes |
 | `daisy/src/dsp/convolver.h` | `dkdsp::IrConvolver`: the partitioned FFT IR convolver (`docs/FILTERS.md`). | yes |
 | `daisy/src/dsp/filters.h` | `dkdsp::Eq` (`CutFilter` ×2, `MidFilter`), `EdgeBypass`, the knob and toggle maps (`docs/FILTERS.md`). | yes |
 | `daisy/src/model.h` | `dkmodel::Parse`: validates and decodes a format-2 model binary; `Crc32`. | yes |
 | `daisy/src/ir.h` | `dkir::Parse`: validates and decodes a format-1 IR binary. | yes |
-| `daisy/src/preset.h` | `dkpreset`: the slot format (`Parse`), the state record (`StateValid`, `NewestState`, `BuildState`), slot stepping (`NextFilled`, `BootSlot`), the QSPI layout ("Preset store"). | yes |
+| `daisy/src/preset.h` | `dkpreset`: the slot format (`Parse`, `PutGate`/`GetGate`/`SetGate` for its gate block), the state record (`StateValid`, `NewestState`, `BuildState`), slot stepping (`NextFilled`, `BootSlot`), the QSPI layout ("Preset store"). | yes |
 | `daisy/cmsis_fft.mk` | The CMSIS-DSP FFT sources and table defines both builds compile. | |
 | `daisy/src/memory.h/.cpp` | `DK_ITCM`, `DK_DTCM`, `DK_DTCM_BSS`, `DK_D2`, `DK_SDRAM` placement and the boot-time TCM copy. | yes (`.h`) |
 | `daisy/src/spsc_ring.h` | The lock-free single-producer/single-consumer ring (USB IRQ → main loop). | yes |
@@ -75,7 +76,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `editor/src/preset/info.ts` | `infoRanges`, `slotInfo`: a stored preset's metadata from the bytes READ fetches. | |
 | `editor/src/nam/`, `tools/nam_convert.ts`, `tools/nam_reference.sh`, `tools/make_stimuli.py` | The `.nam` → model binary converter and its CLI, the NAM reference renders, and their stimulus (`docs/NAM_FORMAT.md`). | |
 | `editor/src/ir/`, `tools/ir_convert.ts`, `tools/make_ir_fixture.ts` | The `.wav` → IR binary converter and its CLI, and the generator of `tests/fixtures/ir/decay.wav` (`docs/FILTERS.md`). | |
-| `editor/src/preset/`, `tools/preset_bank.ts`, `tools/make_preset_fixture.ts` | The slot and bank builders (`buildSlot`, `buildBank`), the bank CLI, and the generator of `tests/fixtures/preset/A2_decay.bin`. | |
+| `editor/src/preset/`, `tools/preset_bank.ts`, `tools/make_preset_fixture.ts` | The slot and bank builders (`buildSlot`, `buildBank`), the gate block and its units (`gate.ts`), the bank CLI, and the generator of `tests/fixtures/preset/A2_decay.bin`. | |
 | `editor/src/name.ts` | `sanitiseName`, shared by both converters. | |
 | `tools/render.cpp`, `tools/wav.h` | `build/host/render` (`make render`): the engine, then the IR with `--ir`, over a WAV file; `dkwav` WAV reading and float32 writing (host only). | |
 | `tests/fixtures/nam/` | Upstream MIT `.nam` and WAV fixtures, `A2.bin` converted from `A2.nam`, and the committed `A2.nam` reference render. | |
@@ -92,29 +93,30 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
   1. reads the controls;
   2. toggles the mute on FS1 and counts FS2 presses;
   3. steps the preset switch's handshake ("Preset switch" below);
-  4. measures the input peak;
+  4. measures the input peak, takes new gate settings (`gGateWord`, published by the main loop) and runs the gate's detector on that peak (`NoiseGate::Process`, every block, dry and parked included);
   5. runs the chain on the left input, in place in the left output buffer:
      - the input trim: the model's input calibration times Knob 1, smoothed (one-pole, 20 ms) and ramped linearly across the block, −12…+12 dB around the calibration, which is at noon;
      - while a switch is parked, silence instead of the engine and the IR; otherwise, with a preset loaded:
        - `A2Lite::Process`, also while muted, so the load stays constant and the model stays warm;
        - `IrConvolver::Process` when the preset has an IR;
      - `Eq::Process`: low-cut (Knob 5, Knob 6, SW1), the SW3 mid, high-cut (Knob 4, Knob 3, SW2); every section runs every block (`docs/FILTERS.md`);
-     - the output gain: Knob 2 smoothed and ramped the same way, times the level match. Knob 2 is `(2k)^3` up to noon (off at fully CCW, about −18 dB at 9 o'clock, unity at noon), then dB-linear to +12 dB;
+     - the output gain: Knob 2 smoothed and ramped the same way, times the level match and the gate's gain (so the gate rides the same ramp, `docs/FILTERS.md` "Noise gate"). Knob 2 is `(2k)^3` up to noon (off at fully CCW, about −18 dB at 9 o'clock, unity at noon), then dB-linear to +12 dB;
      - `MuteRamp` (FS1), then the preset fade (`gSwapFade`, another `MuteRamp`);
-  6. copies the left output to the right and measures the output peak;
+  6. copies the left output to the right, measures the output peak and accumulates the gate's level and largest cut for STATUS;
   7. drives LED1 (on unless muted) and LED2 (`Blinker`);
   8. measures the load and the underruns (a callback longer than one block period).
-- **Dry:** with no valid slot, the chain is the input trim, the EQ, the output gain and the mute, with the calibration and the level match at unity; FS2 does nothing. The pedal goes dry at boot with no valid slot, or when the link erases the last one; it leaves dry when a slot is uploaded (`gModelOn` follows the loaded preset through the switch handshake).
+- **Dry:** with no valid slot, the chain is the input trim, the EQ, the output gain and the mute, with the calibration and the level match at unity and the gate off; FS2 does nothing. The pedal goes dry at boot with no valid slot, or when the link erases the last one; it leaves dry when a slot is uploaded (`gModelOn` follows the loaded preset through the switch handshake).
 - **Input calibration:** NeuralAmpModelerPlugin's: the input gain at noon is `kInputLevelDbu − input_level_dbu`, so a guitar drives the model as hard as it drove the captured amp. `kInputLevelDbu` is +4.5 dBu, the level at the input jack that reaches 0 dBFS, derived from the datasheets and not measured: the PCM3060 full scale is 0.6 VCC Vpp (VCC 4.5 V), behind the Seed's 3.6 kΩ series resistor into the codec's 10 kΩ input (3.67 Vpp), and the HotHouse input is a unity-gain buffer. A model captured at +15 dBu gets −10.5 dB. A model without `input_level_dbu` is assumed captured at +12 dBu, the plugin's default calibration level (−7.5 dB). Without calibration, noon drove the models about 10 dB harder than at capture, and they sounded distorted.
 - **Level match:** `LevelMatchGain` brings the model's A2-Lite `loudness` to −18 dB (NeuralAmpModelerPlugin's normalisation target); a model without `loudness` plays at unity. `loudness` is measured at the capture level, before the input calibration, so a clean model plays a little quieter than a driven one at noon (SSS vs Fender: 1.8 dB, `docs/ROADMAP.md` M4). At boot the input gain starts at the calibration and the output gain at 0, so the output fades in over the knob time constant.
 - **Main loop** runs `serveReplies` (LIST's SLOTs, the pending RESULT, STATUS every 100 ms with WATCH on), `dkusb::Serve(logBoot, onCommand)`, `servePresets` and the once-a-second log lines. If the IR convolver's FFT does not initialise, audio never starts and the LEDs stay off; the main loop serves USB (DFU included) and logs `ir fft` once a second.
 - **Sharing:** the two threads share only `std::atomic`s, each with one writer:
-  - callback → main loop, relaxed: `gKnob`, `gToggle`, `gFsHeld`, `gMutedPub`, `gUnderruns`, `gPeak`, `gOutPeak`, `gLoadAvg`, `gLoadMax`, `gFs2Presses`; release/acquire: `gSwapParked`;
-  - main loop → callback, relaxed: `gPeakReset`, `gLoadReset`, `gBlinkCount`; release/acquire: `gSwapReq`, `gSwapLoaded` (which publishes the plain `gNextLevel`, `gNextInCal`, `gNextIrOn`, `gNextModelOn`) and `gBlinkReq`.
+  - callback → main loop, relaxed: `gKnob`, `gToggle`, `gFsHeld`, `gMutedPub`, `gUnderruns`, `gPeak`, `gOutPeak`, `gLoadAvg`, `gLoadMax`, `gFs2Presses`, `gGateLevel`, `gGateGain`; release/acquire: `gSwapParked`;
+  - main loop → callback, relaxed: `gPeakReset`, `gLoadReset`, `gBlinkCount`, `gGateWord` (the 8-byte gate block as two words: a torn pair mixes two valid settings for one block), `gGateMeterReset`; release/acquire: `gSwapReq`, `gSwapLoaded` (which publishes the plain `gNextLevel`, `gNextInCal`, `gNextIrOn`, `gNextModelOn`) and `gBlinkReq`.
+- **Gate settings:** `loadPreset` publishes the loaded preset's gate (`kGateOff` when dry) while the callback is parked, so a switch changes the gate in silence; GATE on the playing slot and GATE TRY publish while it plays, and the gate glides to the new settings.
 - **Preset switch:** the engine and the convolver have two owners in turn, and the handshake hands them over.
   1. The main loop steps its target slot once per FS2 press (`NextFilled`), restarts LED2's blinks for it, and, when it differs from the loaded slot or a slot change asked for a reload (`gReload`: an upload into the playing slot), raises `gSwapReq`. The target may be dry (-1).
   2. The callback fades out over 5 ms. Once the fade lands on 0 it parks: it writes silence, touches neither the engine nor the convolver nor the gains, and stores the request in `gSwapParked`.
-  3. The main loop loads the target (`A2Lite::Load` and `IrConvolver::Load` both reset their state), computes its gains, and stores the request in `gSwapLoaded`.
+  3. The main loop loads the target (`A2Lite::Load` and `IrConvolver::Load` both reset their state), computes its gains, publishes its gate, and stores the request in `gSwapLoaded`.
   4. The callback takes the gains, the IR flag and the model flag (dry or not) and fades in over 5 ms.
   Presses during a switch move the target, and the next switch follows at once, so fast presses coalesce. 2 s after the last switch, the main loop writes the slot to the state record if it changed.
 
@@ -148,20 +150,21 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 
 The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes the bank there. The pedal itself writes the state sectors, and single slots on the link's commands ("Slot writes").
 
-**Slot (format 2),** little-endian; erased flash (0xFF) follows it. A format-1 slot (from before the model binary's gear texts) parses as `version`; upload it again:
+**Slot (format 3),** little-endian; erased flash (0xFF) follows it. A format-2 slot (from before the noise gate) or a format-1 slot (from before the model binary's gear texts) parses as `version`; upload it again:
 
 | Offset | Field |
 |---|---|
 | 0 | magic `DKPS` |
-| 4 | u16 version (2) |
+| 4 | u16 version (3) |
 | 6 | u16 flags: bit 0 has IR; other bits 0 |
-| 8 | u32 size: 7,988, or 16,280 with an IR |
+| 8 | u32 size: 7,996, or 16,288 with an IR |
 | 12 | name[64], NUL-terminated printable ASCII |
-| 76 | model binary (7,908 bytes, `docs/NAM_FORMAT.md`) |
-| 7984 | IR binary (8,292 bytes, `docs/FILTERS.md`), only with the IR flag |
+| 76 | gate block (8 bytes): u8 flags (bit 0 enabled), u8 threshold (dB below full scale), u8 attack (0.1 ms), u8 hold (ms), u16 release (ms), u8 ratio (tenths), u8 0; `docs/FILTERS.md` "Noise gate" |
+| 84 | model binary (7,908 bytes, `docs/NAM_FORMAT.md`) |
+| 7992 | IR binary (8,292 bytes, `docs/FILTERS.md`), only with the IR flag |
 | size − 4 | CRC-32 of bytes [0, size − 4) |
 
-`dkpreset::Parse` checks, in order: `empty` (the first 4 bytes are 0xFF), `magic`, `version` (the version or an unknown flag), `size`, `crc`, then the embedded binaries with their own parsers (`model`, `ir`). A slot that does not parse is skipped.
+`dkpreset::Parse` checks, in order: `empty` (the first 4 bytes are 0xFF), `magic`, `version` (the version or an unknown flag), `size`, `crc`, then the embedded binaries with their own parsers (`model`, `ir`). A slot that does not parse is skipped. The gate block is not checked: each field is clamped into its range (`GetGate`), since the CRC already guards the bytes. New presets (the bank tool, an upload) carry the gate off at its defaults.
 
 **State record:** 16 bytes at the start of each state sector: `DKST`, u32 seq, u32 slot (0–7), and the CRC-32 of the first 12 bytes. The valid record with the higher seq is the newest. A write erases and writes the other sector, then reads it back through the memory-mapped QSPI (`state slot N seq S T ms`, or `state write failed`), so a torn write leaves the previous record readable. At boot the pedal plays the saved slot if it parsed, else the first slot that did, else dry.
 
@@ -174,13 +177,13 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 
 **Switching cost:** the load is `A2Lite::Load` (138 µs), plus `IrConvolver::Load` (about 860 µs) for a preset with an IR. The audible gap is the 5 ms fade out, the load, and the 5 ms fade in.
 
-**Slot writes (M7):** UPLOAD COMMIT, ERASE, RENAME and SWAP (`docs/MIDI.md`) go through `writeSlot` in the main loop: erase the slot's 64 KB block, write the image, invalidate the D-cache over the slot, and compare it through the memory-mapped QSPI (an erase checks for 0xFF throughout), then re-parse the slot (`rescan`). COMMIT parses the staged image before it touches flash, so an invalid upload never erases a slot. RENAME and SWAP copy the slot images into SDRAM scratch first; SWAP writes a, then b. The audio callback reads no QSPI, so audio runs through every write; the main loop blocks for it (137–216 ms per slot, "Measured (M7)").
+**Slot writes (M7):** UPLOAD COMMIT, ERASE, RENAME, SWAP and GATE (`docs/MIDI.md`) go through `writeSlot` in the main loop: erase the slot's 64 KB block, write the image, invalidate the D-cache over the slot, and compare it through the memory-mapped QSPI (an erase checks for 0xFF throughout), then re-parse the slot (`rescan`). COMMIT parses the staged image before it touches flash, so an invalid upload never erases a slot. RENAME, GATE and SWAP copy the slot images into SDRAM scratch first; SWAP writes a, then b. The audio callback reads no QSPI, so audio runs through every write; the main loop blocks for it (137–216 ms per slot, "Measured (M7)").
 - **libDaisy quirk:** `QSPIHandle::Erase` over a whole 64 KB block uses the block-erase command and leaves the QSPI in indirect mode, where the next read of the mapped region stopped the pedal (the first ERASE on hardware never answered). `Write` and `EraseSector` return to memory-mapped mode, so an erase without data ends with an `EraseSector` of the slot's first 4 KB.
-- **Playback after a slot change:** an upload into the target slot sets `gReload`, so it is reloaded through the usual switch (one fade); an upload while dry plays the new slot; a target slot that stops parsing (erase, failed write) moves to the next filled slot, with LED2's blinks, or to dry, which turns LED2 off. SWAP remaps the playing and target slot numbers without a switch, and the state record follows 2 s later. `docs/MIDI.md` "Slot changes and playback" is the host-facing summary.
+- **Playback after a slot change:** an upload into the target slot sets `gReload`, so it is reloaded through the usual switch (one fade); an upload while dry plays the new slot; a target slot that stops parsing (erase, failed write) moves to the next filled slot, with LED2's blinks, or to dry, which turns LED2 off. SWAP remaps the playing and target slot numbers without a switch, and the state record follows 2 s later. GATE on the playing slot hands the new gate to the callback without a reload. `docs/MIDI.md` "Slot changes and playback" is the host-facing summary.
 
 ## Link protocol
 
-`daisy/src/link.h` is the reference: the command and result tables (`kCommands`, `kResults`) generate `docs/MIDI.md` (`make midi-doc`; `make test` fails when it is stale), which documents the framing, every command, the upload and the playback rules. Frames are `F0 7D 64 01 <cmd> … F7` (device byte `0x64`, version `0x01`). M0's HELLO, DFU, LOG and Identity are unchanged; M7 adds LIST, ERASE, RENAME, SWAP, WATCH, UPLOAD BEGIN/CHUNK/COMMIT, and the SLOT, RESULT and STATUS replies; M8 adds READ and its DATA reply (up to 160 bytes of an ok slot's image, copied from the mapped QSPI and sent by `serveReplies` before READ's RESULT). Every request except HELLO and DFU gets exactly one RESULT, last.
+`daisy/src/link.h` is the reference: the command and result tables (`kCommands`, `kResults`) generate `docs/MIDI.md` (`make midi-doc`; `make test` fails when it is stale), which documents the framing, every command, the upload and the playback rules. Frames are `F0 7D 64 01 <cmd> … F7` (device byte `0x64`, version `0x01`). M0's HELLO, DFU, LOG and Identity are unchanged; M7 adds LIST, ERASE, RENAME, SWAP, WATCH, UPLOAD BEGIN/CHUNK/COMMIT, and the SLOT, RESULT and STATUS replies; M8 adds READ and its DATA reply (up to 160 bytes of an ok slot's image, copied from the mapped QSPI and sent by `serveReplies` before READ's RESULT); the noise gate adds GATE (rewrite a slot's gate block), GATE TRY (set the running gate only, for the editor's sliders) and STATUS's gate level and cut (30 bytes). Every request except HELLO and DFU gets exactly one RESULT, last.
 
 **CLI:** `bun tools/pedal.ts [--port BUS-PORT] COMMAND`, slots 1–8:
 
@@ -188,8 +191,9 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 list                                     # one line per slot: N STATUS "NAME" model "M" ir "I"|none, * on the playing one
 upload N MODEL [--ir IR] [--name NAME]   # MODEL/IR as preset_bank.ts reads them; prints flash ms, retries, seconds
 erase N | rename N NAME | swap A B       # each prints the flash time
-info N                                   # READs the preset's metadata: name; model, gear type/make/model, modeled by; loudness, input level; IR taps, source, gain
-status [SECONDS]                         # WATCH: a STATUS line every 100 ms and the LOG lines, for SECONDS (5) or until Ctrl-C
+gate N on|off [THRESHOLD_DB ATTACK_MS HOLD_MS RELEASE_MS RATIO]  # e.g. gate 1 on -55 0.5 20 100 4; on|off alone keeps the stored settings
+info N                                   # READs the preset's metadata: name; model, gear type/make/model, modeled by; loudness, input level; IR taps, source, gain; gate
+status [SECONDS]                         # WATCH: a STATUS line every 100 ms (with `gate in … dBFS cut … dB`) and the LOG lines, for SECONDS (5) or until Ctrl-C
 ```
 
 - Usage errors exit 2; a refused command (`pedal: RENAME: slot-state`), a rejected file or no reply exits 1.
@@ -205,7 +209,8 @@ status [SECONDS]                         # WATCH: a STATUS line every 100 ms and
 - **Link:** the input and output ports whose name contains `daisy` (the toolbar's In/Out menus override them), HELLO every second until the pedal answers, and `LINKED` while anything arrived in the last 4 s (WATCH's STATUS every 100 ms keeps it fresh).
 - **Sync:** on each link, on the boot line (`ducky …`, so a reflashed or power-cycled pedal is picked up without a reload), and every 3 s until one succeeds: Identity (device 64), LIST, every ok slot's metadata over READ (`editor/src/preset/info.ts`: 4 READs per slot, 5 with an IR), then WATCH on. Every request goes through one queue (`usePedal.ts` `serial`): the pedal answers one request at a time.
 - **Sidebar:** read-only, from STATUS: FS1 mute, FS2's playing slot, the knobs in the firmware's units (`editor/src/controls.ts` mirrors `dsp/gain.h` and `dsp/filters.h`; `Off` at the cut filters' bypass ends, a resonance knob dimmed when its slope is 6 dB/oct or its filter is off), the toggles, and the CPU load and underruns.
-- **Presets tab:** the slot table (↑/↓ swap neighbours, erase; unsaved changes in amber) with **Save** and **Discard** for every unsaved change, and the selected slot's editor: its name, its model (Add .nam… / Replace… / Remove) and its IR (Add .wav… / Replace… / Remove), each kept, replaced or removed, with the metadata, level match, input calibration and warnings (no loudness, no `input_level_dbu`, a cab model with an IR, a truncated new IR) of the result, and **Revert slot N**. Files go through the same converters as the CLI. Edits stay in per-slot drafts (`editor/src/draft.ts`) until Save, which applies each changed slot in turn: a removed model erases the slot (after a confirmation); otherwise the preset is composed and uploaded, reading the slot back first (READ, whole image, CRC-checked by `splitSlot` in `editor/src/preset/bank.ts`) when it keeps the stored model or IR. A new model renames the preset while its name is still the old model's. A swap moves the drafts with the slots; leaving the page with unsaved drafts asks first. After every slot change the table is listed and read again, so it shows what the flash holds even after a failure.
+- **Presets tab:** the slot table (↑/↓ swap neighbours, erase; unsaved changes in amber) with **Save** and **Discard** for every unsaved change, and the selected slot's editor: its name, its model (Add .nam… / Replace… / Remove) and its IR (Add .wav… / Replace… / Remove), each kept, replaced or removed, with the metadata, level match, input calibration and warnings (no loudness, no `input_level_dbu`, a cab model with an IR, a truncated new IR) of the result, and **Revert slot N**. Files go through the same converters as the CLI. Edits stay in per-slot drafts (`editor/src/draft.ts`) until Save, which applies each changed slot in turn: a removed model erases the slot (after a confirmation); a changed gate alone is a GATE (no upload, no reload fade); otherwise the preset is composed and uploaded, reading the slot back first (READ, whole image, CRC-checked by `splitSlot` in `editor/src/preset/bank.ts`) when it keeps the stored model or IR, and the stored gate (8 bytes) when it keeps neither. A new model renames the preset while its name is still the old model's. A swap moves the drafts with the slots; leaving the page with unsaved drafts asks first. After every slot change the table is listed and read again, so it shows what the flash holds even after a failure.
+- **Noise gate box** (under the slot editor): On/Off and the five settings as sliders (`editor/src/preset/gate.ts` `GATE_PARAMS`: threshold linear, the rest log; double-click resets one), and a meter: the input level from STATUS on −90…0 dBFS with markers where the gate closes and opens, and the state (Open, Closing, Closed, from the cut) while the slot plays. On the playing slot every change is auditioned at once with GATE TRY (coalesced to the latest value, one request in flight); a preset switch or a resync sends an unsaved gate again, and Revert or Discard sends the stored one back. A gate edit is part of the slot's draft until Save.
 - **EQ tab:** the response of the low-cut, the SW3 mid and the high-cut plus Knob 2's output volume, drawn from STATUS (`editor/src/eqModel.ts`, `docs/FILTERS.md` "Filters"): the whole chain filled to 0 dB, each section in use as a thin curve with a marker at its frequency (hover for its settings), the volume as the title's badge, and the gain at the pointer. Muted dashes the curve; the volume's off end draws only the sections. Knob 1 is not drawn: it sets the drive into the model, not a level after it. Neither are the model and the IR.
 - **Log tab:** the pedal's log lines (the last 1,000), each with its local receive time; it follows new lines while scrolled to the end.
 - **DFU mode…** sends DFU after a confirmation; `tools/flash_when_ready.sh` then flashes, and the editor relinks and resyncs by itself.
@@ -219,11 +224,13 @@ slots ok ok empty ok empty empty empty empty                                    
 preset 1 "FNDR BFSR VB Edge WRM2 CAB FREE"                                                    (boot / HELLO)
 model loudness -15.9 dB level -2.1 dB input +15.0 dBu cal -10.5 dB "FNDR BFSR VB Edge WRM2 CAB FREE"  (boot / HELLO)
 ir taps 2048 src 48000 Hz gain -15.1 dB "YA FDMN 412 BLND Mix 01"                             (boot / HELLO)
+gate on thr -55 dBFS atk 0.5 ms hold 20 ms rel 100 ms ratio 4.0                              (boot / HELLO, after a switch)
 preset 4 "A2" load 138 us                                                                     (after a switch, with model and ir)
 state slot 4 seq 12 85 ms                                                                     (2 s after a switch)
 upload slot 8 "A2" 167 ms                                                                     (link: UPLOAD COMMIT, then the slots line)
 erase slot 1 215 ms                                                                           (link: ERASE, then the slots line)
 rename slot 2 "Renamed" 156 ms                                                                (link: RENAME, then the slots line)
+gate slot 1 on 147 ms                                                                         (link: GATE, then the slots line)
 swap slots 1 8 314 ms                                                                         (link: SWAP, then the slots line)
 ctl k 31 22 33 58 25 34 sw 2 0 1 fs 0 0                                                       (every second)
 load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS                   (every second)
@@ -233,8 +240,9 @@ load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS     
 - **`preset` line:** the playing slot (1-based) and its name, with the load time in µs after a switch; `preset none` when dry.
 - **`model` line:** the preset's model: `loudness` and `input_level_dbu` (`none` without them), the level-match and input-calibration gains, in tenths of a dB, then its name, last because log lines stop at 120 characters. `model none` when dry.
 - **`ir` line:** the preset's IR: tap count, source rate, the converter's normalisation gain (reference band at 0 dB, `docs/FILTERS.md` "Converter"), and its name. `ir none` without an IR or when dry. `ir fft` alone, every second, when the convolver's FFT does not initialise.
+- **`gate` line:** the preset's noise gate (`docs/FILTERS.md` "Noise gate"): threshold, attack, hold, release and ratio; `gate off` when it is off or dry.
 - **`state` line:** the slot and seq written to the state record and the time the erase and write took; `state write failed` when the readback does not match.
-- **Slot change lines** (`upload slot`, `erase slot`, `rename slot`, `swap slots`): the slot(s), 1-based, the new name, and the time the flash erase, write and readback took; then the `slots` line. `slot write failed N` when a write or its readback failed (the command answers `flash`).
+- **Slot change lines** (`upload slot`, `erase slot`, `rename slot`, `swap slots`, `gate slot`): the slot(s), 1-based, the new name or the gate's on/off, and the time the flash erase, write and readback took; then the `slots` line. `slot write failed N` when a write or its readback failed (the command answers `flash`). GATE TRY logs nothing.
 - **`ctl` line:**
   - `k`: knobs 1–6, in percent.
   - `sw`: SW1–SW3 after the 30 ms filter, as 2 up, 1 middle, 0 down.
@@ -334,7 +342,7 @@ Over the link with `bun tools/pedal.ts`, audio running throughout (input −16�
 2. **IR check:** the reset convolver runs `input.wav[48000, 52800)` against a direct convolution computed on the device in double; limit 1e-5.
 3. **Model:** `A2Lite::Process` on `kBlockSize` blocks of uniform noise (±0.5), timed with the DWT cycle counter: 200 ms of warm-up blocks, then 2 s measured, interrupts masked inside each block. The M3 gate is the maximum against 450 permille of the block period.
 4. **Layers:** the same blocks, each stage (`BeginChunk`, `RunLayer` per layer, `EndChunk`) timed separately.
-5. **IR, EQ, chain:** the same way, the convolver from D2 and from AXI SRAM; the EQ at mid-travel knobs, top resonance, SW3 up, with SW1/SW2 flipping between 24 and 12 dB every 10 blocks so slope fades are in the maximum; and the pedal's whole chain (input gain, engine, IR, EQ, output gain, mute). The M5 gate is the chain's maximum against 550 permille.
+5. **IR, EQ, noise gate, chain:** the same way, the convolver from D2 and from AXI SRAM; the EQ at mid-travel knobs, top resonance, SW3 up, with SW1/SW2 flipping between 24 and 12 dB every 10 blocks so slope fades are in the maximum; the noise gate enabled with the longest hold (100 ms, the longest detector scan), fed each block's input peak; and the pedal's whole chain (the gate, input gain, engine, IR, EQ, output gain with the gate's gain, mute). The M5 gate is the chain's maximum against 550 permille.
 
 Passes repeat every 2 s; the DFU command works between stages, so `flash_when_ready.sh` returns to the pedal with no button presses.
 

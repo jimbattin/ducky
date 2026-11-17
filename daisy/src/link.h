@@ -7,12 +7,15 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "dsp/noise_gate.h"
+
 namespace dklink {
 
 constexpr uint8_t kManufacturer = 0x7D, kDevice = 0x64, kVersion = 0x01;
 // Host -> pedal.
 constexpr uint8_t kHello = 0x01, kList = 0x02, kErase = 0x03, kRename = 0x04, kSwap = 0x05, kDfu = 0x06,
-                  kWatch = 0x07, kUploadBegin = 0x08, kUploadChunk = 0x09, kUploadCommit = 0x0A, kRead = 0x0B;
+                  kWatch = 0x07, kUploadBegin = 0x08, kUploadChunk = 0x09, kUploadCommit = 0x0A, kRead = 0x0B,
+                  kGate = 0x0C, kGateTry = 0x0D;
 // Pedal -> host.
 constexpr uint8_t kLog = 0x12, kSlot = 0x13, kResult = 0x14, kStatus = 0x15, kData = 0x16;
 constexpr size_t kMaxLog = 120, kMaxBuildId = 32;
@@ -20,7 +23,8 @@ constexpr size_t kMaxName = 63;       // a SLOT name or a RENAME name
 constexpr size_t kChunkBytes = 256;   // an UPLOAD CHUNK's data, unpacked
 constexpr size_t kReadBytes = 160;    // a DATA's data, unpacked
 constexpr size_t kMaxPayload = 200;   // a pedal -> host payload (LOG, SLOT, RESULT, STATUS, DATA)
-constexpr size_t kStatusBytes = 26;   // a STATUS payload
+constexpr size_t kStatusBytes = 30;   // a STATUS payload
+constexpr size_t kGatePayload = 8;    // a GATE or GATE TRY payload: the slot, then ParseGate's 7 bytes
 constexpr uint32_t kWatchPeriodMs = 100;
 
 // Pack7's output size for n bytes: one header byte per group of up to 7.
@@ -41,6 +45,16 @@ inline uint32_t GetSeptets(const uint8_t* p, int n) {
     uint32_t v = 0;
     for (int i = 0; i < n; ++i) v = (v << 7) | (p[i] & 0x7F);
     return v;
+}
+
+// A GATE payload after its slot byte, p[0, n): `<enabled 0/1> <threshold> <attack> <hold> <release u14> <ratio>`.
+// False on a length other than 7, enabled > 1 or a field out of range (dkdsp::GateValid); g is written only on true.
+inline bool ParseGate(const uint8_t* p, size_t n, dkdsp::GateSettings& g) {
+    if (n != 7 || p[0] > 1) return false;
+    const dkdsp::GateSettings s{p[0] == 1, p[1], p[2], p[3], uint16_t(GetSeptets(p + 4, 2)), p[6]};
+    if (!dkdsp::GateValid(s)) return false;
+    g = s;
+    return true;
 }
 
 // in[0, n) as 7-bit bytes: each group of up to 7 bytes becomes a header byte (bit i the MSB of the group's byte i),
@@ -78,6 +92,8 @@ struct StatusFrame {
     uint16_t knob[6];             // permille, knobs 1-6
     uint8_t toggle[3];            // SW1-SW3: 0 down, 1 middle, 2 up
     uint8_t footswitches;         // held: bit 0 FS1, bit 1 FS2
+    uint16_t gate_level;          // the gate detector's level, tenths of a dB below full scale, 0..1200
+    uint16_t gate_cut;            // the gate's gain reduction, tenths of a dB, 0..1200 (1200: closed)
 };
 
 class TxBuffer {
@@ -128,6 +144,8 @@ public:
         for (int k = 0; k < 6; ++k) PutSeptets(p + 10 + 2 * k, s.knob[k], 2);
         for (int t = 0; t < 3; ++t) p[22 + t] = s.toggle[t] & 0x7F;
         p[25] = s.footswitches & 0x03;
+        PutSeptets(p + 26, s.gate_level, 2);
+        PutSeptets(p + 28, s.gate_cut, 2);
         return AppendSysEx(kStatus, p, sizeof p);
     }
     // DATA: the slot, the image offset (u21), the CRC-32 of data[0, n) (u32), then the data Pack7'd; n 1..kReadBytes.
@@ -246,6 +264,9 @@ struct CommandDoc {
     const char* effect;
 };
 
+inline constexpr char kGatePayloadDoc[] =
+    "`<slot 0-7> <enabled 0/1> <threshold 30-80> <attack 5-100> <hold 10-100> <release u14 10-1000> <ratio 15-100>`";
+
 inline constexpr CommandDoc kCommands[] = {
     {0, Dir::kToPedal, "Identity Request", "`F0 7E <id> 06 01 F7` (Universal Non-Real-Time, any id 00-7F)",
      "The pedal answers the Identity Reply."},
@@ -256,8 +277,8 @@ inline constexpr CommandDoc kCommands[] = {
      "files differ (e.g. `711fa7c+dirty`), or `unknown` outside git."},
     {kHello, Dir::kToPedal, "HELLO", "none",
      "The pedal answers with LOG lines: the boot line `ducky <board> seed <version> sysclk N MHz audio N Hz N bit "
-     "block N <build id>`, then the `slots`, `preset`, `model` and `ir` lines (docs/FIRMWARE.md \"Log lines\"). No "
-     "RESULT."},
+     "block N <build id>`, then the `slots`, `preset`, `model`, `ir` and `gate` lines (docs/FIRMWARE.md \"Log "
+     "lines\"). No RESULT."},
     {kList, Dir::kToPedal, "LIST", "none",
      "8 SLOT messages (slots 0-7), then RESULT `02` ok with value 8."},
     {kErase, Dir::kToPedal, "ERASE", "`<slot 0-7>`",
@@ -272,8 +293,8 @@ inline constexpr CommandDoc kCommands[] = {
      "The pedal logs `dfu reset` and restarts into the Daisy bootloader's DFU mode (no timeout), ready for "
      "tools/flash_when_ready.sh. No RESULT."},
     {kWatch, Dir::kToPedal, "WATCH", "`<on 0/1>`",
-     "RESULT ok (value 0). While on, a STATUS every 100 ms. Off at boot."},
-    {kUploadBegin, Dir::kToPedal, "UPLOAD BEGIN", "`<slot 0-7> <size u21>` (size 7988 or 16280)",
+     "RESULT ok (value 0). While on, a STATUS every 100 ms, the first 100 ms after WATCH on. Off at boot."},
+    {kUploadBegin, Dir::kToPedal, "UPLOAD BEGIN", "`<slot 0-7> <size u21>` (size 7996 or 16288)",
      "Starts staging a preset image for the slot, discarding any earlier upload. RESULT value: the next offset "
      "(0)."},
     {kUploadChunk, Dir::kToPedal, "UPLOAD CHUNK",
@@ -289,6 +310,15 @@ inline constexpr CommandDoc kCommands[] = {
      "(offset + the bytes sent). `bad-request` when the payload is not 4 bytes, the slot is not 0-7 or the offset "
      "is at or past the image's size; `slot-state` when the slot is not ok. Reads flash only: audio and the slot "
      "are untouched."},
+    {kGate, Dir::kToPedal, "GATE", kGatePayloadDoc,
+     "Rewrites the preset's noise-gate block (and its CRC); the model, the IR and the name are kept. Threshold in "
+     "dB below full scale (the gate closes below it and opens 6 dB above it), attack in 0.1 ms, hold and release "
+     "in ms (release: the time to fall 60 dB), ratio (the expander's) in tenths. When the slot is playing, the gate "
+     "takes the settings at once, with no reload. RESULT ok with the flash time in ms; `slot-state` when the slot "
+     "is not ok."},
+    {kGateTry, Dir::kToPedal, "GATE TRY", kGatePayloadDoc,
+     "Sets the running gate only, until the next preset load or GATE; nothing is written. RESULT ok (value 0); "
+     "`slot-state` when the slot is not the playing one."},
     {kLog, Dir::kToHost, "LOG", "`<printable ASCII, at most 120 bytes>`",
      "One log line (boot, HELLO, slot changes, the controls and status lines once a second)."},
     {kSlot, Dir::kToHost, "SLOT",
@@ -301,10 +331,13 @@ inline constexpr CommandDoc kCommands[] = {
      "last."},
     {kStatus, Dir::kToHost, "STATUS",
      "`<load avg u14> <load max u14> <underruns u28> <slot> <mute> <knob 1-6: 6 x u14> <SW1> <SW2> <SW3> "
-     "<footswitches>` (26 bytes)",
+     "<footswitches> <gate level u14> <gate cut u14>` (30 bytes)",
      "Sent every 100 ms while WATCH is on. Load in permille, as the last once-a-second `load` line reported it (0 "
      "before the first); underruns since boot, clamped at 2^28 - 1; slot 0-7, or 7F when dry; mute 0/1; knobs in "
-     "permille (0-1000); SW1-SW3 0 down, 1 middle, 2 up; footswitches held: bit 0 FS1, bit 1 FS2."},
+     "permille (0-1000); SW1-SW3 0 down, 1 middle, 2 up; footswitches held: bit 0 FS1, bit 1 FS2. Gate level: the "
+     "highest level the gate's detector saw at the input (before Knob 1) since the previous STATUS, in tenths of a "
+     "dB below full scale (0-1200, 1200 for silence); gate cut: the largest gain reduction the gate applied since "
+     "the previous STATUS, in tenths of a dB (0-1200, 1200 closed)."},
     {kData, Dir::kToHost, "DATA", "`<slot 0-7> <offset u21> <crc32 u32> <Pack7 data>` (1-160 bytes unpacked)",
      "Answers READ: the image bytes at offset and the CRC-32 of the unpacked bytes. Comes before READ's RESULT."},
 };
@@ -319,15 +352,15 @@ inline constexpr ResultDoc kResults[] = {
     {Result::kOk, "ok", "Done."},
     {Result::kBadRequest, "bad-request",
      "Wrong payload length or a field out of range (slot, size, name, a == b, chunk data past the image, bad "
-     "Pack7)."},
+     "Pack7, a gate field)."},
     {Result::kNoUpload, "no-upload", "UPLOAD CHUNK or COMMIT without an UPLOAD BEGIN (or after a COMMIT)."},
     {Result::kOffset, "offset", "The chunk's offset is past the next expected offset (the value); resend from there."},
     {Result::kCrc, "crc", "The chunk's data does not match its CRC; resend it."},
     {Result::kIncomplete, "incomplete", "COMMIT before every byte of the image was received."},
     {Result::kInvalid, "invalid", "COMMIT: the image does not parse as a preset (the value is the slot status)."},
     {Result::kFlash, "flash", "The flash erase, write or read-back failed."},
-    {Result::kSlotState, "slot-state", "The slot's state does not allow it (RENAME of a slot that is not ok, SWAP "
-                                        "of a corrupt slot)."},
+    {Result::kSlotState, "slot-state", "The slot's state does not allow it (RENAME or GATE of a slot that is not "
+                                        "ok, SWAP of a corrupt slot, GATE TRY of a slot that is not playing)."},
 };
 
 }  // namespace dklink

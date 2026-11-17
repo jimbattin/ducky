@@ -1,8 +1,9 @@
-// daisy/src/preset.h: the preset slot parser, the state record and slot stepping.
+// daisy/src/preset.h: the preset slot parser, its gate block, the state record and slot stepping.
 #include "preset.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -51,6 +52,13 @@ TEST(PresetParse, Fixture) {
     EXPECT_STREQ(p->name, "A2 + decay");
     EXPECT_STREQ(p->model.name, "A2");
     EXPECT_GT(p->ir.tap_count, 0u);
+    const dkdsp::GateSettings off = dkdsp::kGateOff;
+    EXPECT_EQ(p->gate.enabled, off.enabled);
+    EXPECT_EQ(p->gate.threshold, off.threshold);
+    EXPECT_EQ(p->gate.attack, off.attack);
+    EXPECT_EQ(p->gate.hold, off.hold);
+    EXPECT_EQ(p->gate.release, off.release);
+    EXPECT_EQ(p->gate.ratio, off.ratio);
 }
 
 TEST(PresetRename, FixtureParsesWithNewName) {
@@ -61,6 +69,38 @@ TEST(PresetRename, FixtureParsesWithNewName) {
     ASSERT_EQ(Parse(b.data(), b.size(), p.get()), Status::kOk);
     EXPECT_STREQ(p->name, "Renamed");
     EXPECT_STREQ(p->model.name, "A2");
+}
+
+TEST(PresetGate, SetGateRoundTrip) {
+    std::vector<uint8_t> b = Fixture();
+    dkpreset::SetGate(b.data(), b.size(), {true, 55, 15, 30, 250, 60});
+    const std::vector<uint8_t> block(b.begin() + 76, b.begin() + 84);
+    EXPECT_EQ(block, (std::vector<uint8_t>{0x01, 0x37, 0x0F, 0x1E, 0xFA, 0x00, 0x3C, 0x00}));
+    auto p = std::make_unique<Preset>();
+    ASSERT_EQ(Parse(b.data(), b.size(), p.get()), Status::kOk);
+    EXPECT_TRUE(p->gate.enabled);
+    EXPECT_EQ(p->gate.threshold, 55);
+    EXPECT_EQ(p->gate.attack, 15);
+    EXPECT_EQ(p->gate.hold, 30);
+    EXPECT_EQ(p->gate.release, 250);
+    EXPECT_EQ(p->gate.ratio, 60);
+    EXPECT_STREQ(p->name, "A2 + decay");
+    EXPECT_STREQ(p->model.name, "A2");
+}
+
+TEST(PresetGate, OutOfRangeIsClamped) {
+    std::vector<uint8_t> b = Fixture();
+    const uint8_t block[] = {0xFF, 0x00, 0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0x00};
+    std::copy(block, block + 8, b.begin() + 76);
+    FixCrc(b);
+    auto p = std::make_unique<Preset>();
+    ASSERT_EQ(Parse(b.data(), b.size(), p.get()), Status::kOk);
+    EXPECT_TRUE(p->gate.enabled);
+    EXPECT_EQ(p->gate.threshold, 30);
+    EXPECT_EQ(p->gate.attack, 100);
+    EXPECT_EQ(p->gate.hold, 10);
+    EXPECT_EQ(p->gate.release, 1000);
+    EXPECT_EQ(p->gate.ratio, 100);
 }
 
 TEST(PresetParse, ErasedTailIsIgnored) {
@@ -108,7 +148,7 @@ TEST(PresetParse, UnknownFlagIsVersion) {
 
 TEST(PresetParse, OtherVersionIsVersion) {
     std::vector<uint8_t> b = Fixture();
-    Put16(b, 4, 3);
+    Put16(b, 4, 2);
     FixCrc(b);
     EXPECT_EQ(ParseBytes(b), Status::kVersion);
 }
@@ -128,14 +168,14 @@ TEST(PresetParse, ModelOnly) {
 
 TEST(PresetParse, BadEmbeddedModelIsModel) {
     std::vector<uint8_t> b = Fixture();
-    b[76 + 1000] ^= 0xFF;  // the model's own CRC no longer matches
+    b[84 + 1000] ^= 0xFF;  // the model's own CRC no longer matches
     FixCrc(b);
     EXPECT_EQ(ParseBytes(b), Status::kModel);
 }
 
 TEST(PresetParse, BadEmbeddedIrIsIr) {
     std::vector<uint8_t> b = Fixture();
-    b[7984 + 1000] ^= 0xFF;
+    b[7992 + 1000] ^= 0xFF;
     FixCrc(b);
     EXPECT_EQ(ParseBytes(b), Status::kIr);
 }

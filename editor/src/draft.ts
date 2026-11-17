@@ -1,11 +1,12 @@
-// The Presets tab's unsaved edits: per slot, the name, model and IR the user wants, each part kept from the pedal,
-// removed, or replaced by a converted file. Save turns a draft into an ERASE or an UPLOAD (saveDraft).
+// The Presets tab's unsaved edits: per slot, the name, model, IR and noise gate the user wants, each part kept from
+// the pedal, removed, or replaced. Save turns a draft into an ERASE, a GATE or an UPLOAD (saveDraft).
 
 import type { ConvertedIr } from "./ir/convert";
 import { IMAGE_SIZES, SLOT_STATUS_NAMES, type SlotMessage } from "./link/protocol";
 import type { PedalSession } from "./link/session";
 import type { ConvertedModel } from "./nam/convert";
-import { buildSlot, type SlotParts, splitSlot } from "./preset/bank";
+import { buildSlot, OFF_GATE, type SlotParts, splitSlot } from "./preset/bank";
+import { decodeGate, GATE_DEFAULT, GATE_SIZE, type GateSettings } from "./preset/gate";
 
 const OK = 0;
 const EMPTY = 1;
@@ -17,12 +18,17 @@ export interface Draft {
   name: string;
   model: Part<ConvertedModel>;
   ir: Part<ConvertedIr>;
+  /**
+   * The gate to save, null to keep the slot's stored gate (GATE_DEFAULT for a new preset). Never compared with a
+   * stored gate here: the slot infos are null while a refresh runs, and a guessed one would save over the real gate.
+   */
+  gate: GateSettings | null;
 }
 
 /** The draft that changes nothing: the slot as the pedal holds it (a corrupt slot drafts as empty). */
 export function baseDraft(s: SlotMessage): Draft {
-  if (s.status !== OK) return { name: "", model: { kind: "none" }, ir: { kind: "none" } };
-  return { name: s.name, model: { kind: "stored" }, ir: { kind: s.hasIr ? "stored" : "none" } };
+  if (s.status !== OK) return { name: "", model: { kind: "none" }, ir: { kind: "none" }, gate: null };
+  return { name: s.name, model: { kind: "stored" }, ir: { kind: s.hasIr ? "stored" : "none" }, gate: null };
 }
 
 /** The draft differs from what the slot holds. */
@@ -30,6 +36,7 @@ export function isEdited(d: Draft, s: SlotMessage): boolean {
   const b = baseDraft(s);
   if (d.model.kind !== b.model.kind || d.ir.kind !== b.ir.kind) return true;
   if (d.model.kind === "new" || d.ir.kind === "new") return true;
+  if (d.gate !== null && d.model.kind !== "none") return true;
   return d.model.kind !== "none" && d.name !== b.name;
 }
 
@@ -77,8 +84,8 @@ export function slotView(s: SlotMessage, d: Draft | undefined): SlotView {
   return { state: "ok", name: d.name, model: modelName(d, s) ?? "", ir: irName(d, s) ?? "—", edited: true };
 }
 
-/** The image a draft saves; stored holds the slot's parts when the draft keeps any. */
-export function composeSlot(d: Draft, stored: SlotParts | null): Uint8Array {
+/** The image a draft saves; stored holds the slot's parts when the draft keeps any; gate is the gate to store. */
+export function composeSlot(d: Draft, stored: SlotParts | null, gate: GateSettings): Uint8Array {
   const need = (what: string): SlotParts => {
     if (stored === null) throw new Error(`The stored ${what} is not available`);
     return stored;
@@ -91,12 +98,13 @@ export function composeSlot(d: Draft, stored: SlotParts | null): Uint8Array {
     ir = need("IR").ir;
     if (ir === null) throw new Error("The slot no longer has an IR");
   }
-  return buildSlot(model, ir, d.name.trim());
+  return buildSlot(model, ir, d.name.trim(), gate);
 }
 
 /**
- * Applies a draft to its slot: ERASE when its model is removed, else UPLOAD of the composed preset, reading the slot
- * back first when the draft keeps a stored part. Returns what was done.
+ * Applies a draft to its slot: ERASE when its model is removed; GATE when only the gate changed (no upload, so the
+ * playing preset is not reloaded); else UPLOAD of the composed preset, reading the slot back first when the draft
+ * keeps a stored part or the stored gate. Returns what was done.
  */
 export async function saveDraft(
   session: PedalSession,
@@ -110,12 +118,25 @@ export async function saveDraft(
     await session.erase(s.slot);
     return "erased";
   }
+  if (
+    d.gate !== null &&
+    d.model.kind === "stored" &&
+    d.ir.kind === (s.hasIr ? "stored" : "none") &&
+    d.name === s.name
+  ) {
+    await session.gate(s.slot, d.gate);
+    return "saved";
+  }
   let stored: SlotParts | null = null;
   if (d.model.kind === "stored" || d.ir.kind === "stored") {
     if (s.status !== OK || (d.ir.kind === "stored" && !s.hasIr))
       throw new Error(`Slot ${s.slot + 1} changed on the pedal: revert it and edit again`);
     stored = splitSlot(await session.read(s.slot, 0, IMAGE_SIZES[s.hasIr ? 1 : 0]));
   }
-  await session.upload(s.slot, composeSlot(d, stored), (sent, size) => onProgress(sent / size));
+  const gate =
+    d.gate ??
+    stored?.gate ??
+    (s.status === OK ? decodeGate(await session.read(s.slot, OFF_GATE, GATE_SIZE)) : GATE_DEFAULT);
+  await session.upload(s.slot, composeSlot(d, stored, gate), (sent, size) => onProgress(sent / size));
   return "saved";
 }

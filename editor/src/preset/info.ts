@@ -5,6 +5,7 @@
 import * as ir from "../ir/convert";
 import * as model from "../nam/convert";
 import * as preset from "./bank";
+import { decodeGate, type GateSettings } from "./gate";
 
 /** A stored model's metadata. convert.ts's ModelInfo is assignable to it. */
 export interface StoredModel {
@@ -31,6 +32,7 @@ export interface SlotInfo {
   name: string;
   model: StoredModel;
   ir: StoredIr | null;
+  gate: GateSettings;
 }
 
 const MODEL_AT = preset.PRESET_HEADER_SIZE;
@@ -40,7 +42,7 @@ const TEXT_SIZE = 64;
 /** The [offset, length] runs of a preset image that slotInfo reads. */
 export function infoRanges(hasIr: boolean): [offset: number, length: number][] {
   const ranges: [number, number][] = [
-    [0, MODEL_AT + 12], // the preset header, then the model's magic, version, flags and size
+    [0, MODEL_AT + 12], // the preset header (the gate block included), then the model's magic, version, flags and size
     [MODEL_AT + model.OFF_LOUDNESS, model.OFF_CRC - model.OFF_LOUDNESS], // loudness .. modeled_by
   ];
   if (hasIr) ranges.push([IR_AT + ir.OFF_TAP_COUNT, ir.OFF_TAPS - ir.OFF_TAP_COUNT]); // tap count .. name
@@ -87,5 +89,5 @@ export function slotInfo(image: Uint8Array): SlotInfo {
         gainDb: 20 * Math.log10(dv.getFloat32(IR_AT + ir.OFF_GAIN, true)),
       }
     : null;
-  return { name: text(image, preset.OFF_NAME), model: m, ir: i };
+  return { name: text(image, preset.OFF_NAME), model: m, ir: i, gate: decodeGate(image, preset.OFF_GATE) };
 }

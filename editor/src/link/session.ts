@@ -1,6 +1,7 @@
 // A request/reply session with the pedal over any SysEx transport (docs/MIDI.md): slot listing, reading and changes,
 // the chunked upload with its retries, and the STATUS stream. Pure TypeScript: the transport supplies the I/O.
 
+import { type GateSettings, gateProblem } from "../preset/gate";
 import { infoRanges, type SlotInfo, slotInfo } from "../preset/info";
 import {
   CHUNK_BYTES,
@@ -8,6 +9,8 @@ import {
   CMD_NAMES,
   DEVICE,
   eraseMsg,
+  gateMsg,
+  gateTryMsg,
   type IdentityMessage,
   IMAGE_SIZES,
   identityRequest,
@@ -58,6 +61,12 @@ const SLOTS = 8;
 
 function checkSlot(what: string, slot: number): void {
   if (!Number.isInteger(slot) || slot < 0 || slot >= SLOTS) throw new LinkError(`${what}: slot ${slot}: must be 0-7`);
+}
+
+function checkGate(what: string, slot: number, g: GateSettings): void {
+  checkSlot(what, slot);
+  const problem = gateProblem(g);
+  if (problem !== null) throw new LinkError(`${what}: ${problem}`);
 }
 
 function resultError(r: ResultMessage): LinkError {
@@ -141,6 +150,18 @@ export class PedalSession {
     return (await this.request(swapMsg(a, b), CMD.swap, this.flashTimeoutMs)).value;
   }
 
+  /** Rewrites the slot's noise gate (the slot must be ok); the flash time in ms. */
+  async gate(slot: number, g: GateSettings): Promise<number> {
+    checkGate("GATE", slot, g);
+    return (await this.request(gateMsg(slot, g), CMD.gate, this.flashTimeoutMs)).value;
+  }
+
+  /** Sets the playing slot's running gate only (an audition): nothing is written, the next preset load undoes it. */
+  async gateTry(slot: number, g: GateSettings): Promise<void> {
+    checkGate("GATE TRY", slot, g);
+    await this.request(gateTryMsg(slot, g), CMD.gateTry, this.replyTimeoutMs);
+  }
+
   /**
    * length bytes of the slot's preset image from offset, one READ per DATA. A READ is resent on no reply or no
    * matching DATA up to `retries` times.
@@ -187,7 +208,7 @@ export class PedalSession {
   }
 
   /**
-   * Writes a preset image (7988 or 16280 bytes) to the slot. BEGIN and each CHUNK are resent on no reply (and a CHUNK
+   * Writes a preset image (7996 or 16288 bytes) to the slot. BEGIN and each CHUNK are resent on no reply (and a CHUNK
    * on `crc`) up to `retries` times; COMMIT is not resent (the pedal has cleared the upload).
    */
   async upload(

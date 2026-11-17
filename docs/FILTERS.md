@@ -1,6 +1,6 @@
-# IR and filters (M5)
+# IR, filters and noise gate (M5)
 
-The cab IR and the EQ that follow the model. Code: `daisy/src/dsp/convolver.h`, `daisy/src/dsp/filters.h`, `daisy/src/ir.h`; converter `editor/src/ir/`, `tools/ir_convert.ts`; the editor's EQ response `editor/src/eqModel.ts`. Tests: `tests/convolver_test.cpp`, `tests/filters_test.cpp`, `tests/ir_test.cpp`, `editor/src/ir/convert.test.ts`, `editor/src/eqModel.test.ts`.
+The cab IR and the EQ that follow the model, and the preset's noise gate. Code: `daisy/src/dsp/convolver.h`, `daisy/src/dsp/filters.h`, `daisy/src/dsp/noise_gate.h`, `daisy/src/ir.h`; converter `editor/src/ir/`, `tools/ir_convert.ts`; the editor's EQ response `editor/src/eqModel.ts`, its gate settings `editor/src/preset/gate.ts`. Tests: `tests/convolver_test.cpp`, `tests/filters_test.cpp`, `tests/noise_gate_test.cpp`, `tests/ir_test.cpp`, `editor/src/ir/convert.test.ts`, `editor/src/eqModel.test.ts`.
 
 ## Signal chain
 
@@ -8,7 +8,8 @@ The cab IR and the EQ that follow the model. Code: `daisy/src/dsp/convolver.h`, 
 
 ```mermaid
 graph LR
-  IN[in gain] --> NAM[A2Lite] --> IR[IR convolver] --> LC[low-cut] --> MID[mid] --> HC[high-cut] --> OUT[out gain × level match] --> M[mute] --> R[copy to R]
+  IN[in gain] --> NAM[A2Lite] --> IR[IR convolver] --> LC[low-cut] --> MID[mid] --> HC[high-cut] --> OUT[out gain × level match × gate] --> M[mute] --> R[copy to R]
+  JACK[input peak] --> G[noise gate] -.-> OUT
 ```
 
 The IR stage runs only when the current preset has an IR (`docs/FIRMWARE.md` "Preset store"). Every EQ section runs every block, whatever the knobs and switches, so the load does not depend on the controls.
@@ -118,6 +119,32 @@ A bell at 515 Hz, Q 1.0, constant-Q form: `A = 10^(dB/40)`, `k = 1/(Q·A)`, `m1 
 
 `editor/src/eqModel.ts` is the same responses in the editor (the EQ tab's graph): each section as its bilinear-exact prototype, from STATUS's knobs and toggles through the firmware's maps (`editor/src/controls.ts`). `editor/src/eqModel.test.ts` checks the maps, the gains at the cutoffs, the slopes and the mid bell. Against `dkdsp::Eq` and `OutputGain` on the host (sines at 12 frequencies, 5 control settings) it agreed within 0.0001 dB above −60 dB.
 
+## Noise gate
+
+A per-preset, side-chained downward expander (`dkdsp::NoiseGate`). The detector reads the raw input at the jack (each block's `max|in|`, before Knob 1, the model and the IR), so the threshold is in dBFS at the input, independent of the trim and the model's calibration. Its gain multiplies the output gain's target (`gOutGain`), which ramps linearly across the block: no per-sample work, no latency, no lookahead. A pick that crosses the open threshold anywhere in a block opens the gate over that same block.
+
+`Process` runs once per 24-sample block (0.5 ms), dry and parked included:
+
+1. **Detector:** the exact maximum of the block peaks over the hold time (a ring of up to 200 block peaks, scanned every block). The level drops only after the input has stayed low for the whole hold; a hold of at least one period of the lowest note gives a ripple-free envelope.
+2. **Hysteresis (fixed 6 dB):** the threshold is the close level; the gate opens at threshold + 6 dB.
+3. **Ratio:** once closed, the target gain is `(env / threshold)^(ratio − 1)`, kept as a running minimum until the gate opens again, so a decaying tail only ever falls (no sputter). Gains below −100 dB are 0. Ratio 1.5 fades gently; 10 is a hard gate.
+4. **Ballistics:** attack is a linear slew of the gain (the time from silent to fully open; 0.5 ms completes within the block), release exponential (the time to fall 60 dB).
+
+Disabled, the gain is exactly 1 (bit-exact output). Enabling, disabling and every setting change glide through the same ballistics; a preset switch changes the gate while the callback is parked. Dry (no valid slot) has no gate.
+
+| Setting | Stored (preset block, GATE) | Range | Default | Editor |
+|---|---|---|---|---|
+| enabled | flags bit 0 | off/on | off | On/Off button |
+| threshold | u8, dB below full scale | −80…−30 dBFS | −60 dBFS | linear slider, 1 dB |
+| attack | u8, 0.1 ms | 0.5–10 ms | 0.5 ms | log slider, 0.1 ms |
+| hold | u8, ms | 10–100 ms | 20 ms | log slider, 1 ms |
+| release | u16, ms | 10–1000 ms | 100 ms | log slider, 1 ms |
+| ratio | u8, tenths | 1.5:1–10:1 | 4:1 | log slider, 0.1 |
+
+- **Why these defaults:** measured during planning on `renders/stimuli/guitar_di.wav` and synthetic decays. The fastest attack removes 46 dB of a closed gate's first 10 ms after a pick; a 10 ms attack still removes 11 dB, so 0.5 ms is the default. Over 40 decaying notes with hum 2–10 dB under the threshold, hold 20 ms with 6 dB of hysteresis re-opened 0 times; 3–4 dB of hysteresis or a 10 ms hold sputtered.
+- **Where it lives:** the 8-byte gate block of the preset slot (`docs/FIRMWARE.md` "Preset store"); GATE rewrites it, GATE TRY sets the running gate only (`docs/MIDI.md`). STATUS reports the detector's peak level and the largest cut per 100 ms, which the editor's meter shows.
+- **Tests:** `tests/noise_gate_test.cpp`: disabled is exactly 1; a closed gate opens fully in the block a pick arrives; hold then release (60 dB after 100 ms, 0 at 190 ms); the hysteresis band neither opens a closed gate nor closes an open one; the expander ratio's gain (−9 dB for a level 3 dB under at 4:1, −3 dB at 2:1); the slow attack's slew; and a decaying low E over hum never re-opens and settles on the expander's floor (−48 dB for hum 16 dB under at 4:1).
+
 ## Getting an IR onto the pedal
 
 An IR is part of a preset. The editor's import panel (`docs/FIRMWARE.md` "Editor") takes a `.wav` beside the `.nam` and uploads both to a slot. `tools/pedal.ts` (one slot over the link, while the pedal plays) and `tools/preset_bank.ts` (all 8 slots as a bank image over DFU) convert a `.wav` themselves, and take an IR binary as well:
@@ -143,7 +170,9 @@ Bench (`APP=bench`, `docs/FIRMWARE.md` "Bench"), cycles per block of noise, maxi
 | IR convolver, AXI SRAM (the pedal's) | 44,230 | 189.4 | 51,735 | 109.8 |
 | IR convolver, D2 SRAM | 57,844 | 248.4 | 64,440 | 138.2 |
 | EQ (both cuts, mid; slope fades every 10 blocks) | 8,652 | 36.2 | 15,135 | 31.8 |
-| Whole chain (gate, limit 550) | 141,648 | 594.7 (no-go) | 237,192 | 496.4 |
+| Noise gate (enabled, 100 ms hold: the longest scan) | 832 | 3.5 | — | — |
+| Whole chain (gate, limit 550): before the noise gate | 141,648 | 594.7 (no-go) | 237,192 | 496.4 |
+| Whole chain with the noise gate | 142,057 | 597.6 (no-go) | — | — |
 
 - **24-sample blocks:** the convolver's per-block work is the same as at 48 (86 × 32 against 43 × 64 complex multiply-adds, the same 66 KB of spectra through the D-cache) and runs twice as often, so its share of the block period nearly doubles. The model's per-sample cost barely moves. The chain misses the M5 gate. Live without an IR the pedal measured load avg 415, max 419 permille, 0 underruns (394 at 48 samples); live with an IR is not yet measured.
 - **IR check:** the convolver against a direct convolution in double on the device, 4,800 samples of `input.wav`: max error 146e-9 at 24 samples, 182e-9 at 48 (limit 1e-5).

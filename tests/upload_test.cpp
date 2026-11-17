@@ -131,7 +131,7 @@ TEST(Upload, ChunkPastSizeIsBadRequest) {
     ASSERT_EQ(f.Begin(0, dkpreset::kSizeNoIr), Result::kOk);
     uint32_t off = 0;
     for (; off + 256 <= dkpreset::kSizeNoIr; off += 256) ASSERT_EQ(f.Chunk(off, Slice(img, off, 256)), Result::kOk);
-    EXPECT_EQ(f.Chunk(off, Image(256)), Result::kBadRequest);  // 7936 + 256 > 7988
+    EXPECT_EQ(f.Chunk(off, Image(256)), Result::kBadRequest);  // 7936 + 256 > 7996
     EXPECT_EQ(f.up.next(), off);
 }
 

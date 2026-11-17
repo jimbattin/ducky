@@ -10,8 +10,9 @@
 //   its maximum against kGatePermille of the block period;
 // - the layers: the same blocks, each stage of Process (BeginChunk, RunLayer per layer, EndChunk) timed separately;
 // - the IR convolver with its state in D2 SRAM and in AXI SRAM, the EQ (its slope switches fading every 10 blocks),
-//   and the pedal's whole chain (trim, engine, IR, EQ, output gain, mute), timed the same way; the M5 gate is the
-//   chain's maximum against kChainGatePermille.
+//   the noise gate (enabled, the longest hold: the longest detector scan), and the pedal's whole chain (gate, trim,
+//   engine, IR, EQ, output gain with the gate's gain, mute), timed the same way; the M5 gate is the chain's maximum
+//   against kChainGatePermille.
 // Placement matches the pedal's: the engine and the EQ in DTCM, the pedal's convolver in AXI SRAM (gIrAxi; gIrD2 is
 // the D2 SRAM comparison), the stages and the timed blocks in ITCM.
 // Log lines (usb_log.py; docs/FIRMWARE.md "Bench"):
@@ -25,7 +26,7 @@
 //   "bench a2lite cycles avg A max M permille avg P.p max Q.q" (permille of B), then
 //   "bench gate a2lite max Q.q permille limit 450 go|no-go";
 //   per stage "bench input|layer NN kK dD|head cycles avg ... " as above;
-//   "bench ir d2|ir axi|eq|chain cycles avg ..." as above, then
+//   "bench ir d2|ir axi|eq|noise gate|chain cycles avg ..." as above, then
 //   "bench gate chain max Q.q permille limit 550 go|no-go"; then "bench pass N done".
 // Passes repeat forever, 2 s apart. The link's DFU message restarts into the bootloader (checked between stages).
 #include <cmath>
@@ -40,6 +41,7 @@
 #include "dsp/filters.h"
 #include "dsp/gain.h"
 #include "dsp/mute.h"
+#include "dsp/noise_gate.h"
 #include "firmware.h"
 #include "ir.h"
 #include "memory.h"
@@ -123,6 +125,7 @@ DK_DTCM dkdsp::Eq gEq;
 DK_DTCM uint32_t gEqBlocks;  // counts the EQ's blocks: its slope switches flip every 10
 DK_DTCM dkdsp::GainRamp gInGain, gOutGain;
 DK_DTCM dkdsp::MuteRamp gMute;
+DK_DTCM dkdsp::NoiseGate gGate;
 float gNoise[kBlockSize * kNoiseBlocks];  // SRAM: DTCM has no room beside the engine and the stack reserve
 float gIrIn[kIrCheckSamples], gIrOut[kIrCheckSamples];  // SRAM, the IR check's
 DK_DTCM float gOut[kBlockSize];
@@ -222,13 +225,23 @@ DK_ITCM void blockEq(const float* in) {
     gEq.Process(gOut, kBlockSize, eqControls());
 }
 
+// The block's input peak, the gate's detector input as in the pedal's AudioCallback.
+DK_ITCM float blockPeak(const float* in) {
+    float peak = 0.0f;
+    for (size_t i = 0; i < kBlockSize; ++i) peak = std::fmax(peak, std::fabs(in[i]));
+    return peak;
+}
+
+DK_ITCM void blockGate(const float* in) { gOut[0] = gGate.Process(blockPeak(in)); }
+
 // The pedal's AudioCallback chain, without the control reads and meters.
 DK_ITCM void blockChain(const float* in) {
+    const float gate = gGate.Process(blockPeak(in));
     gInGain.Process(in, gOut, kBlockSize, 1.0f);
     gEngine.Process(gOut, gOut, kBlockSize);
     gIrAxi.Process(gOut, gOut);
     gEq.Process(gOut, kBlockSize, eqControls());
-    gOutGain.Process(gOut, gOut, kBlockSize, 1.0f);
+    gOutGain.Process(gOut, gOut, kBlockSize, gate);
     gMute.Process(gOut, gOut, kBlockSize);
 }
 
@@ -325,6 +338,8 @@ void runPass(unsigned pass) {
     dkusb::Serve(logBoot);
     timeStage("eq", blockEq);
     dkusb::Serve(logBoot);
+    timeStage("noise gate", blockGate);
+    dkusb::Serve(logBoot);
     logGate("chain", timeStage("chain", blockChain), kChainGatePermille);
     dkusb::Log("bench pass %u done", pass);
     serveFor(kPassGapMs);
@@ -371,6 +386,7 @@ int main() {
     gInGain.Init(1.0f);
     gOutGain.Init(1.0f);
     gMute.Init(false);
+    gGate.Set({true, 60, 5, 100, 100, 40});  // the longest hold: the longest scan
 
     for (unsigned pass = 1;; ++pass) runPass(pass);
 }

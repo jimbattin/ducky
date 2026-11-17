@@ -1,17 +1,18 @@
 // Ducky pedal firmware (Cleveland Music Co. HotHouse, board.h). M7: the left input goes through Knob 1's input trim,
 // the current preset's A2-Lite model (dsp/a2lite.h) and cab IR when it has one (dsp/convolver.h), the EQ
 // (dsp/filters.h: low-cut on Knobs 5-6 and SW1, the SW3 mid, high-cut on Knobs 4-3 and SW2), and Knob 2's output
-// volume times the model's level match (dsp/gain.h), then FS1's mute ramp and the preset switch's fade, and is copied
-// to both outputs (dual mono). Presets live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU, or
-// slot by slot over the link: docs/MIDI.md) and are parsed into SDRAM at boot and after every slot change; corrupt or
-// empty slots are skipped. With no valid slot the pedal plays dry (trim, EQ, volume, mute). If the IR convolver's FFT
-// does not initialise, audio never starts: the pedal serves USB (DFU included) and logs "ir fft" once a second.
+// volume times the model's level match and the preset's noise gate (dsp/gain.h, dsp/noise_gate.h: the gate listens to
+// the input before the trim), then FS1's mute ramp and the preset switch's fade, and is copied to both outputs (dual
+// mono). Presets live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU, or slot by slot over the
+// link: docs/MIDI.md) and are parsed into SDRAM at boot and after every slot change; corrupt or empty slots are
+// skipped. With no valid slot the pedal plays dry (trim, EQ, volume, mute; no gate). If the IR convolver's FFT does
+// not initialise, audio never starts: the pedal serves USB (DFU included) and logs "ir fft" once a second.
 //
 // Two threads of control:
 // - AudioCallback (the audio DMA interrupt, 48 kHz, 24-sample blocks): reads the controls (30 ms toggle hysteresis),
-//   toggles the mute on FS1, counts FS2 presses, smooths knobs 1-2, runs the trim, the engine, the IR, the EQ and the
-//   output gain, runs the mute ramp and the preset fade, drives LED1 and LED2's blinks and measures the input and
-//   output peaks, the load and the underruns.
+//   toggles the mute on FS1, counts FS2 presses, smooths knobs 1-2, runs the gate's detector, the trim, the engine, the
+//   IR, the EQ and the output gain, runs the mute ramp and the preset fade, drives LED1 and LED2's blinks and measures
+//   the input and output peaks, the gate's level and cut, the load and the underruns.
 // - The main loop: USB (usb_link.h: Identity, HELLO, DFU; the slot commands in onCommand, their replies and the
 //   STATUS stream in serveReplies), the preset switch (servePresets), the state record (writeState), the slot writes
 //   (writeSlot) and the once-a-second log lines.
@@ -20,9 +21,10 @@
 // and the IR and publishes its gains with gSwapLoaded; the callback takes them and fades in.
 // They share only atomics, each with one writer:
 // - callback -> main loop (relaxed): gKnob, gToggle, gFsHeld, gMutedPub, gUnderruns, gPeak, gOutPeak, gLoadAvg,
-//   gLoadMax, gFs2Presses; gSwapParked (release/acquire);
-// - main loop -> callback (relaxed): gPeakReset, gLoadReset, gBlinkCount; gSwapReq, gSwapLoaded (publishing gNextLevel,
-//   gNextInCal, gNextIrOn, gNextModelOn) and gBlinkReq (release/acquire).
+//   gLoadMax, gFs2Presses, gGateLevel, gGateGain; gSwapParked (release/acquire);
+// - main loop -> callback (relaxed): gPeakReset, gLoadReset, gBlinkCount, gGateWord (publishGate), gGateMeterReset;
+//   gSwapReq, gSwapLoaded (publishing gNextLevel, gNextInCal, gNextIrOn, gNextModelOn) and gBlinkReq
+//   (release/acquire).
 // Memory (memory.h): AudioCallback runs from ITCM; the engine, the EQ and the callback's own state live in DTCM, the
 // IR convolver (66 KB of spectra, streamed through the D-cache every block) in AXI SRAM, which the bench measured 24%
 // faster for it than D2 SRAM (docs/FILTERS.md), the parsed presets in SDRAM. FPSCR.FZ is on (denormals flush to zero).
@@ -41,6 +43,7 @@
 #include "dsp/filters.h"
 #include "dsp/gain.h"
 #include "dsp/mute.h"
+#include "dsp/noise_gate.h"
 #include "firmware.h"
 #include "ir.h"
 #include "memory.h"
@@ -82,6 +85,9 @@ DK_DTCM dkdsp::MuteRamp gSwapFade;
 DK_DTCM uint32_t gSwapSeen = 0;   // the last gSwapReq taken
 DK_DTCM uint32_t gBlinkSeen = 0;  // the last gBlinkReq taken
 DK_DTCM dkctl::Blinker gBlinker;
+DK_DTCM dkdsp::NoiseGate gGate;                             // the playing preset's gate (gGateWord)
+DK_DTCM uint32_t gGateSeen[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};  // the last gGateWord pair taken
+DK_DTCM float gGateLevelAcc = 0.0f, gGateGainAcc = 1.0f;    // the gate meter since the last STATUS
 
 // Shared with the main loop: in SRAM (AXI).
 // Callback -> main loop.
@@ -93,6 +99,8 @@ std::atomic<uint32_t> gUnderruns{0};       // blocks since boot whose callback r
 std::atomic<float> gPeak{0.0f};            // gPeakAcc, published every block
 std::atomic<float> gOutPeak{0.0f};         // gOutPeakAcc, published every block
 std::atomic<float> gLoadAvg{0.0f}, gLoadMax{0.0f};  // gLoad's, published every block
+std::atomic<float> gGateLevel{0.0f};       // gGateLevelAcc, published every block
+std::atomic<float> gGateGain{1.0f};        // gGateGainAcc, published every block
 std::atomic<uint32_t> gFs2Presses{0};      // FS2 presses since boot
 std::atomic<uint32_t> gSwapParked{0};      // the gSwapReq the callback has parked for (release)
 // Main loop -> callback.
@@ -102,6 +110,10 @@ std::atomic<uint32_t> gSwapReq{0};     // a new value asks the callback to fade 
 std::atomic<uint32_t> gSwapLoaded{0};  // gSwapReq's value once the next preset is loaded (release): fade in
 std::atomic<uint32_t> gBlinkReq{0};    // a new value starts gBlinkCount blinks on LED2 (release)
 std::atomic<uint8_t> gBlinkCount{0};
+// The gate's settings as preset.h's 8-byte block, two little-endian words (publishGate). A torn pair mixes two valid
+// settings for one block; the reserved byte is 0, so no published pair equals gGateSeen's initial value.
+std::atomic<uint32_t> gGateWord[2];
+std::atomic<bool> gGateMeterReset{false};  // restart gGateLevelAcc and gGateGainAcc
 float gNextLevel = 1.0f, gNextInCal = 1.0f;  // the loaded preset's gains, IR and model, published by gSwapLoaded
 bool gNextIrOn = false, gNextModelOn = false;
 
@@ -148,9 +160,21 @@ float calOf(const dkmodel::Model& m) {
     return dkdsp::InputCalibrationGain((m.flags & dkmodel::kFlagHasInputLevel) != 0, m.input_level_dbu);
 }
 
+// Hands g to the callback, which applies it at its next block. Main loop (or before StartAudio).
+void publishGate(const dkdsp::GateSettings& g) {
+    uint8_t b[ps::kGateSize];
+    ps::PutGate(b, g);
+    for (int w = 0; w < 2; ++w) {
+        uint32_t v = 0;
+        for (int i = 0; i < 4; ++i) v |= uint32_t(b[4 * w + i]) << (8 * i);
+        gGateWord[w].store(v, std::memory_order_relaxed);
+    }
+}
+
 // The engine and the IR from gPresets[slot], its gains, IR and model state into gNext*; slot < 0 (dry) only sets
 // gNext* to no model, no IR, unity gains. Only while the callback is parked or before StartAudio.
 void loadPreset(int slot) {
+    publishGate(slot < 0 ? dkdsp::kGateOff : gPresets[slot].gate);
     if (slot < 0) {
         gNextModelOn = gNextIrOn = false;
         gNextLevel = gNextInCal = 1.0f;
@@ -223,12 +247,25 @@ void logIr(const dkir::Ir* ir) {
                ir->name);
 }
 
-// The current preset (1-based), with its load time when loadUs > 0, then its model and IR; "preset none" when dry.
+// A gate's settings; "gate off" for nullptr (dry) or a disabled gate.
+void logNoiseGate(const dkdsp::GateSettings* g) {
+    if (g == nullptr || !g->enabled) {
+        dkusb::Log("gate off");
+        return;
+    }
+    dkusb::Log("gate on thr -%u dBFS atk %u.%u ms hold %u ms rel %u ms ratio %u.%u", unsigned(g->threshold),
+               unsigned(g->attack / 10), unsigned(g->attack % 10), unsigned(g->hold), unsigned(g->release),
+               unsigned(g->ratio / 10), unsigned(g->ratio % 10));
+}
+
+// The current preset (1-based), with its load time when loadUs > 0, then its model, IR and gate; "preset none" when
+// dry.
 void logPreset(uint32_t loadUs) {
     if (gCur < 0) {
         dkusb::Log("preset none");
         logModel(nullptr);
         logIr(nullptr);
+        logNoiseGate(nullptr);
         return;
     }
     const ps::Preset& p = gPresets[gCur];
@@ -238,6 +275,7 @@ void logPreset(uint32_t loadUs) {
         dkusb::Log("preset %d \"%s\"", gCur + 1, p.name);
     logModel(&p.model);
     logIr(p.has_ir ? &p.ir : nullptr);
+    logNoiseGate(&p.gate);
 }
 
 void logBootLine() {
@@ -305,6 +343,20 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
 
     float peak = 0.0f;
     for (size_t i = 0; i < size; i++) peak = std::fmax(peak, std::fabs(in[0][i]));
+    // The gate's settings (publishGate), then its detector on the raw input peak: its gain joins the output ramp.
+    const uint32_t gw0 = gGateWord[0].load(std::memory_order_relaxed);
+    const uint32_t gw1 = gGateWord[1].load(std::memory_order_relaxed);
+    if (gw0 != gGateSeen[0] || gw1 != gGateSeen[1]) {
+        gGateSeen[0] = gw0;
+        gGateSeen[1] = gw1;
+        uint8_t b[ps::kGateSize];
+        for (int i = 0; i < 4; ++i) {
+            b[i] = uint8_t(gw0 >> (8 * i));
+            b[4 + i] = uint8_t(gw1 >> (8 * i));
+        }
+        gGate.Set(ps::GetGate(b));
+    }
+    const float gate = gGate.Process(peak);
     // out[0] is the working buffer; the engine accepts in == out.
     const float inTarget = gInCal * dkdsp::InputGain(gInKnob.Process(hw.Knob(0)));
     gInGain.Process(in[0], out[0], size, inTarget);
@@ -316,7 +368,7 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     }
     // Knob 5 low-cut, Knob 6 its resonance, Knob 4 high-cut, Knob 3 its resonance.
     gEq.Process(out[0], size, {hw.Knob(4), hw.Knob(5), hw.Knob(3), hw.Knob(2), tog[0], tog[1], tog[2]});
-    const float outTarget = gLevel * dkdsp::OutputGain(gOutKnob.Process(hw.Knob(1)));
+    const float outTarget = gLevel * dkdsp::OutputGain(gOutKnob.Process(hw.Knob(1))) * gate;
     gOutGain.Process(out[0], out[0], size, outTarget);
     gMute.Process(out[0], out[0], size);
     gSwapFade.Process(out[0], out[0], size);
@@ -347,6 +399,14 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     gPeak.store(gPeakAcc, std::memory_order_relaxed);
     gOutPeakAcc = std::fmax(gOutPeakAcc, outPeak);
     gOutPeak.store(gOutPeakAcc, std::memory_order_relaxed);
+    if (gGateMeterReset.exchange(false, std::memory_order_relaxed)) {
+        gGateLevelAcc = 0.0f;
+        gGateGainAcc = 1.0f;
+    }
+    gGateLevelAcc = std::fmax(gGateLevelAcc, gGate.level());
+    gGateLevel.store(gGateLevelAcc, std::memory_order_relaxed);
+    gGateGainAcc = std::fmin(gGateGainAcc, gate);
+    gGateGain.store(gGateGainAcc, std::memory_order_relaxed);
 
     if (System::GetTick() - start > gBlockTicks) gUnderruns.fetch_add(1, std::memory_order_relaxed);
     // A Reset just before OnBlockEnd takes its first-cycle path: the published loads are never NaN.
@@ -359,6 +419,11 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
 int pct(float v) { return int(lroundf(v * 100.0f)); }
 
 int dbfs(float peak) { return peak > 0.0f ? std::max(int(lroundf(20.0f * log10f(peak))), -120) : -120; }
+
+// A linear level as tenths of a dB below 1, 0..1200 (1200 for 0 and below -120 dB).
+uint16_t tenthsBelow(float lin) {
+    return lin > 0.0f ? uint16_t(std::clamp(lroundf(-200.0f * log10f(lin)), 0L, 1200L)) : 1200;
+}
 
 void logControls() {
     int k[6];
@@ -519,7 +584,9 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
                 return true;
             }
             gWatch = p[0] == 1;
-            gWatchAt = System::GetNow() - dklink::kWatchPeriodMs;
+            // The first STATUS comes one period later and covers only that period: the gate meter restarts now.
+            gWatchAt = System::GetNow();
+            gGateMeterReset.store(true, std::memory_order_relaxed);
             result(cmd, Result::kOk, 0);
             return true;
         case dklink::kUploadBegin: {
@@ -679,6 +746,45 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
             result(cmd, Result::kOk, uint32_t(off + len));
             return true;
         }
+        case dklink::kGate:
+        case dklink::kGateTry: {
+            dkdsp::GateSettings g;
+            if (n != dklink::kGatePayload || p[0] >= ps::kSlots || !dklink::ParseGate(p + 1, n - 1, g)) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            const int k = p[0];
+            if (cmd == dklink::kGateTry) {
+                // An audition, sent while a slider moves: no log line.
+                if (k != gCur) {
+                    result(cmd, Result::kSlotState, 0);
+                    return true;
+                }
+                publishGate(g);
+                result(cmd, Result::kOk, 0);
+                return true;
+            }
+            if (!gFilled[k]) {
+                result(cmd, Result::kSlotState, 0);
+                return true;
+            }
+            const size_t size = imageSize(k);
+            std::memcpy(gScratch[0], mapped(slotOff(k)), size);
+            ps::SetGate(gScratch[0], size, g);
+            const uint32_t t0 = System::GetNow();
+            const bool ok = writeSlot(k, gScratch[0], size);
+            const uint32_t ms = System::GetNow() - t0;
+            rescan(k);
+            settleTarget();
+            if (ok) {
+                if (k == gCur && gFilled[k]) publishGate(gPresets[k].gate);
+                dkusb::Log("gate slot %d %s %lu ms", k + 1, g.enabled ? "on" : "off", (unsigned long)ms);
+            } else {
+                dkusb::Log("slot write failed %d", k + 1);
+            }
+            finishWrite(cmd, ok, ms);
+            return true;
+        }
         default: return false;
     }
 }
@@ -715,7 +821,12 @@ void serveReplies(uint32_t now) {
             s.knob[k] = uint16_t(std::clamp(lroundf(gKnob[k].load(std::memory_order_relaxed) * 1000.0f), 0L, 1000L));
         for (int t = 0; t < 3; ++t) s.toggle[t] = gToggle[t].load(std::memory_order_relaxed);
         s.footswitches = gFsHeld.load(std::memory_order_relaxed);
-        if (tx.AppendStatus(s)) gWatchAt = now;
+        s.gate_level = tenthsBelow(gGateLevel.load(std::memory_order_relaxed));
+        s.gate_cut = tenthsBelow(gGateGain.load(std::memory_order_relaxed));
+        if (tx.AppendStatus(s)) {
+            gWatchAt = now;
+            gGateMeterReset.store(true, std::memory_order_relaxed);
+        }
     }
 }
 

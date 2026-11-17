@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { convertIr } from "../ir/convert";
 import { convertNam } from "../nam/convert";
 import { buildSlot } from "./bank";
+import { GATE_DEFAULT } from "./gate";
 import { infoRanges, type SlotInfo, slotInfo } from "./info";
 
 const FIXTURES = `${import.meta.dir}/../../../tests/fixtures`;
@@ -21,6 +22,7 @@ function expectMatches(info: SlotInfo, withIr: boolean): void {
   expect(info.model.modeledBy).toBeNull();
   expect(info.model.loudness).toBeCloseTo(m.loudness!, 4);
   expect(info.model.inputLevelDbu).toBeCloseTo(m.inputLevelDbu!, 4);
+  expect(info.gate).toEqual(GATE_DEFAULT);
   if (!withIr) {
     expect(info.ir).toBeNull();
     return;

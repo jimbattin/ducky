@@ -5,6 +5,7 @@ import { IR_BIN_SIZE } from "../ir/convert";
 import { MODEL_BIN_SIZE } from "../nam/convert";
 import { crc32 } from "../nam/crc32";
 import { PRESET_HEADER_SIZE } from "../preset/bank";
+import { encodeGate, type GateSettings } from "../preset/gate";
 
 export const HEADER = [0xf0, 0x7d, 0x64, 0x01] as const;
 export const DEVICE = 0x64;
@@ -22,6 +23,8 @@ export const CMD = {
   uploadChunk: 0x09,
   uploadCommit: 0x0a,
   read: 0x0b,
+  gate: 0x0c,
+  gateTry: 0x0d,
   log: 0x12,
   slot: 0x13,
   result: 0x14,
@@ -42,6 +45,8 @@ export const CMD_NAMES: Readonly<Record<number, string>> = {
   [CMD.uploadChunk]: "UPLOAD CHUNK",
   [CMD.uploadCommit]: "UPLOAD COMMIT",
   [CMD.read]: "READ",
+  [CMD.gate]: "GATE",
+  [CMD.gateTry]: "GATE TRY",
   [CMD.log]: "LOG",
   [CMD.slot]: "SLOT",
   [CMD.result]: "RESULT",
@@ -153,6 +158,14 @@ export const uploadChunkMsg = (offset: number, bytes: Uint8Array): Uint8Array =>
 export const uploadCommitMsg = (): Uint8Array => pedalMsg(CMD.uploadCommit);
 export const readMsg = (slot: number, offset: number): Uint8Array => pedalMsg(CMD.read, [slot, ...septets(offset, 3)]);
 
+/** GATE's and GATE TRY's payload: the slot, then the gate block's fields with the release as a u14. */
+function gatePayload(slot: number, g: GateSettings): number[] {
+  const b = encodeGate(g);
+  return [slot, b[0]!, b[1]!, b[2]!, b[3]!, ...septets(b[4]! | (b[5]! << 8), 2), b[6]!];
+}
+export const gateMsg = (slot: number, g: GateSettings): Uint8Array => pedalMsg(CMD.gate, gatePayload(slot, g));
+export const gateTryMsg = (slot: number, g: GateSettings): Uint8Array => pedalMsg(CMD.gateTry, gatePayload(slot, g));
+
 /**
  * Reassembles SysEx messages from a MIDI byte stream (link.h SysExAssembler): realtime bytes are ignored, F0 restarts,
  * any other status byte aborts, a message longer than max bytes is dropped.
@@ -224,6 +237,10 @@ export interface StatusMessage {
   toggles: number[];
   fs1: boolean;
   fs2: boolean;
+  /** The gate detector's highest input level since the previous STATUS, dBFS (<= 0, -120 for silence). */
+  gateLevelDb: number;
+  /** The gate's largest gain reduction since the previous STATUS, dB (>= 0, 120 closed). */
+  gateCutDb: number;
 }
 export interface IdentityMessage {
   type: "identity";
@@ -273,7 +290,7 @@ export function parseMessage(msg: Uint8Array): PedalMessage | null {
       if (p.length !== 5) return null;
       return { type: "result", cmd: p[0]!, code: p[1]!, value: fromSeptets(p, 2, 3) };
     case CMD.status:
-      if (p.length !== 26) return null;
+      if (p.length !== 30) return null;
       return {
         type: "status",
         loadAvg: fromSeptets(p, 0, 2),
@@ -285,6 +302,8 @@ export function parseMessage(msg: Uint8Array): PedalMessage | null {
         toggles: [p[22]!, p[23]!, p[24]!],
         fs1: (p[25]! & 1) !== 0,
         fs2: (p[25]! & 2) !== 0,
+        gateLevelDb: -fromSeptets(p, 26, 2) / 10,
+        gateCutDb: fromSeptets(p, 28, 2) / 10,
       };
     case CMD.data: {
       // A corrupt DATA reads as missing, so the session resends its READ.

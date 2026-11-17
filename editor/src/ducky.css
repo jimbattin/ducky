@@ -56,7 +56,7 @@ p {
   clip-path: inset(50%);
   white-space: nowrap;
 }
-:is(button, select, input):focus-visible {
+:is(button, select, input, .slider):focus-visible {
   outline: 0.125rem solid var(--rh-accent);
   outline-offset: 1px;
 }
@@ -75,6 +75,7 @@ select,
 }
 .slider-track,
 .cpu-bar,
+.gate-bar,
 .statusbar,
 .log,
 .eq-graph svg,
@@ -174,6 +175,9 @@ select {
 .slider.has-ticks {
   height: 1.3125rem;
 }
+.slider[aria-disabled="true"] {
+  opacity: 0.5;
+}
 .slider-track {
   position: absolute;
   left: 0;
@@ -246,7 +250,8 @@ select {
 .segmented > span:last-child {
   border-radius: 0 0.25rem 0.25rem 0;
 }
-.segmented > span[data-on="true"] {
+.segmented > span[data-on="true"],
+.btn[aria-pressed="true"] {
   background: var(--rh-accent-deep);
   color: #fff;
   box-shadow: var(--rh-sunken);
@@ -681,6 +686,59 @@ dl.details dd {
 }
 .edit-count {
   margin-right: auto;
+  color: var(--rh-dim);
+  font-size: 0.6875rem;
+}
+
+/* ---- Noise gate: the slot's gate settings and its meter (the input level against the thresholds) ---- */
+
+.gate-value {
+  width: 5.5rem;
+  text-align: right;
+  font: 0.6875rem var(--rh-mono);
+}
+.gate-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.25rem;
+}
+.gate-bar {
+  position: relative;
+  height: 0.625rem;
+  border-radius: 0.125rem;
+  overflow: hidden;
+}
+.gate-fill {
+  height: 100%;
+  background: var(--rh-on);
+  transition: width 100ms linear;
+}
+.gate-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0.125rem;
+  background: var(--rh-amber);
+}
+.gate-mark[data-kind="open"] {
+  opacity: 0.5;
+}
+.gate-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3125rem;
+  align-items: center;
+  font-size: 0.6875rem;
+}
+.gate-readout {
+  margin-left: auto;
+  font: 0.625rem var(--rh-mono);
+  color: var(--rh-dim);
+  white-space: pre;
+}
+.gate-hint {
+  padding: 0.25rem;
   color: var(--rh-dim);
   font-size: 0.6875rem;
 }

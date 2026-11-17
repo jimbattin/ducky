@@ -1,11 +1,13 @@
-// The preset store (docs/FIRMWARE.md "Preset store"): 8 slots of 64 KB in QSPI from 0x90400000, each a format-2
-// preset (a model binary, an optional IR binary, a name, a CRC), and a two-copy state record holding the last slot.
-// Host-portable (no libDaisy, no allocation), covered by tests/preset_test.cpp. The slot format is the contract with
-// editor/src/preset/bank.ts.
+// The preset store (docs/FIRMWARE.md "Preset store"): 8 slots of 64 KB in QSPI from 0x90400000, each a format-3
+// preset (a model binary, an optional IR binary, a name, a noise gate, a CRC), and a two-copy state record holding
+// the last slot. Host-portable (no libDaisy, no allocation), covered by tests/preset_test.cpp. The slot format is the
+// contract with editor/src/preset/bank.ts and editor/src/preset/gate.ts.
 //
-// Slot (format 2, little-endian): "DKPS", u16 version, u16 flags (bit 0 kFlagHasIr), u32 size (kSizeNoIr, or
-// kSizeWithIr with the IR flag), name[64] (NUL-terminated printable ASCII), the model binary (dkmodel::kBinSize),
-// the IR binary (dkir::kBinSize) when flagged, then the CRC-32 of bytes [0, size - 4). Erased flash (0xFF) follows.
+// Slot (format 3, little-endian): "DKPS", u16 version, u16 flags (bit 0 kFlagHasIr), u32 size (kSizeNoIr, or
+// kSizeWithIr with the IR flag), name[64] (NUL-terminated printable ASCII), the gate block (kGateSize: u8 flags with
+// bit 0 enabled, u8 threshold, u8 attack, u8 hold, u16 release, u8 ratio, u8 0; units in dsp/noise_gate.h), the model
+// binary (dkmodel::kBinSize), the IR binary (dkir::kBinSize) when flagged, then the CRC-32 of bytes [0, size - 4).
+// Erased flash (0xFF) follows.
 //
 // State record (16 bytes at the start of each 4 KB state sector): "DKST", u32 seq, u32 slot (0..7), u32 CRC-32 of the
 // first 12 bytes. Every write goes to the sector not holding the newest record, so a torn write leaves the previous
@@ -16,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "dsp/noise_gate.h"
 #include "ir.h"
 #include "model.h"
 
@@ -29,12 +32,13 @@ constexpr uint32_t kBankBytes = kSlots * kSlotBytes;      // 0x80000, the DFU ba
 constexpr uint32_t kStateOffset[2] = {0x480000, 0x481000};  // QSPI chip offsets of the two state sectors
 constexpr uint32_t kStateSectorBytes = 0x1000;            // 4 KB sector, erased as a whole
 constexpr uint32_t kMpuBytes = 0x100000;                  // firmware.h region 4: 0x90400000-0x904FFFFF
-constexpr uint16_t kFormatVersion = 2;
+constexpr uint16_t kFormatVersion = 3;
 constexpr uint16_t kFlagHasIr = 0x0001;
 constexpr size_t kNameSize = 64;
-constexpr size_t kHeaderSize = 76;
-constexpr size_t kSizeNoIr = kHeaderSize + dkmodel::kBinSize + 4;  // 7988
-constexpr size_t kSizeWithIr = kSizeNoIr + dkir::kBinSize;         // 16280
+constexpr size_t kGateSize = 8;
+constexpr size_t kHeaderSize = 84;
+constexpr size_t kSizeNoIr = kHeaderSize + dkmodel::kBinSize + 4;  // 7996
+constexpr size_t kSizeWithIr = kSizeNoIr + dkir::kBinSize;         // 16288
 constexpr size_t kStateBytes = 16;
 constexpr uint32_t kStateMagic = 0x54534B44;  // "DKST"
 
@@ -42,7 +46,7 @@ static_assert(kBankOffset + kBankBytes <= kStateOffset[0], "the slots end before
 static_assert(kStateOffset[0] + kStateSectorBytes <= kStateOffset[1], "the state sectors do not overlap");
 static_assert(kStateOffset[1] + kStateSectorBytes <= kBankOffset + kMpuBytes, "the store lies inside MPU region 4");
 static_assert(kSizeWithIr <= kSlotBytes, "a preset fits its slot");
-static_assert(kSizeNoIr == 7988 && kSizeWithIr == 16280, "the format-2 sizes");
+static_assert(kSizeNoIr == 7996 && kSizeWithIr == 16288, "the format-3 sizes");
 
 enum class Status : uint8_t { kOk, kEmpty, kMagic, kVersion, kSize, kCrc, kModel, kIr };
 
@@ -66,20 +70,39 @@ struct Preset {
     char name[kNameSize];  // NUL-terminated printable ASCII
     dkmodel::Model model;
     dkir::Ir ir;  // valid only with has_ir
+    dkdsp::GateSettings gate;
 };
 
 namespace detail {
 
-constexpr size_t kOffVersion = 4, kOffFlags = 6, kOffSize = 8, kOffName = 12, kOffModel = kHeaderSize,
+constexpr size_t kOffVersion = 4, kOffFlags = 6, kOffSize = 8, kOffName = 12, kOffGate = 76, kOffModel = kHeaderSize,
                  kOffIr = kHeaderSize + dkmodel::kBinSize;
-static_assert(kOffName + kNameSize == kHeaderSize, "name, then the model");
-static_assert(kOffIr == 7984, "the IR follows the model");
+static_assert(kOffName + kNameSize == kOffGate, "name, then the gate");
+static_assert(kOffGate + kGateSize == kHeaderSize, "the gate, then the model");
+static_assert(kOffIr == 7992, "the IR follows the model");
 
 inline void PutLe32(uint8_t* p, uint32_t v) {
     for (int i = 0; i < 4; ++i) p[i] = uint8_t(v >> (8 * i));
 }
 
 }  // namespace detail
+
+// The kGateSize-byte gate block of g.
+inline void PutGate(uint8_t* out, const dkdsp::GateSettings& g) {
+    out[0] = g.enabled ? 1 : 0;
+    out[1] = g.threshold;
+    out[2] = g.attack;
+    out[3] = g.hold;
+    out[4] = uint8_t(g.release);
+    out[5] = uint8_t(g.release >> 8);
+    out[6] = g.ratio;
+    out[7] = 0;
+}
+
+// A gate block decoded, each field clamped into its range (the slot CRC already guards against corruption).
+inline dkdsp::GateSettings GetGate(const uint8_t* p) {
+    return dkdsp::ClampGate({(p[0] & 1) != 0, p[1], p[2], p[3], uint16_t(p[4] | p[5] << 8), p[6]});
+}
 
 // Validates and decodes the slot data[0, n). *out holds valid data only on kOk.
 inline Status Parse(const uint8_t* data, size_t n, Preset* out) {
@@ -99,6 +122,7 @@ inline Status Parse(const uint8_t* data, size_t n, Preset* out) {
     if (dkmodel::Parse(data + kOffModel, dkmodel::kBinSize, &out->model) != dkmodel::Status::kOk) return Status::kModel;
     if (has_ir && dkir::Parse(data + kOffIr, dkir::kBinSize, &out->ir) != dkir::Status::kOk) return Status::kIr;
     out->has_ir = has_ir;
+    out->gate = GetGate(data + kOffGate);
     std::memcpy(out->name, data + kOffName, kNameSize);
     out->name[kNameSize - 1] = '\0';
     return Status::kOk;
@@ -143,6 +167,12 @@ inline void Rename(uint8_t* image, size_t size, const char* name, size_t len) {
     if (len > kNameSize - 1) len = kNameSize - 1;
     std::memset(image + detail::kOffName, 0, kNameSize);
     std::memcpy(image + detail::kOffName, name, len);
+    detail::PutLe32(image + size - 4, dkmodel::Crc32(image, size - 4));
+}
+
+// Sets the gate of the preset image[0, size) (a parsed slot, size its size field), and rewrites the CRC at size - 4.
+inline void SetGate(uint8_t* image, size_t size, const dkdsp::GateSettings& g) {
+    PutGate(image + detail::kOffGate, g);
     detail::PutLe32(image + size - 4, dkmodel::Crc32(image, size - 4));
 }
 

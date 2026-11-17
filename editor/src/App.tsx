@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { EqGraph } from "./components/EqGraph";
 import { FrontPanel } from "./components/FrontPanel";
+import { GateEditor } from "./components/GateEditor";
 import { LogView } from "./components/LogView";
 import { SlotEditor } from "./components/SlotEditor";
 import { SlotTable } from "./components/SlotTable";
@@ -10,6 +11,7 @@ import { Toolbar } from "./components/Toolbar";
 import { baseDraft, type Draft, draftProblem, isEdited, saveDraft, slotView } from "./draft";
 import { dfuMsg } from "./link/protocol";
 import type { PedalSession } from "./link/session";
+import { GATE_DEFAULT, type GateSettings, gateEqual } from "./preset/gate";
 import { errorText, usePedal } from "./usePedal";
 
 type TabId = "presets" | "eq" | "log";
@@ -54,6 +56,41 @@ export function App() {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [unsaved]);
+
+  // GATE TRY auditions, coalesced: one serial job sends the latest pending settings until none is left.
+  const pending = useRef<{ slot: number; gate: GateSettings } | null>(null);
+  const sending = useRef(false);
+  const pushTry = (slot: number, gate: GateSettings) => {
+    pending.current = { slot, gate };
+    if (sending.current) return;
+    sending.current = true;
+    serial(async (session) => {
+      for (let p = pending.current; p !== null; p = pending.current) {
+        pending.current = null;
+        // slot-state after an FS2 press moved playback elsewhere is expected: the pedal plays the stored gate.
+        await session.gateTry(p.slot, p.gate).catch(() => undefined);
+      }
+    })
+      .catch(() => undefined)
+      .finally(() => {
+        sending.current = false;
+      });
+  };
+  /** Auditions a gate on the pedal when the slot is the playing one. */
+  const tryGate = (slot: number, gate: GateSettings) => {
+    if (slot === playing && linked && s.synced) pushTry(slot, gate);
+  };
+  /** A dropped draft gate on the playing slot: the pedal goes back to the stored one. */
+  const restoreGate = (slot: number) => {
+    const stored = s.infos[slot]?.gate;
+    if (drafts[slot]?.gate && stored) tryGate(slot, stored);
+  };
+  // A preset switch or a resync reloads the stored gate on the pedal: an unsaved draft gate is auditioned again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only a new playing slot or a resync re-sends the draft
+  useEffect(() => {
+    const g = playing === null ? null : drafts[playing]?.gate;
+    if (playing !== null && g) tryGate(playing, g);
+  }, [s.synced, playing]);
 
   // One pedal operation at a time.
   const act = async (label: string, fn: () => Promise<string>): Promise<void> => {
@@ -130,6 +167,7 @@ export function App() {
   };
   const onDiscard = () => {
     if (!window.confirm(`Discard the unsaved changes to ${slotList(edited.map((x) => x.slot))}?`)) return;
+    if (playing !== null) restoreGate(playing);
     setDrafts({});
   };
   const onDfu = () => {
@@ -146,6 +184,17 @@ export function App() {
   };
 
   const sel = s.slots?.[selected];
+  // The selected slot's gate: the draft's, else the stored one (null while it is read), GATE_DEFAULT for a new preset.
+  const storedGate = sel?.status === OK ? (s.infos[selected]?.gate ?? null) : GATE_DEFAULT;
+  const selDraft = sel === undefined ? null : (drafts[selected] ?? baseDraft(sel));
+  const onGate = (g: GateSettings) => {
+    if (sel === undefined || storedGate === null) return;
+    setDrafts((ds) => ({
+      ...ds,
+      [selected]: { ...(ds[selected] ?? baseDraft(sel)), gate: gateEqual(g, storedGate) ? null : g },
+    }));
+    tryGate(selected, g);
+  };
   const presets = !linked ? (
     <p class="tab-empty">Waiting for the pedal.</p>
   ) : s.slots === null || sel === undefined ? (
@@ -169,9 +218,21 @@ export function App() {
         key={selected}
         slot={sel}
         info={s.infos[selected] ?? null}
-        draft={drafts[selected] ?? baseDraft(sel)}
+        draft={selDraft!}
         onChange={(d) => setDrafts((ds) => ({ ...ds, [selected]: d }))}
-        onRevert={() => setDrafts((ds) => without(ds, selected))}
+        onRevert={() => {
+          if (selected === playing) restoreGate(selected);
+          setDrafts((ds) => without(ds, selected));
+        }}
+      />
+      <GateEditor
+        slotNumber={selected + 1}
+        gate={selDraft!.gate ?? storedGate}
+        edited={selDraft!.gate !== null}
+        enabled={selDraft!.model.kind !== "none"}
+        playing={selected === playing}
+        status={s.status}
+        onChange={onGate}
       />
     </>
   );

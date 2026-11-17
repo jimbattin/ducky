@@ -18,38 +18,40 @@ Ducky talks to a host over the Seed's USB MIDI port with SysEx only: no notes, C
 |---|---|---|---|
 |host to pedal|Identity Request|`F0 7E <id> 06 01 F7` (Universal Non-Real-Time, any id 00-7F)|The pedal answers the Identity Reply.|
 |pedal to host|Identity Reply|`F0 7E 7F 06 02 7D 64 00 <board> 00 00 00 00 00 <build id> F7`|Manufacturer 7D, family 64 00 (the device byte 64, then 00), member `<board>` 00 (1 HotHouse), version 00 00 00 00, then the build id: 1-32 printable ASCII bytes, the short git commit with `+dirty` when tracked files differ (e.g. `711fa7c+dirty`), or `unknown` outside git.|
-|host to pedal|`01` HELLO|none|The pedal answers with LOG lines: the boot line `ducky <board> seed <version> sysclk N MHz audio N Hz N bit block N <build id>`, then the `slots`, `preset`, `model` and `ir` lines (docs/FIRMWARE.md "Log lines"). No RESULT.|
+|host to pedal|`01` HELLO|none|The pedal answers with LOG lines: the boot line `ducky <board> seed <version> sysclk N MHz audio N Hz N bit block N <build id>`, then the `slots`, `preset`, `model`, `ir` and `gate` lines (docs/FIRMWARE.md "Log lines"). No RESULT.|
 |host to pedal|`02` LIST|none|8 SLOT messages (slots 0-7), then RESULT `02` ok with value 8.|
 |host to pedal|`03` ERASE|`<slot 0-7>`|Erases the slot (it reads empty afterwards). RESULT ok with the flash time in ms.|
 |host to pedal|`04` RENAME|`<slot 0-7> <name: 1-63 bytes 20-7E>`|Rewrites the preset's name (and its CRC); the model and the IR are kept. RESULT ok with the flash time in ms; `slot-state` when the slot is not ok.|
 |host to pedal|`05` SWAP|`<a 0-7> <b 0-7>` (a != b)|Exchanges the two slots' contents (either may be empty). RESULT ok with the flash time in ms; `slot-state` when either slot is neither ok nor empty.|
 |host to pedal|`06` DFU|none|The pedal logs `dfu reset` and restarts into the Daisy bootloader's DFU mode (no timeout), ready for tools/flash_when_ready.sh. No RESULT.|
-|host to pedal|`07` WATCH|`<on 0/1>`|RESULT ok (value 0). While on, a STATUS every 100 ms. Off at boot.|
-|host to pedal|`08` UPLOAD BEGIN|`<slot 0-7> <size u21>` (size 7988 or 16280)|Starts staging a preset image for the slot, discarding any earlier upload. RESULT value: the next offset (0).|
+|host to pedal|`07` WATCH|`<on 0/1>`|RESULT ok (value 0). While on, a STATUS every 100 ms, the first 100 ms after WATCH on. Off at boot.|
+|host to pedal|`08` UPLOAD BEGIN|`<slot 0-7> <size u21>` (size 7996 or 16288)|Starts staging a preset image for the slot, discarding any earlier upload. RESULT value: the next offset (0).|
 |host to pedal|`09` UPLOAD CHUNK|`<offset u21> <crc32 u32> <Pack7 data>` (1-256 bytes unpacked; the CRC-32 of the unpacked data)|Stages the data at offset. RESULT value: the next expected offset. A resent chunk (offset below it) is accepted again; an offset past it answers `offset`.|
 |host to pedal|`0A` UPLOAD COMMIT|none|Validates the complete image as a preset, writes it to its slot and verifies the flash; the upload is cleared whatever the outcome. RESULT ok with the flash time in ms; `invalid` with the slot status number (Slot status) when the image does not parse.|
 |host to pedal|`0B` READ|`<slot 0-7> <offset u21>`|Reads up to 160 bytes of the slot's preset image from offset: one DATA, then RESULT ok with the next offset (offset + the bytes sent). `bad-request` when the payload is not 4 bytes, the slot is not 0-7 or the offset is at or past the image's size; `slot-state` when the slot is not ok. Reads flash only: audio and the slot are untouched.|
+|host to pedal|`0C` GATE|`<slot 0-7> <enabled 0/1> <threshold 30-80> <attack 5-100> <hold 10-100> <release u14 10-1000> <ratio 15-100>`|Rewrites the preset's noise-gate block (and its CRC); the model, the IR and the name are kept. Threshold in dB below full scale (the gate closes below it and opens 6 dB above it), attack in 0.1 ms, hold and release in ms (release: the time to fall 60 dB), ratio (the expander's) in tenths. When the slot is playing, the gate takes the settings at once, with no reload. RESULT ok with the flash time in ms; `slot-state` when the slot is not ok.|
+|host to pedal|`0D` GATE TRY|`<slot 0-7> <enabled 0/1> <threshold 30-80> <attack 5-100> <hold 10-100> <release u14 10-1000> <ratio 15-100>`|Sets the running gate only, until the next preset load or GATE; nothing is written. RESULT ok (value 0); `slot-state` when the slot is not the playing one.|
 |pedal to host|`12` LOG|`<printable ASCII, at most 120 bytes>`|One log line (boot, HELLO, slot changes, the controls and status lines once a second).|
 |pedal to host|`13` SLOT|`<slot 0-7> <status> <flags> <preset name> 00 <model name> 00 <ir name>`|One slot, answering LIST. Status: Slot status. Flags: bit 0 has an IR, bit 1 playing. Names: printable ASCII of at most 63 bytes (anything else becomes `?`); all three are empty unless the status is ok, the IR name is empty without an IR.|
 |pedal to host|`14` RESULT|`<cmd> <code> <value u21>`|The outcome of a request (Results). Every request except HELLO and DFU gets exactly one RESULT, and it comes last.|
-|pedal to host|`15` STATUS|`<load avg u14> <load max u14> <underruns u28> <slot> <mute> <knob 1-6: 6 x u14> <SW1> <SW2> <SW3> <footswitches>` (26 bytes)|Sent every 100 ms while WATCH is on. Load in permille, as the last once-a-second `load` line reported it (0 before the first); underruns since boot, clamped at 2^28 - 1; slot 0-7, or 7F when dry; mute 0/1; knobs in permille (0-1000); SW1-SW3 0 down, 1 middle, 2 up; footswitches held: bit 0 FS1, bit 1 FS2.|
+|pedal to host|`15` STATUS|`<load avg u14> <load max u14> <underruns u28> <slot> <mute> <knob 1-6: 6 x u14> <SW1> <SW2> <SW3> <footswitches> <gate level u14> <gate cut u14>` (30 bytes)|Sent every 100 ms while WATCH is on. Load in permille, as the last once-a-second `load` line reported it (0 before the first); underruns since boot, clamped at 2^28 - 1; slot 0-7, or 7F when dry; mute 0/1; knobs in permille (0-1000); SW1-SW3 0 down, 1 middle, 2 up; footswitches held: bit 0 FS1, bit 1 FS2. Gate level: the highest level the gate's detector saw at the input (before Knob 1) since the previous STATUS, in tenths of a dB below full scale (0-1200, 1200 for silence); gate cut: the largest gain reduction the gate applied since the previous STATUS, in tenths of a dB (0-1200, 1200 closed).|
 |pedal to host|`16` DATA|`<slot 0-7> <offset u21> <crc32 u32> <Pack7 data>` (1-160 bytes unpacked)|Answers READ: the image bytes at offset and the CRC-32 of the unpacked bytes. Comes before READ's RESULT.|
 
 ## Results
 
-RESULT's value: the next expected offset for UPLOAD BEGIN and CHUNK; for READ the next offset; for COMMIT the flash time in ms on ok, the slot status on `invalid`, else 0; for ERASE, RENAME and SWAP the flash time in ms on ok, else 0; 8 for LIST; 0 for WATCH. A LIST, WATCH or COMMIT with a payload of the wrong length answers `bad-request`.
+RESULT's value: the next expected offset for UPLOAD BEGIN and CHUNK; for READ the next offset; for COMMIT the flash time in ms on ok, the slot status on `invalid`, else 0; for ERASE, RENAME, SWAP and GATE the flash time in ms on ok, else 0; 8 for LIST; 0 for WATCH and GATE TRY. A LIST, WATCH or COMMIT with a payload of the wrong length answers `bad-request`.
 
 |Code|Name|Meaning|
 |---|---|---|
 |0|ok|Done.|
-|1|bad-request|Wrong payload length or a field out of range (slot, size, name, a == b, chunk data past the image, bad Pack7).|
+|1|bad-request|Wrong payload length or a field out of range (slot, size, name, a == b, chunk data past the image, bad Pack7, a gate field).|
 |2|no-upload|UPLOAD CHUNK or COMMIT without an UPLOAD BEGIN (or after a COMMIT).|
 |3|offset|The chunk's offset is past the next expected offset (the value); resend from there.|
 |4|crc|The chunk's data does not match its CRC; resend it.|
 |5|incomplete|COMMIT before every byte of the image was received.|
 |6|invalid|COMMIT: the image does not parse as a preset (the value is the slot status).|
 |7|flash|The flash erase, write or read-back failed.|
-|8|slot-state|The slot's state does not allow it (RENAME of a slot that is not ok, SWAP of a corrupt slot).|
+|8|slot-state|The slot's state does not allow it (RENAME or GATE of a slot that is not ok, SWAP of a corrupt slot, GATE TRY of a slot that is not playing).|
 
 ## Slot status
 
@@ -68,7 +70,7 @@ SLOT's status byte and an `invalid` COMMIT's value: the slot parser's verdict (d
 
 ## Upload
 
-An image is a complete format-2 preset slot (docs/FIRMWARE.md "Preset store"): 7988 bytes without an IR, 16280 with one.
+An image is a complete format-3 preset slot (docs/FIRMWARE.md "Preset store"): 7996 bytes without an IR, 16288 with one.
 
 1. UPLOAD BEGIN `<slot> <size>`; RESULT ok, value 0. A BEGIN discards any earlier upload. Resend it when no RESULT arrives.
 2. UPLOAD CHUNK for each run of up to 256 bytes, in order: `<offset> <crc> <data>`. RESULT ok gives the next offset. With no RESULT (1 s) or `crc`, resend the same chunk: a chunk at or below the next offset is accepted again, so resending is safe. `offset` (the chunk starts past the next expected offset) gives the offset to continue from. `tools/pedal.ts` gives up after 5 retries of one chunk.
@@ -77,7 +79,8 @@ An image is a complete format-2 preset slot (docs/FIRMWARE.md "Preset store"): 7
 ## Slot changes and playback
 
 - Audio keeps running through every slot operation: the audio callback reads nothing from QSPI. Each flash operation blocks the pedal's main loop for its erase and write (hundreds of ms): LOG lines, STATUS and footswitch preset switches wait, then catch up.
-- Every successful slot change logs a line (`upload slot N "NAME" T ms`, `erase slot N T ms`, `rename slot N "NAME" T ms`, `swap slots A B T ms`), then the `slots` line; a failed write logs `slot write failed N`.
+- Every successful slot change logs a line (`upload slot N "NAME" T ms`, `erase slot N T ms`, `rename slot N "NAME" T ms`, `swap slots A B T ms`, `gate slot N on|off T ms`), then the `slots` line; a failed write logs `slot write failed N`.
 - An upload into the playing slot reloads it at once, with the usual preset-switch fade. An upload while the pedal plays dry (no valid slot) starts playing the new slot.
 - Erasing the playing slot switches to the next filled slot (LED2 blinks its number), or to dry when none is left. A rename leaves the audio untouched.
+- GATE on the playing slot changes the running gate at once, without a reload or a fade. GATE TRY changes only the running gate, so an editor can audition settings while a slider moves; the next preset load (a footswitch switch, an upload, an erase) or GATE undoes it.
 - SWAP moves presets, not playback: the playing preset keeps playing under its new slot number, which the pedal remembers (as after a footswitch switch, once it has settled for 2 s). SWAP writes slot a, then slot b: a power loss between the two writes leaves both slots holding b's old preset, or both empty when b was empty (a's preset is lost); LIST shows it, and an upload restores it.

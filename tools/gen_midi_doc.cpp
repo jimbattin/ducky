@@ -48,9 +48,9 @@ int main() {
 
     std::printf("## Results\n\n");
     std::printf("RESULT's value: the next expected offset for UPLOAD BEGIN and CHUNK; for READ the next offset; for "
-                "COMMIT the flash time in ms on ok, the slot status on `invalid`, else 0; for ERASE, RENAME and SWAP "
-                "the flash time in ms on ok, else 0; 8 for LIST; 0 for WATCH. A LIST, WATCH or COMMIT with a payload "
-                "of the wrong length answers `bad-request`.\n\n");
+                "COMMIT the flash time in ms on ok, the slot status on `invalid`, else 0; for ERASE, RENAME, SWAP and "
+                "GATE the flash time in ms on ok, else 0; 8 for LIST; 0 for WATCH and GATE TRY. A LIST, WATCH or "
+                "COMMIT with a payload of the wrong length answers `bad-request`.\n\n");
     std::printf("|Code|Name|Meaning|\n|---|---|---|\n");
     for (const ResultDoc& r : kResults) std::printf("|%d|%s|%s|\n", int(r.code), r.name, r.meaning);
     std::printf("\n");
@@ -64,7 +64,7 @@ int main() {
     std::printf("\n");
 
     std::printf("## Upload\n\n");
-    std::printf("An image is a complete format-2 preset slot (docs/FIRMWARE.md \"Preset store\"): %zu bytes without "
+    std::printf("An image is a complete format-3 preset slot (docs/FIRMWARE.md \"Preset store\"): %zu bytes without "
                 "an IR, %zu with one.\n\n",
                 dkpreset::kSizeNoIr, dkpreset::kSizeWithIr);
     std::printf("1. UPLOAD BEGIN `<slot> <size>`; RESULT ok, value 0. A BEGIN discards any earlier upload. Resend "
@@ -84,12 +84,15 @@ int main() {
                 "Each flash operation blocks the pedal's main loop for its erase and write (hundreds of ms): LOG "
                 "lines, STATUS and footswitch preset switches wait, then catch up.\n");
     std::printf("- Every successful slot change logs a line (`upload slot N \"NAME\" T ms`, `erase slot N T ms`, "
-                "`rename slot N \"NAME\" T ms`, `swap slots A B T ms`), then the `slots` line; a failed write logs "
-                "`slot write failed N`.\n");
+                "`rename slot N \"NAME\" T ms`, `swap slots A B T ms`, `gate slot N on|off T ms`), then the `slots` "
+                "line; a failed write logs `slot write failed N`.\n");
     std::printf("- An upload into the playing slot reloads it at once, with the usual preset-switch fade. An "
                 "upload while the pedal plays dry (no valid slot) starts playing the new slot.\n");
     std::printf("- Erasing the playing slot switches to the next filled slot (LED2 blinks its number), or to dry "
                 "when none is left. A rename leaves the audio untouched.\n");
+    std::printf("- GATE on the playing slot changes the running gate at once, without a reload or a fade. GATE TRY "
+                "changes only the running gate, so an editor can audition settings while a slider moves; the next "
+                "preset load (a footswitch switch, an upload, an erase) or GATE undoes it.\n");
     std::printf("- SWAP moves presets, not playback: the playing preset keeps playing under its new slot number, "
                 "which the pedal remembers (as after a footswitch switch, once it has settled for 2 s). SWAP writes "
                 "slot a, then slot b: a power loss between the two writes leaves both slots holding b's old preset, "

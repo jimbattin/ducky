@@ -6,6 +6,7 @@ import {
   CMD,
   CMD_NAMES,
   fromSeptets,
+  gateMsg,
   pack7,
   parseMessage,
   pedalMsg,
@@ -93,6 +94,10 @@ test("STATUS parses", () => {
     0x01,
     0x00,
     0x02,
+    0x04,
+    0x78,
+    0x01,
+    0x75,
     0xf7,
   );
   expect(parseMessage(m)).toEqual({
@@ -106,6 +111,8 @@ test("STATUS parses", () => {
     toggles: [2, 1, 0],
     fs1: false,
     fs2: true,
+    gateLevelDb: -63.2,
+    gateCutDb: 24.5,
   });
 });
 
@@ -136,6 +143,13 @@ test("uploadChunkMsg frame", () => {
 
 test("readMsg frame", () => {
   expect([...readMsg(2, 300)]).toEqual([0xf0, 0x7d, 0x64, 0x01, 0x0b, 0x02, 0x00, 0x02, 0x2c, 0xf7]);
+});
+
+test("gateMsg frame", () => {
+  const g = { enabled: true, thresholdDb: -55, attackMs: 1.5, holdMs: 30, releaseMs: 250, ratio: 6 };
+  expect([...gateMsg(2, g)]).toEqual([
+    0xf0, 0x7d, 0x64, 0x01, 0x0c, 0x02, 0x01, 0x37, 0x0f, 0x1e, 0x01, 0x7a, 0x3c, 0xf7,
+  ]);
 });
 
 test("DATA parses only with its CRC", () => {

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { crc32 } from "../nam/crc32";
 import { BANK_BYTES, buildBank, buildSlot, PresetError, SLOT_BYTES, SLOT_COUNT, splitSlot } from "./bank";
+import { encodeGate, GATE_DEFAULT, type GateSettings } from "./gate";
 
 const FIXTURES = `${import.meta.dir}/../../../tests/fixtures`;
 const read = async (rel: string) => new Uint8Array(await Bun.file(`${FIXTURES}/${rel}`).arrayBuffer());
@@ -12,8 +13,14 @@ test("the A2 + decay slot matches the committed fixture byte for byte", async ()
 });
 
 test("splitSlot returns the parts a stored preset was built from", async () => {
-  expect(splitSlot(await read("preset/A2_decay.bin"))).toEqual({ name: "A2 + decay", model, ir });
-  expect(splitSlot(buildSlot(model, null, "A2"))).toEqual({ name: "A2", model, ir: null });
+  expect(splitSlot(await read("preset/A2_decay.bin"))).toEqual({ name: "A2 + decay", model, ir, gate: GATE_DEFAULT });
+  expect(splitSlot(buildSlot(model, null, "A2"))).toEqual({ name: "A2", model, ir: null, gate: GATE_DEFAULT });
+});
+
+test("a gate is stored as its 8-byte block and read back", () => {
+  const gate: GateSettings = { enabled: true, thresholdDb: -55, attackMs: 1.5, holdMs: 30, releaseMs: 250, ratio: 6 };
+  expect([...encodeGate(gate)]).toEqual([0x01, 0x37, 0x0f, 0x1e, 0xfa, 0x00, 0x3c, 0x00]);
+  expect(splitSlot(buildSlot(model, null, "x", gate)).gate).toEqual(gate);
 });
 
 test("splitSlot rejects a corrupted image read back", async () => {
@@ -22,13 +29,13 @@ test("splitSlot rejects a corrupted image read back", async () => {
   expect(() => splitSlot(image)).toThrow("preset: crc");
 });
 
-test("a model-only slot is 7988 bytes with flags 0 and a valid CRC", () => {
+test("a model-only slot is 7996 bytes with flags 0 and a valid CRC", () => {
   const slot = buildSlot(model, null, "A2");
-  expect(slot.length).toBe(7988);
+  expect(slot.length).toBe(7996);
   const dv = new DataView(slot.buffer);
   expect(dv.getUint16(6, true)).toBe(0);
-  expect(dv.getUint32(8, true)).toBe(7988);
-  expect(dv.getUint32(7984, true)).toBe(crc32(slot.subarray(0, 7984)));
+  expect(dv.getUint32(8, true)).toBe(7996);
+  expect(dv.getUint32(7992, true)).toBe(crc32(slot.subarray(0, 7992)));
 });
 
 test("a model with a bad CRC is rejected", () => {

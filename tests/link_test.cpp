@@ -1,9 +1,10 @@
 // daisy/src/link.h: the wire contract host tools parse (Identity Reply, LOG, SLOT, RESULT, STATUS, DATA,
-// PedalCommand), the septet and Pack7 codecs, and the host-message reassembly.
+// PedalCommand), the GATE payload, the septet and Pack7 codecs, and the host-message reassembly.
 #include "link.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -174,11 +175,32 @@ TEST(Result, Bytes) {
 
 TEST(Status, Bytes) {
     TxBuffer t;
-    StatusFrame s{500, 503, 3, 3, false, {0, 250, 500, 750, 1000, 123}, {2, 1, 0}, 0b10};
+    StatusFrame s{500, 503, 3, 3, false, {0, 250, 500, 750, 1000, 123}, {2, 1, 0}, 0b10, 632, 245};
     ASSERT_TRUE(t.AppendStatus(s));
     EXPECT_EQ(Unpack(t), (std::vector<uint8_t>{0xF0, 0x7D, 0x64, 0x01, 0x15, 0x03, 0x74, 0x03, 0x77, 0x00, 0x00,
                                                0x00, 0x03, 0x03, 0x00, 0x00, 0x00, 0x01, 0x7A, 0x03, 0x74, 0x05,
-                                               0x6E, 0x07, 0x68, 0x00, 0x7B, 0x02, 0x01, 0x00, 0x02, 0xF7}));
+                                               0x6E, 0x07, 0x68, 0x00, 0x7B, 0x02, 0x01, 0x00, 0x02, 0x04, 0x78,
+                                               0x01, 0x75, 0xF7}));
+}
+
+TEST(Gate, ParsePayload) {
+    const uint8_t p[] = {0x01, 0x37, 0x0F, 0x1E, 0x01, 0x7A, 0x3C};
+    dkdsp::GateSettings g{};
+    ASSERT_TRUE(dklink::ParseGate(p, sizeof p, g));
+    EXPECT_TRUE(g.enabled);
+    EXPECT_EQ(g.threshold, 55);
+    EXPECT_EQ(g.attack, 15);
+    EXPECT_EQ(g.hold, 30);
+    EXPECT_EQ(g.release, 250);
+    EXPECT_EQ(g.ratio, 60);
+    EXPECT_FALSE(dklink::ParseGate(p, 6, g));
+    uint8_t q[7];
+    std::copy(p, p + 7, q);
+    q[1] = 29;
+    EXPECT_FALSE(dklink::ParseGate(q, 7, g));
+    std::copy(p, p + 7, q);
+    q[0] = 2;
+    EXPECT_FALSE(dklink::ParseGate(q, 7, g));
 }
 
 TEST(Data, Bytes) {

@@ -1,19 +1,20 @@
-// Presets and the preset bank, format 2. Spec: daisy/src/preset.h and docs/FIRMWARE.md "Preset store".
+// Presets and the preset bank, format 3. Spec: daisy/src/preset.h and docs/FIRMWARE.md "Preset store".
 // Pure TypeScript (no DOM, no Bun APIs): shared by the editor and tools/preset_bank.ts.
 //
-// A slot: "DKPS", u16 version, u16 flags (bit 0 PRESET_FLAG_HAS_IR), u32 size, name[64], the model binary, the IR
-// binary when flagged, then the CRC-32 of everything before it (little-endian). The bank is SLOT_COUNT slots of
-// SLOT_BYTES, erased (0xFF) where no preset is, written by DFU at BANK_ADDRESS.
+// A slot: "DKPS", u16 version, u16 flags (bit 0 PRESET_FLAG_HAS_IR), u32 size, name[64], the gate block (gate.ts),
+// the model binary, the IR binary when flagged, then the CRC-32 of everything before it (little-endian). The bank is
+// SLOT_COUNT slots of SLOT_BYTES, erased (0xFF) where no preset is, written by DFU at BANK_ADDRESS.
 
 import { IR_BIN_SIZE, IR_MAGIC } from "../ir/convert";
 import { MODEL_BIN_SIZE, MODEL_MAGIC } from "../nam/convert";
 import { crc32 } from "../nam/crc32";
 import { sanitiseName } from "../name";
+import { decodeGate, encodeGate, GATE_DEFAULT, type GateSettings, gateProblem } from "./gate";
 
 export const PRESET_MAGIC = "DKPS";
-export const PRESET_FORMAT_VERSION = 2;
+export const PRESET_FORMAT_VERSION = 3;
 export const PRESET_FLAG_HAS_IR = 0x0001;
-export const PRESET_HEADER_SIZE = 76;
+export const PRESET_HEADER_SIZE = 84;
 export const PRESET_NAME_SIZE = 64;
 export const SLOT_COUNT = 8;
 export const SLOT_BYTES = 0x10000;
@@ -24,6 +25,7 @@ const OFF_VERSION = 4;
 export const OFF_FLAGS = 6;
 const OFF_SIZE = 8;
 export const OFF_NAME = 12;
+export const OFF_GATE = 76;
 
 export class PresetError extends Error {
   constructor(message: string) {
@@ -45,9 +47,16 @@ function checkBin(what: string, bin: Uint8Array, size: number, magic: string): v
 }
 
 // One slot's preset: exactly PRESET_HEADER_SIZE + MODEL_BIN_SIZE + 4 bytes, plus IR_BIN_SIZE with an IR.
-export function buildSlot(model: Uint8Array, ir: Uint8Array | null, name: string): Uint8Array {
+export function buildSlot(
+  model: Uint8Array,
+  ir: Uint8Array | null,
+  name: string,
+  gate: GateSettings = GATE_DEFAULT,
+): Uint8Array {
   checkBin("model", model, MODEL_BIN_SIZE, MODEL_MAGIC);
   if (ir !== null) checkBin("ir", ir, IR_BIN_SIZE, IR_MAGIC);
+  const problem = gateProblem(gate);
+  if (problem !== null) throw new PresetError(`gate: ${problem}`);
   const size = PRESET_HEADER_SIZE + MODEL_BIN_SIZE + (ir === null ? 0 : IR_BIN_SIZE) + 4;
   const out = new Uint8Array(size);
   const dv = new DataView(out.buffer);
@@ -56,6 +65,7 @@ export function buildSlot(model: Uint8Array, ir: Uint8Array | null, name: string
   dv.setUint16(OFF_FLAGS, ir === null ? 0 : PRESET_FLAG_HAS_IR, true);
   dv.setUint32(OFF_SIZE, size, true);
   ascii(out, OFF_NAME, sanitiseName(name)); // at most 63 characters: the rest stays NUL
+  out.set(encodeGate(gate), OFF_GATE);
   out.set(model, PRESET_HEADER_SIZE);
   if (ir !== null) out.set(ir, PRESET_HEADER_SIZE + MODEL_BIN_SIZE);
   dv.setUint32(size - 4, crc32(out.subarray(0, size - 4)), true);
@@ -67,10 +77,11 @@ export interface SlotParts {
   name: string;
   model: Uint8Array;
   ir: Uint8Array | null;
+  gate: GateSettings;
 }
 
-// A whole preset image (as READ returns it) split into its name, model and IR; the preset's CRC is checked here and
-// the model's and IR's own CRCs by buildSlot when the parts are reused.
+// A whole preset image (as READ returns it) split into its name, gate, model and IR; the preset's CRC is checked here
+// and the model's and IR's own CRCs by buildSlot when the parts are reused.
 export function splitSlot(image: Uint8Array): SlotParts {
   if (image.length < PRESET_HEADER_SIZE) throw new PresetError(`preset: ${image.length} bytes`);
   if (String.fromCharCode(...image.subarray(0, 4)) !== PRESET_MAGIC) throw new PresetError("preset: magic");
@@ -90,6 +101,7 @@ export function splitSlot(image: Uint8Array): SlotParts {
     name: String.fromCharCode(...nameBytes.subarray(0, end < 0 ? nameBytes.length : end)),
     model: image.slice(PRESET_HEADER_SIZE, modelEnd),
     ir: hasIr ? image.slice(modelEnd, modelEnd + IR_BIN_SIZE) : null,
+    gate: decodeGate(image, OFF_GATE),
   };
 }
 

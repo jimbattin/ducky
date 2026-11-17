@@ -81,7 +81,7 @@ class FakePedal implements Transport {
   }
 }
 
-const image = Uint8Array.from({ length: 16280 }, (_, i) => (i * 7 + 3) & 0xff);
+const image = Uint8Array.from({ length: 16288 }, (_, i) => (i * 7 + 3) & 0xff);
 
 test("a dropped CHUNK reply is resent once and the upload completes", async () => {
   const pedal = new FakePedal((n) => (n === 0 ? "drop" : undefined));
