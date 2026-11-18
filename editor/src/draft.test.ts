@@ -6,8 +6,8 @@ import type { ConvertedModel, ModelInfo } from "./nam/convert";
 import { buildSlot, splitSlot } from "./preset/bank";
 import type { GateSettings } from "./preset/gate";
 import { type SlotInfo, slotInfo } from "./preset/info";
-import { decodeMorphBlock } from "./preset/morph";
-import { readFixture, withMorphBlock } from "./testFixtures";
+import { decodeMorphBlock, withTarget } from "./preset/morph";
+import { readFixture, waypointBytes, withMorphBlock } from "./testFixtures";
 
 const model = await readFixture("nam/A2.bin");
 const ir = await readFixture("ir/decay.bin");
@@ -28,12 +28,12 @@ const newModel = (name: string): ConvertedModel => ({ bin: model, info: { name }
 test("removing the IR saves the stored model alone under the same name", () => {
   const d: Draft = { ...baseDraft(slot), ir: { kind: "none" } };
   expect(isEdited(d, slot)).toBe(true);
-  expect(composeSlot(d, stored, stored.gate)).toEqual(buildSlot(model, null, "A2 + decay"));
+  expect(composeSlot(d, stored, stored.gate, null)).toEqual(buildSlot(model, null, "A2 + decay"));
 });
 
 test("replacing the model keeps the stored IR", () => {
   const d = withModel(baseDraft(slot), slot, newModel("Other"));
-  expect(composeSlot(d, stored, stored.gate)).toEqual(buildSlot(model, ir, "A2 + decay"));
+  expect(composeSlot(d, stored, stored.gate, null)).toEqual(buildSlot(model, ir, "A2 + decay"));
 });
 
 test("a new model renames the preset only while the name is still the old model's", () => {
@@ -102,16 +102,49 @@ test("a morph-only draft is edited, writes nothing itself and hands its target o
 
 const morphBlock = await readFixture("morph/A2_shuffled.morph");
 const morphed = withMorphBlock(await readFixture("preset/A2_decay.bin"), morphBlock);
+// The same preset with a trained path of three waypoints; its block targets slot 0.
+const pathSection = new Uint8Array([...morphBlock, ...waypointBytes(3)]);
+const trained = withMorphBlock(await readFixture("preset/A2_decay.bin"), pathSection);
+const renamed: Draft = { ...baseDraft(slot), name: "Renamed" };
 
-test("an upload drops the morph block and hands the stored target on to be analysed again", async () => {
-  const renamed: Draft = { ...baseDraft(slot), name: "Renamed" };
-  const { session, calls, uploads } = fakeSession(morphed);
-  expect(await saveDraft(session, slot, renamed, 1, () => undefined)).toEqual({ result: "saved", morph: 1 });
-  expect(calls).toEqual(["readImage", "upload"]);
-  expect(uploads[0]).toEqual(buildSlot(model, ir, "Renamed"));
+test("an upload that keeps the model and leaves the morph alone carries the stored morph section over", async () => {
+  for (const [image, section] of [
+    [morphed, morphBlock],
+    [trained, pathSection],
+  ] as const) {
+    const { session, calls, uploads } = fakeSession(image);
+    expect(await saveDraft(session, slot, renamed, 0, () => undefined)).toEqual({ result: "saved", morph: null });
+    expect(calls).toEqual(["readImage", "upload"]);
+    expect(uploads[0]).toEqual(buildSlot(model, ir, "Renamed", stored.gate, section));
+    // An IR change keeps it too.
+    await saveDraft(session, slot, { ...baseDraft(slot), ir: { kind: "none" } }, 0, () => undefined);
+    expect(uploads[1]).toEqual(buildSlot(model, null, "A2 + decay", stored.gate, section));
+  }
+});
+
+test("a carried morph section is aimed at the slot its block resolves to", async () => {
+  // The target's preset moved to slot 6 (a swap): the block still names slot 0.
+  const { session, uploads } = fakeSession(trained);
+  await saveDraft(session, slot, renamed, 5, () => undefined);
+  expect(uploads[0]).toEqual(buildSlot(model, ir, "Renamed", stored.gate, withTarget(pathSection, 5)));
+  // A block that resolves nowhere is carried as stored, unless it names the slot being written (the pedal refuses that).
+  await saveDraft(session, slot, renamed, null, () => undefined);
+  expect(uploads[1]).toEqual(buildSlot(model, ir, "Renamed", stored.gate, pathSection));
+  const own = fakeSession(withMorphBlock(await readFixture("preset/A2_decay.bin"), withTarget(pathSection, slot.slot)));
+  expect(await saveDraft(own.session, slot, renamed, null, () => undefined)).toEqual({ result: "saved", morph: null });
+  expect(own.uploads[0]).toEqual(buildSlot(model, ir, "Renamed"));
+});
+
+test("an upload with a new model or a morph choice carries no morph and hands the target on to be analysed", async () => {
+  const { session, uploads } = fakeSession(trained);
+  const replaced = withModel(baseDraft(slot), slot, newModel("Other"));
+  expect(await saveDraft(session, slot, replaced, 1, () => undefined)).toEqual({ result: "saved", morph: 1 });
+  expect(uploads[0]).toEqual(buildSlot(model, ir, "A2 + decay"));
   // The draft's own choice wins; "none" needs no MORPH after an upload.
   expect((await saveDraft(session, slot, { ...renamed, morph: 4 }, 1, () => undefined)).morph).toBe(4);
   expect((await saveDraft(session, slot, { ...renamed, morph: "none" }, 1, () => undefined)).morph).toBeNull();
+  expect(uploads[1]).toEqual(buildSlot(model, ir, "Renamed"));
+  expect(uploads[2]).toEqual(buildSlot(model, ir, "Renamed"));
 });
 
 // Slots 2 and 5 hold the fixture preset (the same model); slot 5 morphs with slot 2.
@@ -123,7 +156,10 @@ const slots: SlotMessage[] = Array.from({ length: 8 }, (_, k) =>
 const info = slotInfo(morphed);
 const infos: (SlotInfo | null)[] = Array(8).fill(null);
 infos[1] = { ...info, morph: null };
-infos[4] = { ...info, morph: { ...decodeMorphBlock(morphBlock, 0), target: 1, modelCrc: info.modelCrc } };
+infos[4] = {
+  ...info,
+  morph: { ...decodeMorphBlock(morphBlock, 0), target: 1, modelCrc: info.modelCrc, waypoints: 0 },
+};
 
 test("a new model in a morph target puts the presets that morph with it up for analysis again", () => {
   const target = withModel(baseDraft(slots[1]!), slots[1]!, newModel("Other"));

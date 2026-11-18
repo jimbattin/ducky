@@ -1,6 +1,7 @@
 // The Presets tab's unsaved edits: per slot, the name, model, IR, noise gate and morph target the user wants, each
 // part kept from the pedal, removed, or replaced. Save turns a draft into an ERASE, a GATE or an UPLOAD (saveDraft),
-// then the morph targets are analysed and written (morph/save.ts).
+// then the morph targets it reports are analysed and written (morph/save.ts). An upload that keeps the stored model
+// and leaves the morph alone carries the stored morph over (its block and a trained path's waypoints).
 
 import type { ConvertedIr } from "./ir/convert";
 import { SLOT_STATUS, SLOT_STATUS_NAMES, type SlotMessage } from "./link/protocol";
@@ -9,7 +10,7 @@ import type { ConvertedModel } from "./nam/convert";
 import { buildSlot, OFF_GATE, type SlotParts, splitSlot } from "./preset/bank";
 import { decodeGate, GATE_DEFAULT, GATE_SIZE, type GateSettings } from "./preset/gate";
 import type { SlotInfo } from "./preset/info";
-import { resolveMorph } from "./preset/morph";
+import { resolveMorph, withTarget } from "./preset/morph";
 
 /** A preset part: what the slot stores, nothing, or a newly converted file. */
 export type Part<T> = { kind: "stored" } | { kind: "none" } | { kind: "new"; value: T };
@@ -96,8 +97,16 @@ export function slotView(s: SlotMessage, d: Draft | undefined): SlotView {
   return { state: "ok", name: d.name, model: modelName(d, s) ?? "", ir: irName(d, s) ?? "—", edited: true };
 }
 
-/** The image a draft saves; stored holds the slot's parts when the draft keeps any; gate is the gate to store. */
-export function composeSlot(d: Draft, stored: SlotParts | null, gate: GateSettings): Uint8Array {
+/**
+ * The image a draft saves; stored holds the slot's parts when the draft keeps any; gate is the gate to store and
+ * morph the morph section to store (null: none).
+ */
+export function composeSlot(
+  d: Draft,
+  stored: SlotParts | null,
+  gate: GateSettings,
+  morph: Uint8Array | null,
+): Uint8Array {
   const need = (what: string): SlotParts => {
     if (stored === null) throw new Error(`The stored ${what} is not available`);
     return stored;
@@ -110,7 +119,7 @@ export function composeSlot(d: Draft, stored: SlotParts | null, gate: GateSettin
     ir = need("IR").ir;
     if (ir === null) throw new Error("The slot no longer has an IR");
   }
-  return buildSlot(model, ir, d.name.trim(), gate);
+  return buildSlot(model, ir, d.name.trim(), gate, morph);
 }
 
 /** What saveDraft did, and the morph step that must follow it once every draft is written (morph/save.ts). */
@@ -123,9 +132,12 @@ export interface DraftSaved {
 /**
  * Applies a draft to its slot: ERASE when its model is removed; GATE when the model, the IR and the name are kept and
  * the gate changed (no upload, so the playing preset is not reloaded); else UPLOAD of the composed preset, reading the
- * slot back first when the draft keeps a stored part or the stored gate. An upload drops the slot's morph block, so
- * its stored target (storedMorph: resolveMorph's, null for none) is returned to be analysed again, against the new
- * model if it changed.
+ * slot back first when the draft keeps a stored part or the stored gate. An upload that keeps the stored model and
+ * whose draft leaves the morph alone carries the stored morph section over (the block, aimed at storedMorph when it
+ * resolves there, and any waypoints) and reports nothing to analyse; a section whose target would be the slot itself
+ * (the pedal refuses it) is left out. Any other upload carries no morph: the draft's choice is returned to be
+ * analysed, or with a new model and no choice the stored target (storedMorph: resolveMorph's, null for none), to be
+ * analysed against the new model.
  */
 export async function saveDraft(
   session: PedalSession,
@@ -155,7 +167,14 @@ export async function saveDraft(
     d.gate ??
     stored?.gate ??
     (s.status === SLOT_STATUS.ok ? decodeGate(await session.read(s.slot, OFF_GATE, GATE_SIZE)) : GATE_DEFAULT);
-  await session.upload(s.slot, composeSlot(d, stored, gate), (sent, size) => onProgress(sent / size));
+  const carries = d.model.kind === "stored" && d.morph === null;
+  let morph: Uint8Array | null = null;
+  if (carries && stored?.morph) {
+    morph = storedMorph === null ? stored.morph : withTarget(stored.morph, storedMorph);
+    if (morph[0] === s.slot) morph = null;
+  }
+  await session.upload(s.slot, composeSlot(d, stored, gate, morph), (sent, size) => onProgress(sent / size));
+  if (carries) return { result: "saved", morph: null };
   return { result: "saved", morph: d.morph === "none" ? null : (d.morph ?? storedMorph) };
 }
 

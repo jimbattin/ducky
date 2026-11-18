@@ -3,10 +3,9 @@
 
 import { crc32 } from "../crc32";
 import { sanitiseName } from "../device";
-import { IR_BIN_SIZE } from "../ir/convert";
-import { MODEL_BIN_SIZE } from "../nam/convert";
-import { PRESET_HEADER_SIZE } from "../preset/bank";
+import { imageSize } from "../preset/bank";
 import { encodeGate, type GateSettings } from "../preset/gate";
+import { MAX_WAYPOINTS } from "../preset/morph";
 
 export const HEADER = [0xf0, 0x7d, 0x64, 0x01] as const;
 export const DEVICE = 0x64;
@@ -103,11 +102,18 @@ export const CHUNK_BYTES = 256;
 export const READ_BYTES = 160;
 /** ASSIGN's and VALUES's "no parameter" (params.h kNoParam). */
 export const NO_PARAM = 0x7f;
-/** The two preset image sizes: without and with an IR. */
-export const IMAGE_SIZES = [
-  PRESET_HEADER_SIZE + MODEL_BIN_SIZE + 4,
-  PRESET_HEADER_SIZE + MODEL_BIN_SIZE + IR_BIN_SIZE + 4,
-] as const;
+
+/**
+ * `size` is a preset image's (UPLOAD BEGIN takes no other): with or without an IR, and without a morph or with one
+ * of 0-3 waypoints.
+ */
+export function isImageSize(size: number): boolean {
+  for (const hasIr of [false, true]) {
+    if (size === imageSize(hasIr, false)) return true;
+    for (let k = 0; k <= MAX_WAYPOINTS; k++) if (size === imageSize(hasIr, true, k)) return true;
+  }
+  return false;
+}
 
 /** v as n 7-bit bytes, most significant first. */
 export function septets(v: number, n: number): number[] {

@@ -13,11 +13,16 @@
 //   gate N on|off [THRESHOLD_DB ATTACK_MS HOLD_MS RELEASE_MS RATIO]
 //                                            the preset's noise gate: on/off alone keeps the stored settings, e.g.
 //                                            `gate 1 on -55 0.5 20 100 4` (threshold in dBFS, ratio N for N:1)
-//   morph N M|none                           make slot N's preset morph with slot M's (the `morph` parameter blends
+//   morph N M|none [--train | --path FILE]   make slot N's preset morph with slot M's (the `morph` parameter blends
 //                                            N's model into M's): reads both models, fits M's to N's and stores the
-//                                            fit in slot N; none removes it. Run it again after uploading over M
+//                                            fit in slot N (a straight blend); none removes it. --train reads both
+//                                            models, trains a path of waypoints between them (tools/morph_train.py
+//                                            under uv, about ten minutes) and stores it in slot N by uploading its
+//                                            preset again, unless the straight blend fits at least as well, which
+//                                            is then stored instead; --path FILE stores a path file the trainer
+//                                            wrote. Run it again after uploading over M
 //   info N                                   the preset in slot N: its name, model metadata, IR, gate and morph
-//                                            target (read back)
+//                                            target, with a trained path's waypoint count (read back)
 //   param list | param get NAME | param set NAME VALUE | param assign CONTROL NAME|none | param save
 //                                            the parameters (docs/MIDI.md "Parameters"): each one's value and
 //                                            controls; VALUE in the parameter's unit, a choice's label or index, or
@@ -25,12 +30,17 @@
 //                                            for the next power-up
 //   status [SECONDS]                         STATUS and LOG lines for SECONDS (default 5) or until Ctrl-C
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { accepts, CONTROLS, formatParam, parseParamValue } from "../editor/src/link/params";
 import { type ParamInfo, SLOT_STATUS, SLOT_STATUS_NAMES, type StatusMessage } from "../editor/src/link/protocol";
 import { LinkError, PedalSession } from "../editor/src/link/session";
-import { saveMorph } from "../editor/src/morph/save";
+import { fitAlignment } from "../editor/src/morph/align";
+import { saveMorph, saveMorphPath } from "../editor/src/morph/save";
+import { modelWeights } from "../editor/src/nam/convert";
 import { type GateSettings, gateProblem } from "../editor/src/preset/gate";
-import { resolveMorph } from "../editor/src/preset/morph";
+import { decodePathFile, encodeMorphBlock, type MorphPath, resolveMorph } from "../editor/src/preset/morph";
 import { findSeeds, openRawMidi } from "./rawmidi";
 import { loadSlotSource, SlotSourceError } from "./slot_source";
 
@@ -42,7 +52,7 @@ const USAGE = `usage: bun tools/pedal.ts [--port BUS-PORT] COMMAND
   rename N NAME
   swap A B
   gate N on|off [THRESHOLD_DB ATTACK_MS HOLD_MS RELEASE_MS RATIO]
-  morph N M|none
+  morph N M|none [--train | --path FILE]
   param list | param get NAME | param set NAME VALUE | param assign CONTROL NAME|none | param save
   status [SECONDS]`;
 
@@ -57,11 +67,13 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-// Arguments: --port anywhere; upload's --ir and --name anywhere after the command.
+// Arguments: --port anywhere; upload's --ir and --name and morph's --train and --path anywhere after the command.
 const args = process.argv.slice(2);
 let port = process.env.DK_USB_PORT ?? null;
 let irArg: string | null = null;
 let nameArg: string | null = null;
+let train = false;
+let pathArg: string | null = null;
 const words: string[] = [];
 for (let i = 0; i < args.length; i++) {
   const a = args[i]!;
@@ -73,6 +85,8 @@ for (let i = 0; i < args.length; i++) {
   if (a === "--port") port = value("BUS-PORT");
   else if (a === "--ir") irArg = value("IR");
   else if (a === "--name") nameArg = value("NAME");
+  else if (a === "--train") train = true;
+  else if (a === "--path") pathArg = value("FILE");
   else if (a.startsWith("--")) usage(`unknown option ${a}`);
   else words.push(a);
 }
@@ -122,6 +136,8 @@ if (command === "swap") slots.push(slotArg(rest[0]!), slotArg(rest[1]!));
 // morph's target slot (0-based), or "none".
 const morphTarget = command === "morph" && rest[1] !== "none" ? slotArg(rest[1]!) : "none";
 if (morphTarget === slots[0]) usage("morph: a preset cannot morph with itself");
+if ((train || pathArg !== null) && morphTarget === "none") usage("--train and --path are for morph N M");
+if (train && pathArg !== null) usage("morph: give --train or --path, not both");
 
 // gate's on|off and, with all 7 words, the whole gate (null: keep the stored settings).
 let gateOn = false;
@@ -163,6 +179,11 @@ const source =
         throw e;
       })
     : null;
+// --path's path file, before touching the pedal.
+const readPath = async (file: string): Promise<MorphPath> =>
+  decodePathFile(new Uint8Array(await Bun.file(file).arrayBuffer()));
+const givenPath =
+  pathArg === null ? null : await readPath(pathArg).catch((e: unknown) => fail(`${pathArg}: ${(e as Error).message}`));
 if (source?.warning) console.error(`pedal: slot ${slots[0]! + 1}: warning: ${source.warning}`);
 
 const seeds = findSeeds();
@@ -188,6 +209,28 @@ const signed = (v: number | null, unit: string): string =>
 const quoted = (s: string | null): string => (s === null ? "none" : `"${s}"`);
 /** A morph fit (0..1) in percent. */
 const percent = (fit: number): string => (100 * fit).toFixed(1);
+
+/**
+ * Trains a path from model binary a to model binary b: tools/morph_train.py under uv, from the repo root, on the two
+ * binaries in a temporary directory, its progress on this process's stdout and stderr.
+ */
+async function trainPath(a: Uint8Array, b: Uint8Array): Promise<MorphPath> {
+  const dir = await mkdtemp(join(tmpdir(), "ducky-morph-"));
+  try {
+    const [fileA, fileB, out] = ["A.bin", "B.bin", "OUT.path"].map((f) => join(dir, f)) as [string, string, string];
+    await Bun.write(fileA, a);
+    await Bun.write(fileB, b);
+    const trainer = Bun.spawn(["uv", "run", "tools/morph_train.py", fileA, fileB, "-o", out], {
+      cwd: join(import.meta.dir, ".."),
+      stdio: ["inherit", "inherit", "inherit"],
+    });
+    const code = await trainer.exited;
+    if (code !== 0) throw new Error(`tools/morph_train.py failed (exit ${code})`);
+    return await readPath(out);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 const midi = await openRawMidi(seed.dev).catch((e: unknown) => fail((e as Error).message));
 try {
@@ -256,7 +299,8 @@ try {
       console.log(
         target === null
           ? `morph missing slot ${morph.target + 1}`
-          : `morph slot ${target + 1} fit ${percent(morph.fit)} % unaligned ${percent(morph.unalignedFit)} %`,
+          : `morph slot ${target + 1} fit ${percent(morph.fit)} % unaligned ${percent(morph.unalignedFit)} %` +
+              (morph.waypoints > 0 ? ` waypoints ${morph.waypoints}` : ""),
       );
       break;
     }
@@ -268,6 +312,37 @@ try {
     }
     case "morph": {
       const k = slots[0]!;
+      if (morphTarget !== "none" && (train || givenPath !== null)) {
+        const what = `morph slot ${k + 1} -> ${morphTarget + 1}`;
+        let path = givenPath;
+        if (path === null) {
+          const binA = await session.readModel(k);
+          const binB = await session.readModel(morphTarget);
+          path = await trainPath(binA, binB).catch((e: unknown) => fail((e as Error).message));
+          // Two captures that are one network in other channel coordinates: the aligned straight blend is the morph.
+          const b = modelWeights(binB);
+          const straight = fitAlignment(modelWeights(binA), b);
+          if (straight.fit >= path.fit) {
+            const flashMs = await session.morph(
+              k,
+              encodeMorphBlock({ ...straight, target: morphTarget, modelCrc: b.crc }),
+            );
+            console.log(
+              `${what}: straight blend kept, fit ${percent(straight.fit)} % (unaligned ` +
+                `${percent(straight.unalignedFit)} %, trained path ${percent(path.fit)} %), flash ${flashMs} ms`,
+            );
+            break;
+          }
+        }
+        const t0 = performance.now();
+        const r = await saveMorphPath(session, k, morphTarget, path).catch((e: unknown) => fail((e as Error).message));
+        const secs = ((performance.now() - t0) / 1000).toFixed(1);
+        console.log(
+          `${what}: trained path, ${r.waypoints} waypoint${r.waypoints === 1 ? "" : "s"}, fit ${percent(r.fit)} % ` +
+            `(straight ${percent(r.unalignedFit)} %), flash ${r.flashMs} ms, ${secs} s`,
+        );
+        break;
+      }
       const r = await saveMorph(session, k, morphTarget);
       console.log(
         r.target === null

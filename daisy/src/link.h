@@ -355,9 +355,9 @@ inline constexpr CommandDoc kCommands[] = {
     {kWatch, Dir::kToPedal, "WATCH", "`<on 0/1>`",
      "RESULT ok (value 0). While on, a STATUS and a VALUES every 100 ms, the first 100 ms after WATCH on. Off at "
      "boot."},
-    {kUploadBegin, Dir::kToPedal, "UPLOAD BEGIN", "`<slot 0-7> <size u21>` (size 7996 or 16288)",
+    {kUploadBegin, Dir::kToPedal, "UPLOAD BEGIN", "`<slot 0-7> <size u21>` (a preset image's size: Upload)",
      "Starts staging a preset image for the slot, discarding any earlier upload. RESULT value: the next offset "
-     "(0)."},
+     "(0). `bad-request` when the size is not one a preset image has."},
     {kUploadChunk, Dir::kToPedal, "UPLOAD CHUNK",
      "`<offset u21> <crc32 u32> <Pack7 data>` (1-256 bytes unpacked; the CRC-32 of the unpacked data)",
      "Stages the data at offset. RESULT value: the next expected offset. A resent chunk (offset below it) is "
@@ -365,7 +365,9 @@ inline constexpr CommandDoc kCommands[] = {
     {kUploadCommit, Dir::kToPedal, "UPLOAD COMMIT", "none",
      "Validates the complete image as a preset, writes it to its slot and verifies the flash; the upload is "
      "cleared whatever the outcome. RESULT ok with the flash time in ms; `invalid` with the slot status number "
-     "(Slot status) when the image does not parse."},
+     "(Slot status) when the image does not parse, or with `morph` when its morph block targets the slot it is "
+     "uploaded to. The target slot is not checked otherwise: the pedal looks for the model the block names when "
+     "the preset loads."},
     {kRead, Dir::kToPedal, "READ", "`<slot 0-7> <offset u21>`",
      "Reads up to 160 bytes of the slot's preset image from offset: one DATA, then RESULT ok with the next offset "
      "(offset + the bytes sent). `bad-request` when the payload is not 4 bytes, the slot is not 0-7 or the offset "
@@ -398,7 +400,8 @@ inline constexpr CommandDoc kCommands[] = {
     {kMorph, Dir::kToPedal, "MORPH",
      "`<slot 0-7>` (clear) or `<slot 0-7> <Pack7 64-byte morph block>` (docs/FIRMWARE.md \"Preset store\")",
      "Rewrites the preset's morph block (and its CRC), or removes it; the model, the IR, the name and the gate are "
-     "kept. The block's target slot must be ok, hold the model whose CRC the block names, and not be the slot "
+     "kept, and the waypoints of a trained path the preset had are removed: the block set is a straight blend. "
+     "The block's target slot must be ok, hold the model whose CRC the block names, and not be the slot "
      "itself. On the playing slot the preset reloads, with the preset-switch fade. RESULT ok with the flash time "
      "in ms; `bad-request` for a payload of another length, a block that does not parse (target, permutation, "
      "scales, matrix, fits) or one that targets its own slot; `slot-state` when the slot or the target is not ok, "
@@ -455,7 +458,9 @@ inline constexpr ResultDoc kResults[] = {
     {Result::kOffset, "offset", "The chunk's offset is past the next expected offset (the value); resend from there."},
     {Result::kCrc, "crc", "The chunk's data does not match its CRC; resend it."},
     {Result::kIncomplete, "incomplete", "COMMIT before every byte of the image was received."},
-    {Result::kInvalid, "invalid", "COMMIT: the image does not parse as a preset (the value is the slot status)."},
+    {Result::kInvalid, "invalid",
+     "COMMIT: the image does not parse as a preset, or its morph block targets its own slot (the value is the slot "
+     "status)."},
     {Result::kFlash, "flash", "The flash erase, write or read-back failed."},
     {Result::kSlotState, "slot-state", "The slot's state does not allow it (RENAME, GATE or MORPH of a slot that is "
                                         "not ok, SWAP of a corrupt slot, GATE TRY of a slot that is not playing, "

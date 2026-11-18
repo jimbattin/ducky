@@ -134,9 +134,12 @@ int main() {
 
     std::printf("## Upload\n\n");
     std::printf("An image is a complete format-3 preset slot (docs/FIRMWARE.md \"Preset store\"): %zu bytes without "
-                "an IR, %zu with one. An upload never carries a morph block: MORPH adds it to a stored preset, and "
-                "an upload over a preset drops the one it had.\n\n",
-                dkpreset::kSizeNoIr, dkpreset::kSizeWithIr);
+                "an IR, %zu with one; %zu more with a morph block, and %zu more for each of its trained path's "
+                "waypoints (0-%d), %zu at most. UPLOAD BEGIN takes these sizes only. An upload replaces the whole "
+                "slot, so one without a morph block over a preset drops the block and the waypoints it had; MORPH "
+                "sets or removes the block of a stored preset, and removes its waypoints.\n\n",
+                dkpreset::kSizeNoIr, dkpreset::kSizeWithIr, dkmorph::kBlockBytes, dkmorph::kWaypointBytes,
+                dkmorph::kMaxWaypoints, dkpreset::kSizeMax);
     std::printf("1. UPLOAD BEGIN `<slot> <size>`; RESULT ok, value 0. A BEGIN discards any earlier upload. Resend "
                 "it when no RESULT arrives.\n");
     std::printf("2. UPLOAD CHUNK for each run of up to %zu bytes, in order: `<offset> <crc> <data>`. RESULT ok "
@@ -166,7 +169,8 @@ int main() {
     std::printf("- MORPH on the playing slot reloads it, with the preset-switch fade. A playing preset whose morph "
                 "target is uploaded over, erased or swapped reloads too: it goes on morphing with whichever slot "
                 "holds the model its block was fitted to, and plays its own model alone when none does (the log's "
-                "`morph missing slot N`).\n");
+                "`morph missing slot N`). An uploaded preset's morph block is resolved the same way, so it may "
+                "arrive before its target.\n");
     std::printf("- SWAP moves presets, not playback: the playing preset keeps playing under its new slot number, "
                 "which the pedal remembers (as after a footswitch switch, once it has settled for 2 s). SWAP writes "
                 "slot a, then slot b: a power loss between the two writes leaves both slots holding b's old preset, "

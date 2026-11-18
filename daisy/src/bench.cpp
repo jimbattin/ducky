@@ -14,13 +14,15 @@
 //   flipping every 10 blocks, so every glide and coefficient ramp runs on every block), the noise gate (enabled, the
 //   longest hold: the longest detector scan), the compressor (on, blend, its Sustain, Level and Balance flipping every
 //   10 blocks, so every glide and ramp runs on every block, and the noise drives the side chain into compression and
-//   the clamp), the morph (dkdsp::A2Lite::Blend on every block and the two gains the pedal blends in dB: a knob that
-//   never rests; both weight sets are the model's own, so the engine goes on computing it) and the pedal's whole
-//   chain (gate, morph, compressor, trim, engine, IR, EQ, output gain with the gate's gain, mute), timed the same
-//   way; the chain gate is its maximum against kChainGatePermille, the load ceiling (docs/ROADMAP.md "Decisions").
+//   the clamp), the morph (dkdsp::A2Lite::Blend of one path segment on every block and the two gains the pedal
+//   blends in dB: a knob that never rests; both weight sets are the model's own, so the engine goes on computing it)
+//   and the pedal's whole chain (gate, morph, compressor, trim, engine, IR, EQ, output gain with the gate's gain,
+//   mute), timed the same way; the chain gate is its maximum against kChainGatePermille, the load ceiling
+//   (docs/ROADMAP.md "Decisions").
 //   The engine is reloaded after the chain: a blend leaves it with the head scale folded into the head.
 // Placement matches the pedal's: the engine, the compressor and the EQ in DTCM, the pedal's convolver in AXI SRAM
-// (gIrAxi; gIrD2 is the D2 SRAM comparison) with the morph weights, the stages and the timed blocks in ITCM.
+// (gIrAxi; gIrD2 is the D2 SRAM comparison) with the morph's segment (the pedal's other segments are not read by a
+// blend, and SRAM has no room for them here), the stages and the timed blocks in ITCM.
 // Log lines (usb_log.py; docs/FIRMWARE.md "Bench"):
 //   at power-on and on HELLO "ducky_bench <board> sysclk N MHz <build id>";
 //   "bench model "<name>" ok" (or "bench model <status>", repeated, when the embedded model does not parse);
@@ -138,12 +140,13 @@ DK_DTCM dkdsp::GainRamp gInGain, gOutGain;
 DK_DTCM dkdsp::MuteRamp gMute;
 DK_DTCM dkdsp::NoiseGate gGate;
 float gNoise[kBlockSize * kNoiseBlocks];  // SRAM: DTCM has no room beside the engine and the stack reserve
-// SDRAM: the IR check's buffers and dkmorph::Prepare's scratch are not timed, and SRAM (which holds the image and the
-// fixtures too) has no room for them. Each is written before it is read.
+// SDRAM: the IR check's buffers, dkmorph::Prepare's scratch and its weights are not timed, and SRAM (which holds the
+// image and the fixtures too) has no room for them. Each is written before it is read.
 DK_SDRAM float gIrIn[kIrCheckSamples], gIrOut[kIrCheckSamples];
-DK_SDRAM float gMorphScratch[2 * a2::kWeightCount];
+DK_SDRAM float gMorphScratch[a2::kWeightCount];
+DK_SDRAM dkmorph::Weights gMorphPrep;
 DK_DTCM float gOut[kBlockSize];
-dkmorph::Weights gMorphW;                   // AXI SRAM (.bss): the pedal's placement
+float gMorphA[a2::kWeightCount], gMorphD[a2::kWeightCount];  // gMorphPrep's segment 0 in AXI SRAM (.bss), as the pedal's
 DK_DTCM uint32_t gMorphBlocks;              // counts the morph's blocks: the blend position flips on each
 DK_DTCM float gMorphGain[2];                // the level match and the input calibration the morph step computes
 uint32_t gBudget = 1;  // cycles in one block period
@@ -274,10 +277,11 @@ DK_ITCM void blockComp(const float* in) { gComp.Process(in, gOut, kBlockSize, co
 DK_ITCM void blockGate(const float* in) { gOut[0] = gGate.Process(dkdsp::Peak(in, kBlockSize)); }
 
 // The pedal's morph step with a knob that never rests: the weights blended on every block, at positions 0 and 1 in
-// turn, and the level match and the input calibration from dB.
+// turn (the two ends of a straight blend's one segment), and the level match and the input calibration from dB.
 DK_ITCM void stepMorph() {
     const float t = float(gMorphBlocks++ & 1u);
-    gEngine.Blend(gMorphW.a, gMorphW.d, t);
+    const dkmorph::Segment g = dkmorph::SegmentAt(t, 1);
+    gEngine.Blend(gMorphA, gMorphD, g.f);
     gMorphGain[0] = dkdsp::DbToGain(-3.0f + 6.0f * t);
     gMorphGain[1] = dkdsp::DbToGain(-7.5f + 3.0f * t);
 }
@@ -439,7 +443,9 @@ int main() {
     dkusb::Log("bench ir \"%s\" ok", gIrData.name);
     gIrD2.Load(gIrData.taps);
     gIrAxi.Load(gIrData.taps);
-    dkmorph::Prepare(dkmorph::kIdentity, gModel, gModel, gMorphScratch, &gMorphW);
+    dkmorph::Prepare(dkmorph::kIdentity, gModel, gModel, nullptr, 0, gMorphScratch, &gMorphPrep);
+    std::memcpy(gMorphA, gMorphPrep.a[0], sizeof gMorphA);
+    std::memcpy(gMorphD, gMorphPrep.d[0], sizeof gMorphD);
     gEq.Init(eqValues());
     gComp.Init(compValues());
     gInGain.Init(1.0f);

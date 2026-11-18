@@ -1,5 +1,6 @@
 # Host builds, no libDaisy: `make host` -> build/host/tests and build/host/render; `make test` runs the tests and
-# checks docs/MIDI.md is current; `make midi-doc` regenerates docs/MIDI.md from daisy/src/link.h.
+# checks docs/MIDI.md is current; `make midi-doc` regenerates docs/MIDI.md from daisy/src/link.h; `make morph-check`
+# checks tools/morph_train.py against the fixtures.
 include daisy/cmsis_fft.mk
 
 HOST_DIR := build/host
@@ -43,7 +44,11 @@ midi-doc: $(HOST_DIR)/gen_midi_doc
 check-midi-doc: $(HOST_DIR)/gen_midi_doc
 	$(HOST_DIR)/gen_midi_doc | diff -u docs/MIDI.md -
 
+# The morph path trainer's network and fit against tests/fixtures (uv; the first run downloads PyTorch).
+morph-check:
+	uv run tools/morph_train.py --check
+
 clean:
 	rm -rf build
 
-.PHONY: host render test midi-doc check-midi-doc clean
+.PHONY: host render test midi-doc check-midi-doc morph-check clean

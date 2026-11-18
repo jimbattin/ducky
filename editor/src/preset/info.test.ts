@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { convertIr } from "../ir/convert";
 import { convertNam } from "../nam/convert";
-import { readFixture, readFixtureText, withMorphBlock } from "../testFixtures";
-import { buildSlot } from "./bank";
+import { readFixture, readFixtureText, waypointBytes, withMorphBlock } from "../testFixtures";
+import { buildSlot, imageSize } from "./bank";
 import { GATE_DEFAULT } from "./gate";
 import { infoRanges, type SlotInfo, slotInfo } from "./info";
 
@@ -55,9 +55,23 @@ for (const withIr of [true, false])
       expectMatches(info, withIr);
       expect(info.modelCrc).toBe(new DataView(model.bin.buffer).getUint32(model.bin.length - 4, true));
       if (withMorph) {
-        expect(info.morph).toMatchObject({ target: 0, perm: [1, 2, 0], modelCrc: 0xcb02c66f });
+        expect(info.morph).toMatchObject({ target: 0, perm: [1, 2, 0], modelCrc: 0xcb02c66f, waypoints: 0 });
         expect(info.morph!.fit).toBeGreaterThan(0.999);
       } else expect(info.morph).toBeNull();
       expect(slotInfo(onlyRanges(full, withIr, withMorph))).toEqual(info);
     });
   }
+
+for (const withIr of [true, false])
+  test(`a ${withIr ? "model + IR" : "model-only"} slot with a trained path gives its block and waypoint count without its waypoints`, () => {
+    const plain = buildSlot(model.bin, withIr ? ir.bin : null, "Info test");
+    const full = withMorphBlock(plain, new Uint8Array([...morphBlock, ...waypointBytes(3)]));
+    const info = slotInfo(full);
+    expectMatches(info, withIr);
+    expect(info.morph).toEqual({ ...slotInfo(withMorphBlock(plain, morphBlock)).morph!, waypoints: 3 });
+    // The ranges stop where the waypoints start, so what readInfo allocates (an image without them) holds them all.
+    const cut = imageSize(withIr, true);
+    expect(cut).toBe(full.length - 3 * 7480);
+    for (const [off, len] of infoRanges(withIr, true)) expect(off + len).toBeLessThanOrEqual(cut - 4);
+    expect(slotInfo(onlyRanges(full, withIr, true).subarray(0, cut))).toEqual(info);
+  });

@@ -1,33 +1,36 @@
 # Preset morph
 
-A preset can name another preset as its **morph target**. The global `morph` parameter (0–100 %, on a knob or set from the editor) then blends the playing preset's NAM model into the target's, weight by weight: at 0 % the pedal plays the preset's own model, at 100 % the target's, and in between a network whose every weight lies between the two. The preset's own IR (or none) and its noise gate stay through the whole sweep; the input calibration and the level match move between the two models' values in dB.
+A preset can name another preset as its **morph target**. The global `morph` parameter (0–100 %, on a knob or set from the editor) then blends the playing preset's NAM model into the target's, weight by weight: at 0 % the pedal plays the preset's own model, at 100 % the target's, and in between a network on a path between the two. The path is a straight line between the two weight sets, or a **trained path** through up to three waypoint networks, trained on the host so that the sweep follows a crossfade of the two amps. The preset's own IR (or none) and its noise gate stay through the whole sweep; the input calibration and the level match move between the two models' values in dB.
 
-One model runs, not two: a blend costs 3 % of the block period while the knob moves and nothing while it rests.
+One model runs, not two: a blend costs 3 % of the block period while the knob moves and nothing while it rests, with or without waypoints.
 
-Code: `daisy/src/morph.h` (`dkmorph`), `daisy/src/dsp/a2lite.h` (`A2Lite::Blend`, `ToEngine`), `daisy/src/preset.h` (the slot's morph block, `SetMorph`, `ResolveMorph`), `daisy/src/ducky.cpp` (`stepMorph`, `loadPreset`, the link's MORPH), `editor/src/morph/` (the analysis), `editor/src/preset/morph.ts` (the block). Tests: `tests/morph_test.cpp`, `tests/preset_test.cpp`, `editor/src/morph/*.test.ts`, `editor/src/draft.test.ts`.
+Code: `daisy/src/morph.h` (`dkmorph`), `daisy/src/dsp/a2lite.h` (`A2Lite::Blend`, `ToEngine`), `daisy/src/preset.h` (the slot's morph block and waypoints, `SetMorph`, `ResolveMorph`), `daisy/src/ducky.cpp` (`stepMorph`, `loadPreset`, the link's MORPH), `editor/src/morph/` (the analysis, `save.ts`), `editor/src/preset/morph.ts` (the block, the waypoints, the path file), `tools/morph_train.py` (the trainer). Tests: `tests/morph_test.cpp`, `tests/preset_test.cpp`, `tests/upload_test.cpp`, `editor/src/morph/*.test.ts`, `editor/src/preset/morph.test.ts`, `editor/src/draft.test.ts`, `make morph-check`.
 
 The research behind the design (what was tried, the measurements, what is still open and worth exploring): `docs/morph-findings.md`.
 
 ## Using it
 
 ```
-bun tools/pedal.ts morph 5 2            # slot 5 morphs with slot 2: reads both models, analyses, stores the result in slot 5
+bun tools/pedal.ts morph 5 2            # slot 5 morphs with slot 2, a straight blend: reads both models, analyses, stores the block in slot 5
+bun tools/pedal.ts morph 5 2 --train    # the same along a trained path: trains three waypoints (about ten minutes), stores them in slot 5
+bun tools/pedal.ts morph 5 2 --path F   # stores a path file trained earlier (tools/morph_train.py -o F)
 bun tools/pedal.ts morph 5 none         # no morph
 bun tools/pedal.ts param assign k6 morph && bun tools/pedal.ts param save
-bun tools/pedal.ts info 5               # … morph slot 2 fit 20.8 % unaligned 20.8 %
+bun tools/pedal.ts info 5               # … morph slot 2 fit 88.7 % unaligned 31.4 % waypoints 3
 ```
 
-In the editor: the Presets tab's **Morph to** menu and its **Morph** box (`docs/EDITOR.md`).
+In the editor: the Presets tab's **Morph to** menu and its **Morph** box (`docs/EDITOR.md`). The editor stores straight blends; it shows a trained path and keeps it.
 
-- **The target is a slot, held by its model.** The block in slot A stores the target's slot number and the CRC of the target's model binary. The pedal morphs with the stored slot while it holds that model, else with the first other slot that does (so a SWAP keeps the pair), else not at all (`morph missing slot N` in the log). B's weights are read from its slot: nothing of B is copied into A.
-- **Replace the target's model and the morph stops** until it is analysed again. The editor does that itself when it saves a new model over a target; `tools/pedal.ts upload` does not: run `morph A B` again.
-- **An upload over A drops its morph** (an upload never carries the block). The editor analyses again after such a save; the CLI does not.
+- **The target is a slot, held by its model.** The block in slot A stores the target's slot number and the CRC of the target's model binary. The pedal morphs with the stored slot while it holds that model, else with the first other slot that does (so a SWAP keeps the pair), else not at all (`morph missing slot N` in the log). B's weights are read from its slot: nothing of B is copied into A. The waypoints of a trained path are stored in A's slot.
+- **Replace the target's model and the morph stops** until it is analysed or trained again. The editor analyses again itself when it saves a new model over a target (a straight blend: a trained path was trained for the old model); `tools/pedal.ts upload` does not: run `morph A B` again.
+- **A new model in A drops its morph.** `tools/pedal.ts upload` always writes a preset without one. The editor keeps the morph, waypoints included, across a save that keeps A's model (a rename, an IR change), and analyses again after one that replaces it.
+- **MORPH stores a straight blend.** Picking a target in the editor, or `morph A B` without `--train`, replaces a trained path.
 - **The parameter is global,** like the EQ's: one `morph` position for whichever preset plays. A preset without a target ignores it.
-- **The ends are exact:** the parameter's first and last 2 % are the two models alone (`dkmorph::kEndZone`), so a knob that stops short of its travel still reaches both.
+- **The ends are exact:** the parameter's first and last 2 % are the two models alone (`dkmorph::kEndZone`), so a knob that stops short of its travel still reaches both. A trained path does not change them.
 
 ## What a blend is
 
-An A2-Lite network (`docs/NAM_FORMAT.md` "Forward pass") is 1,870 weights and a head scale. A blend at position t is the network with weights `(1 − t)·A + t·B′`, where A has its head scale folded into its head and B′ is B likewise, re-expressed by the block's transform. The engine keeps running through a blend: its histories are kept, which is sound because the blended networks share their coordinates.
+An A2-Lite network (`docs/NAM_FORMAT.md` "Forward pass") is 1,870 weights and a head scale. A straight blend at position t is the network with weights `(1 − t)·A + t·B′`, where A has its head scale folded into its head and B′ is B likewise, re-expressed by the block's transform. The engine keeps running through a blend: its histories are kept, which is sound because the networks along the path share their coordinates.
 
 **The transform.** A network computes the same output when
 
@@ -36,49 +39,94 @@ An A2-Lite network (`docs/NAM_FORMAT.md` "Forward pass") is 1,870 weights and a 
 
 The weights that do it, per layer and tap: `r′ = M r`, `W′ = G W M⁻¹`, `cb′ = G cb`, `m′ = G m`, `L′ = M L G⁻¹`, `lb′ = M lb`; per head tap `H′ = s H G⁻¹` and `hb′ = s hb`, with the head scale `s` folded in. `dkmorph::Apply` (C++, in double) and `applyTransform` (TypeScript) are the two implementations; `tests/fixtures/morph/` pins them together: `A2_shuffled.bin` is `A2.bin` put through such a transform, and `A2_shuffled.morph` the block the analysis finds to bring it back (`tools/make_morph_fixture.ts`).
 
-That is every symmetry the shape has: the head is shared by all 23 layers, so the hidden channels can only be permuted and scaled alike in every layer, and the residual path is one stream.
+That is every symmetry the shape has: the head is shared by all 23 layers, so the hidden channels can only be permuted and scaled alike in every layer, and the residual path is one stream. It is twelve numbers and a permutation, which is why aligning two captures of different amps cannot make the straight line between them a good morph (`docs/morph-findings.md`), and why the path has waypoints instead.
 
-## The analysis (host)
+**The path.** With K waypoints (0–3) the nodes are A, the waypoints in stored order, and B′: K + 1 straight segments of equal length over the blend position. At position t the segment is `s = min(⌊t·(K + 1)⌋, K)` and the weights are `node_s + f·(node_{s+1} − node_s)` with `f = t·(K + 1) − s` (`dkmorph::SegmentAt`). A waypoint is a whole network: 1,870 weights in A's coordinates, head scale folded in. Three waypoints sit at 25, 50 and 75 %. K = 0 is the straight blend. The level match and the input calibration blend in dB over t, not per segment. `tests/fixtures/morph/A2_path.preset` pins the waypoints' layout across the two languages: its three waypoints are A2 in other coordinates, so the pedal's code renders A2 at every knot of the editor's image and another network between two (`MorphPath.FixturePresetRendersA2AtEveryKnot`).
 
-`fitAlignment(a, b)` in `editor/src/morph/align.ts`, run by `saveMorph` (`editor/src/morph/save.ts`) for the editor and `tools/pedal.ts morph`. It reads both models back from the pedal (READ), so it needs no files, and takes a second or two.
+## The fit
 
-1. **Stimulus** (`stimulus.ts`): 2 s of eight Karplus–Strong plucks across the guitar's range, loud (0.5) and quiet (0.125) in turn, from a fixed seed. Each model runs it at its own input calibration, in a float64 copy of the network (`a2.ts` `A2Net`, checked against the reference render to 1e-4).
-2. **Candidate alignment:** the permutation and scales that bring B's activations closest to A's, and the matrix that brings B's layer inputs closest to A's (least squares over every layer and sample).
-3. **The test.** For the candidate and for the identity (no alignment), the blends at 25, 50 and 75 % are rendered as the pedal would play them, and compared with the same crossfade of the two models' own outputs (level-matched, means removed). The error energy relative to the crossfade's is the blend error: 0 for a blend that is the crossfade, 1 for silence. **The candidate is kept only when its error is lower than the identity's.**
-4. **The block** stores the transform kept, the fit `1 − error` (held to 0…1) and the identity's fit.
+How closely a morph follows a crossfade of the two amps, as one number, 0…1, stored in the block for display:
 
-**Why the test is there.** Captures of different amps do not correspond channel for channel: on the pedal's five models below, B's channels explain under 10 % of the variance of A's activations whatever the permutation, so the candidate of step 2 is fitted to noise (and to the channels' DC offsets). Blending with it is far worse than blending unaligned: Fender → Two-Rock at 50 % plays at −50 dB with it, −29 dB without. The models do share a rough common layout (matching the weights instead also picks the identity permutation, for every pair tried), so the identity is the better start. The candidate wins where a model is another's copy in other coordinates, as the fixture is.
+- **Stimulus** (`editor/src/morph/stimulus.ts`): 2 s of eight Karplus–Strong plucks across the guitar's range, loud (0.5) and quiet (0.125) in turn, from a fixed seed. Each model runs it at its own input calibration.
+- **Blend error** at a position p: the blend is rendered as the pedal plays it and compared with the crossfade `(1 − p)·yA + p·yB` of the two models' own level-matched outputs, means removed. The error energy relative to the crossfade's: 0 for a blend that is the crossfade, 1 for silence.
+- **Fit** = 1 − the mean blend error at the eighths (12.5 … 87.5 %: the knots of a three-waypoint path and the middles of its segments), held to 0…1.
+
+`blendError` (`editor/src/morph/align.ts`, float64 `A2Net`) and `tools/morph_train.py` compute the same number: `make morph-check` compares the trainer's with the one the editor's code stored in `A2_shuffled.morph`. The crossfade is a stand-in for a good morph and the fit is blind to DC and to anything the stimulus does not excite; the trainer reports more (below).
+
+## The analysis (host): a straight blend
+
+`fitAlignment(a, b)` in `editor/src/morph/align.ts`, run by `saveMorph` (`editor/src/morph/save.ts`) for the editor and `tools/pedal.ts morph`. It reads both models back from the pedal (READ), so it needs no files, and takes two or three seconds.
+
+1. **Candidate alignment:** the permutation and scales that bring B's activations closest to A's on the stimulus, and the matrix that brings B's layer inputs closest to A's (least squares over every layer and sample).
+2. **The test.** The fit is measured for the candidate and for the identity (no alignment). **The candidate is kept only when its fit is higher.**
+3. **The block** stores the transform kept, its fit and the identity's fit.
+
+**Why the test is there.** Captures of different amps do not correspond channel for channel: on the pedal's five models below, B's channels explain under 10 % of the variance of A's activations whatever the permutation, so the candidate is fitted to noise (and to the channels' DC offsets). Blending with it is far worse than blending unaligned: Fender → Two-Rock at 50 % plays at −50 dB with it, −29 dB without. The candidate wins where a model is another's copy in other coordinates, as the fixture is.
+
+## The trained path (host)
+
+`tools/morph_train.py`, run under `uv` (PyTorch on the CPU; the first run downloads it) by `tools/pedal.ts morph A B --train`, or by hand on two model binaries:
+
+```
+uv run tools/morph_train.py A.bin B.bin                 # measure the straight blend
+uv run tools/morph_train.py A.bin B.bin -o AB.path      # train three waypoints, measure, write the path file
+uv run tools/morph_train.py A.bin B.bin --path AB.path  # measure a path file
+make morph-check                                        # its network and fit against tests/fixtures
+```
+
+- **What it trains.** The waypoints start on the straight line (at 25, 50 and 75 % of it) and are moved by gradient descent (Adam, 8,000 steps, a cosine learning-rate decay from 1e-3) so that the path's blend at every position renders the crossfade of the two models' outputs at that position. Each step renders six 171 ms excerpts, each at its own position, spread evenly over the path. The two ends are not trained: they stay the two models.
+- **The loss,** per excerpt, has two parts. The error with its mean removed, over the excerpt's own crossfade's AC energy (plus 5 % of its signal's mean, so silence does not divide by zero): quiet passages weigh nearly as much as loud ones, and a level error counts as an error. And the error's mean squared, over the loudest signal's mean energy: a DC offset counts by its size, whatever is played. The path therefore needs neither a make-up gain nor a DC correction.
+- **Signals.** Synthetic plucks (single notes and chords, other notes and noise than the fit's stimulus, at four levels) and, when it exists, a guitar DI recording (`--di`, default `renders/stimuli/guitar_di.wav` from `tools/make_stimuli.py`): its first three quarters at four gains from 0 to −28 dB, a normalised recording down to a quiet guitar at the pedal's input. Its last quarter is never trained on.
+- **Train with a DI.** A path trained on the plucks alone is still far better than the straight blend on real playing, but clearly worse than one that saw a DI, and its stored fit flatters it, since the fit's stimulus is plucks too (Mesa → Fender, with an earlier loss: 81 % on held-out DI against 95 % with the DI in training, while the stored fit read 96 %; `docs/morph-findings.md` finding 12).
+- **What it reports,** for the straight blend and the path, on the fit's stimulus and on the DI's held-out quarter at 0, −12 and −24 dB: the fit, and over the fifteen sixteenths of the sweep the worst blend error, the worst level error (the blend's AC RMS against the crossfade's), the worst DC and the worst shape error (1 − correlation², what a perfect gain would leave).
+- **The path file** it writes carries the two models' CRCs, the path's fit, the straight blend's fit and the waypoints. `saveMorphPath` (`editor/src/morph/save.ts`) checks the CRCs against the two slots, reads slot A back, and uploads its preset again with a block (the identity transform, the two fits) and the waypoints.
+- **`--train` keeps the better blend.** It runs the analysis too, and stores the analysis' straight blend when that fits at least as well as the path: a model that is another's copy in other coordinates aligns exactly, which no training improves on.
+- **Time:** 11 minutes for a pair on a four-core laptop (i7-1185G7), 10 of them the 8,000 steps; storing the path takes 0.4 s. Several pairs train faster side by side, one thread each (`OMP_NUM_THREADS=1`): four took 23.5 minutes together. `--steps` shortens a run; fewer than 8,000 left an earlier loss short of its result, and the final one was not tried with fewer. Where the time goes (the gradient of the convolutions, half of every step) and what did not help: `docs/morph-findings.md` finding 16.
 
 ## Measured blends (the pedal's five models)
 
-Unaligned (what the analysis keeps for all of these), on the stimulus; levels are the AC RMS of the level-matched output. Every position, the correlations and the DC offsets: `docs/morph-findings.md` "The unaligned blends, pair by pair".
+The fit of the straight unaligned blend (what the analysis keeps for all of these) and of a trained path (three waypoints, the trainer's defaults), on the fit's stimulus and on the held-out quarter of the guitar DI at three levels:
 
-| A → B | Fit | Level at 0 % | 25 % | 50 % | 75 % | 100 % |
-|---|---|---|---|---|---|---|
-| 2 Fender Super Reverb (edge) → 1 Two-Rock SSS (clean) | 80.8 % | −20.0 dB | −25.8 | −28.6 | −25.9 | −21.5 |
-| 2 Fender Super Reverb → 3 Vox AC30 (edge) | 83.5 % | −20.0 | −24.7 | −25.1 | −22.7 | −20.3 |
-| 1 Two-Rock SSS → 3 Vox AC30 | 79.6 % | −21.5 | −26.2 | −26.9 | −22.5 | −20.3 |
-| 4 Marshall JCM800 (lead) → 1 Two-Rock SSS | 76.8 % | −21.1 | −19.4 | −20.1 | −20.8 | −21.5 |
-| 5 Mesa Dual Rectifier (red, OD808) → 2 Fender Super Reverb | 20.8 % | −21.3 | −32.0 | −39.4 | −29.8 | −20.0 |
-| 5 Mesa Dual Rectifier → 4 Marshall JCM800 | 21.7 % | −21.3 | −34.2 | −37.1 | −28.7 | −21.1 |
+| A → B | Stimulus (the stored fit): straight → path | DI: straight → path | DI −12 dB | DI −24 dB |
+|---|---|---|---|---|
+| 2 Fender Super Reverb (edge) → 1 Two-Rock SSS (clean) | 83.6 → 98.3 % | 75.2 → 99.0 % | 71.5 → 99.6 % | 74.2 → 99.8 % |
+| 2 Fender Super Reverb → 3 Vox AC30 (edge) | 85.7 → 98.2 % | 75.2 → 99.0 % | 64.4 → 99.6 % | 59.6 → 99.9 % |
+| 1 Two-Rock SSS → 3 Vox AC30 | 82.3 → 96.9 % | 64.5 → 98.4 % | 57.1 → 99.1 % | 49.9 → 99.6 % |
+| 4 Marshall JCM800 (lead) → 1 Two-Rock SSS | 80.4 → 96.1 % | 64.7 → 96.8 % | 54.1 → 97.9 % | 34.1 → 98.0 % |
+| 5 Mesa Dual Rectifier (red, OD808) → 2 Fender Super Reverb | 31.4 → 88.7 % | 44.4 → 94.4 % | 29.5 → 96.2 % | 14.7 → 95.0 % |
+| 5 Mesa Dual Rectifier → 4 Marshall JCM800 | 31.9 → 93.1 % | 21.6 → 92.0 % | 10.8 → 95.0 % | 4.2 → 96.9 % |
 
-- **A fit near 80 %** is a usable morph: the blends track the crossfade (correlation 0.91–0.99 at every position) with a level dip of up to 9 dB in the middle.
-- **A fit near 20 %** is not: the middle of the sweep is some other network, 9–19 dB quieter and unlike either amp. Both ends are still exact. The Mesa capture is the odd one out against both it was tried with.
-- **The dip is a property of the weight blend,** not of the gains: the level match and the input calibration already move in dB.
+The worst level error (the blend's level against the crossfade's, over the fifteen sixteenths of the sweep and the four signals) and the worst DC:
 
-Not built, with what a trial showed (`docs/morph-findings.md` has the trials and a longer list of avenues, starting with captures of one amp at several settings, which were not available to test):
+| A → B | Level, straight | Level, path | DC, straight | DC, path |
+|---|---|---|---|---|
+| 2 → 1 | −9.9 dB | −0.8 dB | −27 dB | −50 dB |
+| 2 → 3 | −12.3 dB | −0.4 dB | −30 dB | −59 dB |
+| 1 → 3 | −14.3 dB | −1.0 dB | −30 dB | −51 dB |
+| 4 → 1 | −17.1 dB | −1.9 dB | −29 dB | −47 dB |
+| 5 → 2 | −31.3 dB | −1.7 dB | −27 dB | −49 dB |
+| 5 → 4 | −36.5 dB | −0.7 dB | −37 dB | −48 dB |
 
-- **Fitting the transform to the crossfade directly** (least squares on the blends' outputs, 12 parameters, from the identity): Fender → Two-Rock's dip at 50 % went from 8.6 to 4 dB and the Mesa → Fender's from 18 to 15 dB, for 25–40 s of analysis per pair. The block and the firmware would not change.
-- **A make-up gain along the sweep,** measured by the analysis and stored in the block, would level the dip without changing the tone in the middle.
-- **The blends' DC offset** in the middle of a sweep (up to −27 dB) is not removed unless the EQ's low-cut is raised.
+- **A straight blend** of two of the cleaner captures follows the crossfade on the stimulus (fit 80–86 %) with a level dip of up to 5 dB, and less well on real playing, worse the quieter it is (fit 34–75 %, dips of 4–17 dB). With the Mesa capture the middle of the sweep is some other network, 13–36 dB down and unlike either amp. Both ends are exact. The dip is a property of the weight blend, not of the gains: the level match and the input calibration already move in dB.
+- **A trained path** follows the crossfade within 4 % of its energy for the four cleaner pairs (fit 96–99.9 %) and within 12 % for the Mesa pairs (89–97 %), at every level tried, with the level within 2 dB and no DC to speak of.
+- **Two trainings of one pair agree within a point:** 5 → 2 trained again on one thread instead of four read 89.3 % and 94.7 / 96.6 / 95.7 %.
+- **The crossfade is quieter in the middle itself** (two amps' outputs are only partly in phase: up to 4 dB for 5 → 2), and a path that follows it is too.
+- **None of this was judged by ear.** The paths of this table are local files (the models are not committed).
+
+Not built (`docs/morph-findings.md` has the measurements behind the design and a longer list of avenues, starting with listening and with captures of one amp at several settings, which were not available to test):
+
+- **Training in the editor.** It needs gradients through the network, which the editor's float64 `A2Net` does not give.
+- **Real captures as the targets between the ends** (a capture of the amp at a middle setting as what a waypoint renders) and **a crossfade target that does not dip.**
 
 ## On the pedal
 
-- **Load** (`loadPreset`, while the callback is parked): `ResolveMorph` finds the target; `dkmorph::Prepare` folds A's head scale in, applies the block's transform to B, puts both in the engine's weight layout and keeps A and B′ − A (`gMorphW`, 15 KB in AXI SRAM); the two models' level matches and input calibrations go to the callback in dB. A load with a morph takes about 960 µs instead of 140.
-- **Every block** (`stepMorph`): the `morph` parameter is smoothed (20 ms, as the knobs are) and mapped to the blend position (`BlendPosition`: the 2 % end zones, linear between). When the position has moved more than 0.001 (or reaches an end), `A2Lite::Blend` writes `A + t·(B′ − A)` into the engine's weights and the level match and input calibration are set to `10^(((1 − t)·dB_A + t·dB_B) / 20)`. The first block after a load blends, so a preset loads at the knob's position.
+- **Load** (`loadPreset`, while the callback is parked): `ResolveMorph` finds the target; `dkmorph::Prepare` folds A's head scale in, applies the block's transform to B, puts every node in the engine's weight layout and keeps, per segment, its first node and the step to its second (`gMorphW`, room for four segments: 60 KB in AXI SRAM); the two models' level matches and input calibrations go to the callback in dB. A load with a straight morph takes about 960 µs instead of 140, with three waypoints 1,340 µs.
+- **Every block** (`stepMorph`): the `morph` parameter is smoothed (20 ms, as the knobs are) and mapped to the blend position (`BlendPosition`: the 2 % end zones, linear between). When the position has moved more than 0.001 (or reaches an end), `SegmentAt` finds its segment and `A2Lite::Blend` writes `node_s + f·(node_{s+1} − node_s)` into the engine's weights; the level match and input calibration are set to `10^(((1 − t)·dB_A + t·dB_B) / 20)`. The first block after a load blends, so a preset loads at the knob's position.
 - **A parked or dry pedal, and a preset without a target,** skip the blend; the smoother still runs.
-- **Reloads:** MORPH on the playing slot reloads it (the preset fade). So does anything that changes which slot its block resolves to: an upload over, an erase or a swap of the target (`servePresets` compares `ResolveMorph` with the slot the loaded preset was prepared with).
-- **Cost:** `Blend` is 155 islands of 12 loads + 12 loads + 12 multiply-adds + 12 stores (`docs/M7_PERFORMANCE.md`): 7,417 cycles with the two `powf`, 30.9 permille of a block (`docs/FIRMWARE.md` "Bench"). Live, sweeping the parameter continuously over the link: 502 avg / 515 max permille against 471 / 475 at rest, 0 underruns.
+- **Reloads:** MORPH on the playing slot reloads it (the preset fade), and so does the upload that stores a trained path. So does anything that changes which slot its block resolves to: an upload over, an erase or a swap of the target (`servePresets` compares `ResolveMorph` with the slot the loaded preset was prepared with).
+- **Cost:** `Blend` is 155 islands of 12 loads + 12 loads + 12 multiply-adds + 12 stores (`docs/M7_PERFORMANCE.md`): 7,417 cycles with the two `powf`, 30.9 permille of a block (`docs/FIRMWARE.md` "Bench"). A path blends one segment, the same 15 KB of weights. Live, sweeping the parameter continuously over the link along a three-waypoint path: up to 478 avg / 521 max permille against 464 / 468 at rest, 0 underruns.
+- **What the pedal plays is what the trainer measured:** slot 5 read back from the pedal with its three waypoints, prepared and rendered by the firmware's code on the host, is within 1.2e-5 of the trainer's network at every eighth of the sweep (2 s of DI).
+- **Not yet on the pedal:** the paths of "Measured blends". The path these measurements were taken with was trained with an earlier loss, and nothing has been listened to. The checks still to do, in order: `docs/morph-findings.md` "To do on the pedal".
 
 ## Formats
 
@@ -91,7 +139,22 @@ The morph block, 64 bytes little-endian, in a slot after the model and the IR (`
 | 4 | u32 the target model binary's CRC field (its offset 7904) |
 | 8 | f32 scale[3], each in 1/16…16 |
 | 20 | f32 m[9], row-major, `|det| ≥ 1e-6` |
-| 56 | f32 fit (0…1) |
-| 60 | f32 unaligned fit (0…1); equal to the fit when the identity was kept |
+| 56 | f32 fit (0…1): of the blend the pedal plays, straight or along the path |
+| 60 | f32 unaligned fit (0…1): of the straight blend without alignment; equal to the fit when that is what the pedal plays |
 
-`dkmorph::ParseBlock` rejects a block `Apply` cannot use (the slot then reads `morph`); the fits are for display only.
+`dkmorph::ParseBlock` rejects a block `Apply` cannot use (the slot then reads `morph`); the fits are for display only. A trained path's block holds the identity transform.
+
+**The waypoints** follow the block: K of them (the slot's flag bits 2–3, 0–3), 7,480 bytes each: 1,870 little-endian f32, a network's weight stream in the model binary's weight order with the head scale folded into the head, in A's coordinates (what `Apply` gives A itself). A float that is not finite makes the slot read `morph`. A slot with three waypoints is 30,500 bytes, 38,792 with an IR, of its 65,536. MORPH never carries waypoints: they arrive in an UPLOAD of the whole preset, and MORPH removes them.
+
+**The path file** (`tools/morph_train.py -o`, `decodePathFile` in `editor/src/preset/morph.ts`), little-endian:
+
+| Offset | Field |
+|---|---|
+| 0 | `"DKMP"` |
+| 4 | u32 version 1 |
+| 8 | u32 K, the waypoint count (1–3) |
+| 12 | u32 model A's CRC field |
+| 16 | u32 model B's CRC field |
+| 20 | f32 the path's fit (0…1) |
+| 24 | f32 the straight unaligned blend's fit (0…1) |
+| 28 | K waypoints, as in the slot |

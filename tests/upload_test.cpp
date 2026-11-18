@@ -1,10 +1,13 @@
-// daisy/src/upload.h: UPLOAD BEGIN/CHUNK staging (ordering, resends, gaps, CRC, bounds).
+// daisy/src/upload.h: UPLOAD BEGIN/CHUNK staging (ordering, resends, gaps, CRC, bounds) and COMMIT's validation.
 #include "upload.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <memory>
 #include <vector>
+
+#include "test_files.h"
 
 using namespace dklink;
 
@@ -37,7 +40,7 @@ std::vector<uint8_t> Slice(const std::vector<uint8_t>& b, size_t off, size_t n) 
 }
 
 struct Fixture {
-    std::vector<uint8_t> buf = std::vector<uint8_t>(dkpreset::kSizeWithIr);
+    std::vector<uint8_t> buf = std::vector<uint8_t>(dkpreset::kSizeMax);
     Upload up{buf.data()};
     Result Begin(int slot, uint32_t size) {
         const std::vector<uint8_t> p = BeginPayload(slot, size);
@@ -46,6 +49,13 @@ struct Fixture {
     Result Chunk(uint32_t offset, const std::vector<uint8_t>& data) {
         const std::vector<uint8_t> p = ChunkPayload(offset, data);
         return up.Chunk(p.data(), p.size());
+    }
+    // The whole image staged for the slot.
+    void Stage(int slot, const std::vector<uint8_t>& img) {
+        ASSERT_EQ(Begin(slot, uint32_t(img.size())), Result::kOk);
+        for (size_t off = 0; off < img.size(); off += kChunkBytes)
+            ASSERT_EQ(Chunk(uint32_t(off), Slice(img, off, kChunkBytes)), Result::kOk) << off;
+        ASSERT_EQ(up.Ready(), Result::kOk);
     }
 };
 
@@ -72,6 +82,57 @@ TEST(Upload, BadBeginLeavesNoUpload) {
     EXPECT_EQ(f.up.Begin(shortPayload, sizeof shortPayload), Result::kBadRequest);
     EXPECT_FALSE(f.up.active());
     EXPECT_EQ(f.up.Ready(), Result::kNoUpload);
+}
+
+// Every size a preset image has (no IR or an IR; no morph, a block, a block and 1-3 waypoints), and no other.
+TEST(Upload, BeginTakesImageSizesOnly) {
+    Fixture f;
+    for (uint32_t size : {7996u, 8060u, 15540u, 23020u, 30500u, 16288u, 16352u, 23832u, 31312u, 38792u}) {
+        EXPECT_EQ(f.Begin(2, size), Result::kOk) << size;
+        EXPECT_EQ(f.up.size(), size);
+    }
+    for (uint32_t size : {
+             7996u + 7480u,   // a waypoint without a morph block
+             16288u + 7480u,  // the same with an IR
+             8060u + 4 * 7480u,   // four waypoints
+             38792u + 7480u,
+             16352u + 4u, 16352u - 4u, 38792u + 1u, 0u,
+         }) {
+        EXPECT_EQ(f.Begin(2, size), Result::kBadRequest) << size;
+        EXPECT_FALSE(f.up.active());
+    }
+}
+
+TEST(Upload, LargestImageCompletes) {
+    Fixture f;
+    const std::vector<uint8_t> img = Image(dkpreset::kSizeMax);
+    f.Stage(7, img);
+    EXPECT_EQ(f.up.next(), 38792u);
+    EXPECT_EQ(f.buf, img);
+}
+
+// COMMIT's check: a preset must parse, and its morph block must not target the slot it goes to.
+TEST(Upload, ValidateRejectsAMorphOntoItself) {
+    const std::vector<uint8_t> plain = ReadFile(RepoPath("tests/fixtures/preset/A2_decay.bin"));
+    const std::vector<uint8_t> block = ReadFile(RepoPath("tests/fixtures/morph/A2_shuffled.morph"));
+    ASSERT_EQ(plain.size(), dkpreset::kSizeWithIr);
+    ASSERT_EQ(block.size(), dkmorph::kBlockBytes);
+    ASSERT_EQ(block[0], 0) << "the fixture block targets slot 0";
+    std::vector<uint8_t> img(dkpreset::kSizeMax);
+    img.resize(dkpreset::SetMorph(plain.data(), block.data(), img.data()));
+    auto p = std::make_unique<dkpreset::Preset>();
+
+    Fixture f;
+    f.Stage(0, img);
+    EXPECT_EQ(f.up.Validate(p.get()), dkpreset::Status::kMorph);
+    f.Stage(3, img);
+    EXPECT_EQ(f.up.Validate(p.get()), dkpreset::Status::kOk);
+    EXPECT_TRUE(p->has_morph);
+    f.Stage(0, plain);
+    EXPECT_EQ(f.up.Validate(p.get()), dkpreset::Status::kOk) << "without a morph block any slot will do";
+    img[100] ^= 0x01;
+    f.Stage(3, img);
+    EXPECT_EQ(f.up.Validate(p.get()), dkpreset::Status::kCrc);
 }
 
 TEST(Upload, InOrderCompletes) {

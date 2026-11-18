@@ -1,12 +1,12 @@
 // What a stored preset holds, decoded from its image (daisy/src/preset.h, docs/NAM_FORMAT.md "Ducky model binary
 // (format 2)", docs/FILTERS.md "IR binary (format 1)"). Pure TypeScript: the editor and tools/pedal.ts read slots back
-// over the link (READ) and decode only the bytes in infoRanges.
+// over the link (READ) and decode only the bytes in infoRanges: a trained path's waypoints are never read.
 
 import * as ir from "../ir/convert";
 import * as model from "../nam/convert";
 import * as preset from "./bank";
 import { decodeGate, type GateSettings } from "./gate";
-import { decodeMorphBlock, MORPH_BLOCK_SIZE, type MorphBlock } from "./morph";
+import { decodeMorphBlock, MORPH_BLOCK_SIZE, type StoredMorph } from "./morph";
 
 /** A stored model's metadata. convert.ts's ModelInfo is assignable to it. */
 export interface StoredModel {
@@ -36,21 +36,28 @@ export interface SlotInfo {
   modelCrc: number;
   ir: StoredIr | null;
   gate: GateSettings;
-  morph: MorphBlock | null;
+  /** The morph block and its waypoint count (from the preset's flags); null without a morph. */
+  morph: StoredMorph | null;
 }
 
 const MODEL_AT = preset.PRESET_HEADER_SIZE;
 const IR_AT = preset.PRESET_HEADER_SIZE + model.MODEL_BIN_SIZE;
 const TEXT_SIZE = 64;
 
-/** The [offset, length] runs of a preset image that slotInfo reads. */
+/** Where a preset's morph block starts: after the model and the IR. */
+const morphAt = (hasIr: boolean): number => IR_AT + (hasIr ? ir.IR_BIN_SIZE : 0);
+
+/**
+ * The [offset, length] runs of a preset image that slotInfo reads. They end with the morph block, so an image cut
+ * off at imageSize(hasIr, hasMorph) holds them all, whatever the waypoint count.
+ */
 export function infoRanges(hasIr: boolean, hasMorph: boolean): [offset: number, length: number][] {
   const ranges: [number, number][] = [
     [0, MODEL_AT + 12], // the preset header (the gate block included), then the model's magic, version, flags and size
     [MODEL_AT + model.OFF_LOUDNESS, model.MODEL_BIN_SIZE - model.OFF_LOUDNESS], // loudness .. modeled_by, the CRC
   ];
   if (hasIr) ranges.push([IR_AT + ir.OFF_TAP_COUNT, ir.OFF_TAPS - ir.OFF_TAP_COUNT]); // tap count .. name
-  if (hasMorph) ranges.push([preset.imageSize(hasIr, true) - 4 - MORPH_BLOCK_SIZE, MORPH_BLOCK_SIZE]);
+  if (hasMorph) ranges.push([morphAt(hasIr), MORPH_BLOCK_SIZE]);
   return ranges;
 }
 
@@ -102,6 +109,6 @@ export function slotInfo(image: Uint8Array): SlotInfo {
     modelCrc: dv.getUint32(MODEL_AT + model.OFF_CRC, true),
     ir: i,
     gate: decodeGate(image, preset.OFF_GATE),
-    morph: hasMorph ? decodeMorphBlock(image, preset.imageSize(hasIr, true) - 4 - MORPH_BLOCK_SIZE) : null,
+    morph: hasMorph ? { ...decodeMorphBlock(image, morphAt(hasIr)), waypoints: preset.flagWaypoints(flags) } : null,
   };
 }

@@ -1,7 +1,7 @@
 // The repo's tests/fixtures and the pedal's parameter table, for the editor's tests.
 import { crc32 } from "./crc32";
 import type { ParamInfo } from "./link/protocol";
-import { OFF_FLAGS, OFF_SIZE, PRESET_FLAG_HAS_MORPH } from "./preset/bank";
+import { OFF_FLAGS, OFF_SIZE } from "./preset/bank";
 
 export const FIXTURES = `${import.meta.dir}/../../tests/fixtures`;
 
@@ -10,15 +10,47 @@ export const readFixture = async (rel: string): Promise<Uint8Array> =>
 
 export const readFixtureText = (rel: string): Promise<string> => Bun.file(`${FIXTURES}/${rel}`).text();
 
-/** A preset image without a morph block, with block added as the pedal's MORPH stores it (preset.h SetMorph). */
-export function withMorphBlock(image: Uint8Array, block: Uint8Array): Uint8Array {
-  const out = new Uint8Array(image.length + block.length);
+/**
+ * A preset image without a morph, with a morph section added as the slot layout has it (daisy/src/preset.h): the
+ * 64-byte block alone as the pedal's MORPH stores it, or followed by 7480-byte waypoints. Written from the layout,
+ * not with bank.ts's builder, which the tests check against it.
+ */
+export function withMorphBlock(image: Uint8Array, section: Uint8Array): Uint8Array {
+  const out = new Uint8Array(image.length + section.length);
   out.set(image.subarray(0, image.length - 4));
-  out.set(block, image.length - 4);
+  out.set(section, image.length - 4);
   const dv = new DataView(out.buffer);
-  dv.setUint16(OFF_FLAGS, dv.getUint16(OFF_FLAGS, true) | PRESET_FLAG_HAS_MORPH, true);
+  dv.setUint16(OFF_FLAGS, dv.getUint16(OFF_FLAGS, true) | 0x0002 | (((section.length - 64) / 7480) << 2), true);
   dv.setUint32(OFF_SIZE, out.length, true);
   dv.setUint32(out.length - 4, crc32(out.subarray(0, out.length - 4)), true);
+  return out;
+}
+
+/** n waypoints' bytes: finite float32 weights, different in every position. */
+export function waypointBytes(n: number): Uint8Array {
+  const out = new Uint8Array(n * 7480);
+  const dv = new DataView(out.buffer);
+  for (let i = 0; i < out.length / 4; i++) dv.setFloat32(4 * i, Math.sin(i + 1), true);
+  return out;
+}
+
+/** A trainer path file (tools/morph_train.py) holding waypoints, for the models with stored CRCs crcA and crcB. */
+export function pathFile(
+  crcA: number,
+  crcB: number,
+  fit: number,
+  straightFit: number,
+  waypoints: Uint8Array,
+): Uint8Array {
+  const out = new Uint8Array(28 + waypoints.length);
+  const dv = new DataView(out.buffer);
+  out.set([0x44, 0x4b, 0x4d, 0x50]); // "DKMP"
+  [1, waypoints.length / 7480, crcA, crcB].forEach((v, i) => {
+    dv.setUint32(4 + 4 * i, v, true);
+  });
+  dv.setFloat32(20, fit, true);
+  dv.setFloat32(24, straightFit, true);
+  out.set(waypoints, 28);
   return out;
 }
 

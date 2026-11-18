@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { crc32 } from "../crc32";
-import { readFixture, withMorphBlock } from "../testFixtures";
-import { BANK_BYTES, buildBank, buildSlot, PresetError, SLOT_BYTES, SLOT_COUNT, splitSlot } from "./bank";
+import { readFixture, waypointBytes, withMorphBlock } from "../testFixtures";
+import { BANK_BYTES, buildBank, buildSlot, imageSize, PresetError, SLOT_BYTES, SLOT_COUNT, splitSlot } from "./bank";
 import { encodeGate, GATE_DEFAULT, type GateSettings } from "./gate";
 
 const model = await readFixture("nam/A2.bin");
@@ -17,15 +17,57 @@ test("splitSlot returns the parts a stored preset was built from", async () => {
     model,
     ir,
     gate: GATE_DEFAULT,
+    morph: null,
   });
-  expect(splitSlot(buildSlot(model, null, "A2"))).toEqual({ name: "A2", model, ir: null, gate: GATE_DEFAULT });
+  expect(splitSlot(buildSlot(model, null, "A2"))).toEqual({
+    name: "A2",
+    model,
+    ir: null,
+    gate: GATE_DEFAULT,
+    morph: null,
+  });
 });
 
-test("splitSlot drops a morph block", async () => {
-  const plain = await readFixture("preset/A2_decay.bin");
-  const morphed = withMorphBlock(plain, await readFixture("morph/A2_shuffled.morph"));
-  expect(morphed.length).toBe(plain.length + 64);
-  expect(splitSlot(morphed)).toEqual(splitSlot(plain));
+const morphBlock = await readFixture("morph/A2_shuffled.morph");
+
+for (const k of [0, 3])
+  for (const withIr of [true, false])
+    test(`a ${withIr ? "model + IR" : "model-only"} slot with a morph section of ${k} waypoints is the layout's image and splits back`, () => {
+      const section = new Uint8Array([...morphBlock, ...waypointBytes(k)]);
+      const plain = buildSlot(model, withIr ? ir : null, "Morphed");
+      const built = buildSlot(model, withIr ? ir : null, "Morphed", GATE_DEFAULT, section);
+      // Flags bit 1 and the count in bits 2-3, the section between the model/IR and the CRC.
+      const dv = new DataView(built.buffer);
+      expect(dv.getUint16(6, true)).toBe((withIr ? 1 : 0) | 2 | (k << 2));
+      expect(built.length).toBe(plain.length + 64 + k * 7480);
+      expect(built.length).toBe(imageSize(withIr, true, k));
+      expect(dv.getUint32(8, true)).toBe(built.length);
+      expect(built.subarray(plain.length - 4, built.length - 4)).toEqual(section);
+      expect(dv.getUint32(built.length - 4, true)).toBe(crc32(built.subarray(0, built.length - 4)));
+      expect(built).toEqual(withMorphBlock(plain, section));
+      expect(splitSlot(built)).toEqual({ ...splitSlot(plain), morph: section });
+    });
+
+test("a morph section that is not a block and 0-3 waypoints is rejected", () => {
+  for (const n of [0, 63, 65, 64 + 7479, 64 + 4 * 7480])
+    expect(() => buildSlot(model, null, "x", GATE_DEFAULT, new Uint8Array(n))).toThrow(`morph: size ${n}`);
+});
+
+// image with other flags and its CRC recomputed.
+function reflagged(image: Uint8Array, flags: number): Uint8Array {
+  const out = image.slice();
+  const dv = new DataView(out.buffer);
+  dv.setUint16(6, flags, true);
+  dv.setUint32(out.length - 4, crc32(out.subarray(0, out.length - 4)), true);
+  return out;
+}
+
+test("splitSlot rejects a waypoint count without a morph, unknown flags and a count the size does not hold", () => {
+  const plain = buildSlot(model, null, "x");
+  expect(() => splitSlot(reflagged(plain, 0x0004))).toThrow("preset: flags 0x4");
+  expect(() => splitSlot(reflagged(plain, 0x0010))).toThrow("preset: flags 0x10");
+  const morphed = buildSlot(model, null, "x", GATE_DEFAULT, morphBlock);
+  expect(() => splitSlot(reflagged(morphed, 0x0006))).toThrow("preset: size");
 });
 
 test("a gate is stored as its 8-byte block and read back", () => {

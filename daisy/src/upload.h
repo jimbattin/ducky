@@ -14,17 +14,16 @@ namespace dklink {
 
 class Upload {
 public:
-    // buf: dkpreset::kSizeWithIr bytes. Only the pointer is stored (buf may be in SDRAM, not yet up at construction).
+    // buf: dkpreset::kSizeMax bytes. Only the pointer is stored (buf may be in SDRAM, not yet up at construction).
     explicit Upload(uint8_t* buf) : buf_(buf) {}
 
     // BEGIN's payload `<slot> <size u21>`. Always discards the previous upload; kBadRequest unless the payload is 4
-    // bytes, slot < kSlots and size is kSizeNoIr or kSizeWithIr.
+    // bytes, slot < kSlots and size is a preset image's (dkpreset::IsImageSize).
     Result Begin(const uint8_t* p, size_t n) {
         Clear();
         if (n != 4) return Result::kBadRequest;
         const uint32_t size = GetSeptets(p + 1, 3);
-        if (p[0] >= dkpreset::kSlots || (size != dkpreset::kSizeNoIr && size != dkpreset::kSizeWithIr))
-            return Result::kBadRequest;
+        if (p[0] >= dkpreset::kSlots || !dkpreset::IsImageSize(size)) return Result::kBadRequest;
         slot_ = p[0];
         size_ = size;
         return Result::kOk;
@@ -51,6 +50,14 @@ public:
     Result Ready() const {
         if (!active()) return Result::kNoUpload;
         return next_ < size_ ? Result::kIncomplete : Result::kOk;
+    }
+
+    // COMMIT's check of the staged image (Ready() is kOk): dkpreset::Parse's status into *out, except kMorph for a
+    // preset whose morph block targets the slot it is staged for.
+    dkpreset::Status Validate(dkpreset::Preset* out) const {
+        const dkpreset::Status st = dkpreset::Parse(buf_, size_, out);
+        if (st == dkpreset::Status::kOk && out->has_morph && out->morph.target == slot_) return dkpreset::Status::kMorph;
+        return st;
     }
 
     void Clear() {

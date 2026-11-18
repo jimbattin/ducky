@@ -32,7 +32,7 @@ make -C editor fmt        # Biome's fixes and formatting, same files
 
 The slot table lists the 8 slots: the playing lamp, the slot number (click it, or the row, to select), the preset, model and IR names, ↑/↓ to swap with a neighbour, and **Erase**. Unsaved changes are amber. **Save** and **Discard** under the table act on every unsaved change at once.
 
-Under the table, the selected slot's editor: its name, its model (**Add .nam…** / **Replace…** / **Remove**), its IR (**Add .wav…** / **Replace…** / **Remove**) and **Morph to**, the preset it morphs with (None, or any other slot that holds a preset; `docs/MORPH.md`). Each part is kept, replaced or removed. Below them are the stored morph's fit, the metadata, level match and input calibration of the result, its warnings, and **Revert slot N**. The warnings are: no loudness, no `input_level_dbu`, a cab model with an IR, a truncated new IR, and a morph target whose model changed since the morph was analysed (the pedal then plays the preset's own model alone until it is picked and saved again). Files go through the same converters as the CLI tools (`editor/src/nam/`, `editor/src/ir/`).
+Under the table, the selected slot's editor: its name, its model (**Add .nam…** / **Replace…** / **Remove**), its IR (**Add .wav…** / **Replace…** / **Remove**) and **Morph to**, the preset it morphs with (None, or any other slot that holds a preset; `docs/MORPH.md`). Each part is kept, replaced or removed. Below them are the stored morph's fit (for a trained path: `Trained path, 3 waypoints: fit 88.7 % (31.4 % as a straight blend)`), the metadata, level match and input calibration of the result, its warnings, and **Revert slot N**. The warnings are: no loudness, no `input_level_dbu`, a cab model with an IR, a truncated new IR, and a morph target whose model changed since the morph was analysed (the pedal then plays the preset's own model alone until it is picked and saved again). Files go through the same converters as the CLI tools (`editor/src/nam/`, `editor/src/ir/`).
 
 ![Importing a model and an IR into slot 5](images/editor/import.png)
 
@@ -41,13 +41,15 @@ Edits stay in per-slot drafts (`editor/src/draft.ts`) until Save, which applies 
 - A removed model erases the slot, after a confirmation.
 - A changed gate alone is a GATE: no upload, so no reload fade.
 - A changed morph target alone writes nothing here: it is analysed below.
-- Otherwise the preset is composed and uploaded. When it keeps the stored model or IR, the whole slot is read back first (READ, CRC-checked by `splitSlot` in `editor/src/preset/bank.ts`). When it keeps neither, only the stored gate is read (8 bytes).
+- Otherwise the preset is composed and uploaded. When it keeps the stored model or IR, the whole slot is read back first (READ, CRC-checked by `splitSlot` in `editor/src/preset/bank.ts`). When it keeps neither, only the stored gate is read (8 bytes). An upload that keeps the stored model and leaves **Morph to** alone carries the stored morph over as it is (the block and a trained path's waypoints, aimed at the slot the block resolves to), so a rename or an IR change neither re-analyses nor loses a trained path. Any other upload carries no morph.
 
 Then, once every draft is written, the morphs are analysed and written (`editor/src/morph/save.ts`: both models are read back, `fitAlignment` runs for a second or two under `ANALYSING SLOT N…`, MORPH stores the block), and the status ends `; slot 5 morphs with slot 2 (fit 20.8 %)` or `; slot 5 morph off` for each:
 
 - a slot whose draft picked a target, or None;
-- a slot that was uploaded and had a morph: an upload drops the block, so its target is analysed again, against the new model if that changed;
+- a slot that got a new model and had a morph: its target is analysed again, against the new model;
 - a slot whose target got a new model in this save (`morphDependents`), so replacing a model never leaves the presets that morph with it behind. A target that is emptied is not analysed: Save refuses a draft that picks one, and a stored morph with it just stops.
+
+The editor stores straight blends only. A trained path (waypoints between the two models, `docs/MORPH.md`) is made and stored by `bun tools/pedal.ts morph N M --train`; the editor shows it, keeps it across the saves above that keep the model, and replaces it with a straight blend when **Morph to** is picked again or either model changes (the path was trained for the old one).
 
 A new model renames the preset while its name is still the old model's. A swap moves the drafts with the slots, and the morph targets they name. Leaving the page with unsaved drafts asks first. After every slot change the table is listed and read again, so it shows what the flash holds even after a failure.
 
@@ -124,7 +126,7 @@ The pedal's log lines (`docs/FIRMWARE.md` "Log lines"; the last 1,000), each wit
 ## Link and sync
 
 - **Link:** the editor picks the input and output ports whose name contains `daisy` (the toolbar's In/Out menus override them). It sends HELLO every second until the pedal answers, and reads `LINKED` while anything arrived in the last 4 s. WATCH's STATUS and VALUES every 100 ms keep the link fresh.
-- **Sync:** on each link, on the boot line (`ducky …`, so a reflashed or power-cycled pedal is picked up without a reload), and every 3 s until one succeeds. A sync is Identity (device 64), LIST, every ok slot's metadata over READ (`editor/src/preset/info.ts`: 4 READs per slot, one more with an IR and one more with a morph block), DUMP (the parameter table and the values), then WATCH on. A boot line also clears `Not saved on the pedal`: a restarted pedal is back on its saved settings.
+- **Sync:** on each link, on the boot line (`ducky …`, so a reflashed or power-cycled pedal is picked up without a reload), and every 3 s until one succeeds. A sync is Identity (device 64), LIST, every ok slot's metadata over READ (`editor/src/preset/info.ts`: 4 READs per slot, one more with an IR and one more with a morph block; a trained path's waypoints are not read), DUMP (the parameter table and the values), then WATCH on. A boot line also clears `Not saved on the pedal`: a restarted pedal is back on its saved settings.
 - **One request at a time:** every request goes through one queue (`usePedal.ts` `serial`), because the pedal answers one request at a time.
 - **DFU mode…** sends DFU after a confirmation. `tools/flash_when_ready.sh` then flashes, and the editor relinks and resyncs by itself.
 
@@ -153,7 +155,7 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 | `src/state.ts` | The reducer: link, identity, slots, slot infos, STATUS (`compCutDb` among its fields), load, log, the parameter table, VALUES, and whether the settings are unsaved. |
 | `src/useGateAudition.ts` | GATE TRY auditions of the gate box's changes on the playing slot. |
 | `src/useParamEdits.ts` | SETs from the Compressor, EQ and Loop tabs, coalesced per parameter, and the value shown while one is in flight. |
-| `src/draft.ts` | Per-slot unsaved drafts (name, model, IR, gate, morph target), what the slot table shows for them, Save (`saveDraft`) and the stored morphs a save must analyse again (`morphDependents`). |
+| `src/draft.ts` | Per-slot unsaved drafts (name, model, IR, gate, morph target), what the slot table shows for them, Save (`saveDraft`, which carries a kept morph over) and the stored morphs a save must analyse again (`morphDependents`). |
 | `src/importer.ts` | `.nam` and `.wav` files through the converters; rejection text and import warnings. |
 | `src/controls.ts` | Knob 1's and Knob 2's readouts in the firmware's tapers; a toggle's position; level match and input calibration. |
 | `src/eqModel.ts` | The EQ's bands (`BANDS`) and their frequency response from the EQ parameters' values and Knob 2; when a resonance has no effect. |
@@ -193,8 +195,8 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 | `src/link/` | The SysEx link (`docs/MIDI.md`): `protocol.ts` builders, codecs and parsing; `session.ts` `PedalSession`; `params.ts` a parameter's code as its value and readout, the controls and what each accepts. Shared with `tools/pedal.ts`. |
 | `src/nam/` | The `.nam` → model binary converter (`docs/NAM_FORMAT.md`). Shared with `tools/nam_convert.ts`. |
 | `src/ir/` | The `.wav` → IR binary converter, its WAV reader and resampler (`docs/FILTERS.md`). Shared with `tools/ir_convert.ts`. |
-| `src/preset/` | `bank.ts` the slot and bank builders, `gate.ts` the gate block, `morph.ts` the morph block and the slot it resolves to, `info.ts` a stored preset's metadata. Shared with `tools/preset_bank.ts` and `tools/pedal.ts`. |
-| `src/morph/` | The morph's analysis (`docs/MORPH.md`): `a2.ts` the A2-Lite network in float64, `stimulus.ts` its test signal, `align.ts` the alignment transform and its fit, `save.ts` reading two stored models and writing the block. Shared with `tools/pedal.ts`. |
+| `src/preset/` | `bank.ts` the slot and bank builders, `gate.ts` the gate block, `morph.ts` the morph section (the block, a trained path's waypoints), the trainer's path file and the slot a block resolves to, `info.ts` a stored preset's metadata. Shared with `tools/preset_bank.ts` and `tools/pedal.ts`. |
+| `src/morph/` | The morph's analysis (`docs/MORPH.md`): `a2.ts` the A2-Lite network in float64, `stimulus.ts` its test signal, `align.ts` the alignment transform and its fit, `save.ts` reading two stored models and writing the block, or storing a trained path. Shared with `tools/pedal.ts`. |
 
 ## Code conventions
 

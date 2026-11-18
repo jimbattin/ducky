@@ -13,8 +13,9 @@
 // FS1 mutes L Out only; a loop_mode change fades both outputs out, reroutes and fades them in (gModeFade). Presets
 // live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU, or slot by slot over the link:
 // docs/MIDI.md) and are parsed into SDRAM at boot and after every slot change; corrupt or empty slots are skipped.
-// A preset with a morph target (morph.h: a block naming another slot's model and its alignment) plays the blend of
-// its model's weights and the aligned target's at the morph parameter's position, with its own IR and gate.
+// A preset with a morph target (morph.h: a block naming another slot's model and its alignment, and the waypoints of
+// a trained path when it has one) plays the blend of its model's weights and the aligned target's at the morph
+// parameter's position, straight or along the path, with its own IR and gate.
 // With no valid slot the pedal plays dry (compressor, trim, EQ, volume, mute; no gate). If the IR convolver's FFT does
 // not initialise, audio never starts: the pedal serves USB (DFU included) and logs "ir fft" once a second.
 //
@@ -43,8 +44,9 @@
 //   block).
 // Memory (memory.h): AudioCallback runs from ITCM; the engine, the compressor, the EQ and the callback's own state live
 // in DTCM, the IR convolver (66 KB of spectra, streamed through the D-cache every block) in AXI SRAM, which the bench
-// measured 24% faster for it than D2 SRAM (docs/FILTERS.md), the morph weights (15 KB, read when the blend moves) in
-// AXI SRAM too, the parsed presets in SDRAM. FPSCR.FZ is on (denormals flush to zero).
+// measured 24% faster for it than D2 SRAM (docs/FILTERS.md), the morph weights (60 KB for a path's four segments;
+// the 15 KB of one segment read when the blend moves) in AXI SRAM too, the parsed presets in SDRAM. FPSCR.FZ is on
+// (denormals flush to zero).
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -164,7 +166,7 @@ SpscRing<dkparam::Edit, 16> gEdits;        // SET and ASSIGN (onCommand), applie
 float gNextLevel = 1.0f, gNextInCal = 1.0f;  // the loaded preset's gains, IR and model, published by gSwapLoaded
 bool gNextIrOn = false, gNextModelOn = false;
 // The loaded preset's morph, published by gSwapLoaded: whether it has a target, the two models' gains in dB (the
-// preset's, the target's) and the weights. AXI SRAM: the callback reads gMorphW only while not parked.
+// preset's, the target's) and the path's weights. AXI SRAM: the callback reads gMorphW only while not parked.
 bool gNextMorphOn = false;
 float gNextLevelDb[2], gNextInCalDb[2];
 dkmorph::Weights gMorphW;
@@ -183,10 +185,10 @@ uint32_t gSwitchedAt = 0;      // System::GetNow() at the last switch
 constexpr uint32_t kPersistDelayMs = 2000;  // the state record is written once switching has settled this long
 bool gReload = false;          // reload the target slot (its flash changed) even when it is already loaded
 int gMorphFrom = -1;           // the slot the loaded preset morphs with (ps::ResolveMorph at its load); -1 = none
-DK_SDRAM float gMorphScratch[2 * dkdsp::a2::kWeightCount];  // dkmorph::Prepare's
+DK_SDRAM float gMorphScratch[dkdsp::a2::kWeightCount];  // dkmorph::Prepare's
 
 // The link's slot and parameter commands (onCommand, serveReplies). Main loop only.
-DK_SDRAM uint8_t gUploadBuf[ps::kSizeWithIr];
+DK_SDRAM uint8_t gUploadBuf[ps::kSizeMax];
 dklink::Upload gUpload(gUploadBuf);
 DK_SDRAM uint8_t gScratch[2][ps::kSizeMax];  // RENAME's, SWAP's, GATE's and MORPH's copies of slot images
 DK_SDRAM ps::Preset gCheck;                     // COMMIT's validation target
@@ -304,9 +306,10 @@ void logNoiseGate(const dkdsp::GateSettings* g) {
                unsigned(g->ratio / 10), unsigned(g->ratio % 10));
 }
 
-// The current preset's morph: `morph slot N fit F U % "NAME"` (the slot it morphs with, the block's fit and
-// unaligned fit in percent, that preset's name, last as in logModel); `morph missing slot N` when no slot holds the
-// model the block was fitted to (N: the block's target); `morph none` without a block, or dry.
+// The current preset's morph: `morph slot N fit F U % waypoints K "NAME"` (the slot it morphs with, the block's fit
+// and unaligned fit in percent, its path's waypoint count, that preset's name, last as in logModel); `morph missing
+// slot N` when no slot holds the model the block was fitted to (N: the block's target); `morph none` without a
+// block, or dry.
 void logMorph() {
     if (gCur < 0 || !gPresets[gCur].has_morph) {
         dkusb::Log("morph none");
@@ -317,8 +320,8 @@ void logMorph() {
         dkusb::Log("morph missing slot %d", m.target + 1);
         return;
     }
-    dkusb::Log("morph slot %d fit %d %d %% \"%s\"", gMorphFrom + 1, pct(m.fit), pct(m.unaligned_fit),
-               gPresets[gMorphFrom].name);
+    dkusb::Log("morph slot %d fit %d %d %% waypoints %d \"%s\"", gMorphFrom + 1, pct(m.fit), pct(m.unaligned_fit),
+               gPresets[gCur].waypoint_count, gPresets[gMorphFrom].name);
 }
 
 // The current preset (1-based), with its load time when loadUs > 0, then its model, IR, gate and morph; "preset none"
@@ -580,15 +583,17 @@ DK_ITCM void driveLeds() {
 }
 
 // Step 6, first: the morph (morph.h). The blend position follows the morph parameter (smoothed every block, so it stays
-// settled). With a morph target, a position that has moved makes the engine's weights the blend of the preset's model
-// and its aligned target, and the level match and the input calibration the blend of the two models' in dB: before
-// the block's gains are computed. The histories stay: the blend's networks share their coordinates.
+// settled). With a morph target, a position that has moved makes the engine's weights the blend of the two nodes of
+// the path's segment it lies in (the preset's model and its aligned target when the path has no waypoints), and the
+// level match and the input calibration the blend of the two models' in dB: before the block's gains are computed.
+// The histories stay: the path's networks share their coordinates.
 DK_ITCM void stepMorph(float value, bool parked) {
     const float t = dkmorph::BlendPosition(gMorphKnob.Process(value));
     if (parked || !gMorphOn) return;
     const float moved = std::fabs(t - gMorphApplied);
     if (moved > kMorphDeadband || (moved > 0.0f && (t == 0.0f || t == 1.0f))) {
-        gEngine.Blend(gMorphW.a, gMorphW.d, t);
+        const dkmorph::Segment g = dkmorph::SegmentAt(t, gMorphW.segments);
+        gEngine.Blend(gMorphW.a[g.s], gMorphW.d[g.s], g.f);
         gLevel = dkdsp::DbToGain(gLevelDb[0] + t * (gLevelDb[1] - gLevelDb[0]));
         gInCal = dkdsp::DbToGain(gInCalDb[0] + t * (gInCalDb[1] - gInCalDb[0]));
         gMorphApplied = t;
@@ -690,7 +695,7 @@ void loadPreset(int slot) {
     gMorphFrom = ps::ResolveMorph(gPresets, gFilled, slot);
     if (gMorphFrom < 0) return;
     const dkmodel::Model& b = gPresets[gMorphFrom].model;
-    dkmorph::Prepare(p.morph.t, p.model, b, gMorphScratch, &gMorphW);
+    dkmorph::Prepare(p.morph.t, p.model, b, p.waypoints[0], p.waypoint_count, gMorphScratch, &gMorphW);
     gNextLevelDb[0] = 20.0f * log10f(gNextLevel);
     gNextLevelDb[1] = 20.0f * log10f(levelOf(b));
     gNextInCalDb[0] = 20.0f * log10f(gNextInCal);
@@ -814,7 +819,9 @@ void rescan(int k) {
 }
 
 // A filled slot's image size.
-size_t imageSize(int k) { return ps::ImageSize(gPresets[k].has_ir, gPresets[k].has_morph); }
+size_t imageSize(int k) {
+    return ps::ImageSize(gPresets[k].has_ir, gPresets[k].has_morph, gPresets[k].waypoint_count);
+}
 
 // Copies filled slot k's image into dst; returns its size.
 size_t copySlot(int k, uint8_t* dst) {
@@ -930,7 +937,7 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
                 result(cmd, r, 0);
                 return true;
             }
-            const ps::Status st = ps::Parse(gUpload.data(), gUpload.size(), &gCheck);
+            const ps::Status st = gUpload.Validate(&gCheck);
             if (st != ps::Status::kOk) {
                 gUpload.Clear();
                 result(cmd, Result::kInvalid, uint8_t(st));
@@ -1102,8 +1109,8 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
                 result(cmd, Result::kSlotState, 0);
                 return true;
             }
-            const size_t size = copySlot(k, gScratch[0]);
-            const size_t newSize = ps::SetMorph(gScratch[0], size, set ? raw : nullptr, gScratch[1]);
+            copySlot(k, gScratch[0]);
+            const size_t newSize = ps::SetMorph(gScratch[0], set ? raw : nullptr, gScratch[1]);
             uint32_t ms;
             const bool ok = rewriteSlot(k, gScratch[1], newSize, ms);
             if (ok) {

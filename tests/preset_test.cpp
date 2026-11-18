@@ -1,9 +1,11 @@
-// daisy/src/preset.h: the preset slot parser, its gate block, the state record and slot stepping.
+// daisy/src/preset.h: the preset slot parser, its gate block, its morph block and waypoints, the state record and
+// slot stepping.
 #include "preset.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -51,9 +53,44 @@ std::vector<uint8_t> MorphBlock() {
 // image with its morph block set to block (null: removed).
 std::vector<uint8_t> WithMorph(const std::vector<uint8_t>& image, const uint8_t* block) {
     std::vector<uint8_t> out(dkpreset::kSizeMax);
-    out.resize(dkpreset::SetMorph(image.data(), image.size(), block, out.data()));
+    out.resize(dkpreset::SetMorph(image.data(), block, out.data()));
     return out;
 }
+
+// Waypoint k of a test path: element i is k + 1 + i / 4096, so every float names its waypoint and its place.
+std::vector<float> Waypoint(int k) {
+    std::vector<float> w(dkdsp::a2::kWeightCount);
+    for (size_t i = 0; i < w.size(); ++i) w[i] = float(k + 1) + float(i) / 4096.0f;
+    return w;
+}
+
+// plain (an image without a morph block) with block and the waypoints after its model and IR, assembled byte by
+// byte: the waypoint count in flag bits 2-3, the size field and the CRC following.
+std::vector<uint8_t> WithPath(const std::vector<uint8_t>& plain, const std::vector<uint8_t>& block,
+                              const std::vector<std::vector<float>>& waypoints) {
+    std::vector<uint8_t> b(plain.begin(), plain.end() - 4);
+    b.insert(b.end(), block.begin(), block.end());
+    for (const std::vector<float>& w : waypoints)
+        for (float f : w) {
+            uint8_t raw[4];
+            dkbin::PutLeF32(raw, f);
+            b.insert(b.end(), raw, raw + 4);
+        }
+    b.resize(b.size() + 4);
+    Put16(b, 6, uint16_t(dkbin::Le16(plain.data() + 6) | 0x0002 | waypoints.size() << 2));
+    Put32(b, 8, uint32_t(b.size()));
+    FixCrc(b);
+    return b;
+}
+
+std::vector<uint8_t> PathFixture(int count) {
+    std::vector<std::vector<float>> w;
+    for (int k = 0; k < count; ++k) w.push_back(Waypoint(k));
+    return WithPath(Fixture(), MorphBlock(), w);
+}
+
+// Where float i of waypoint k lies in an image with an IR.
+size_t WaypointOffset(int k, size_t i) { return 84 + 7908 + 8292 + 64 + size_t(k) * 7480 + 4 * i; }
 
 }  // namespace
 
@@ -211,7 +248,8 @@ TEST(PresetMorph, SetMorphRoundTrip) {
     EXPECT_FALSE(p->has_morph);
 
     const std::vector<uint8_t> morphed = WithMorph(plain, block.data());
-    EXPECT_EQ(morphed.size(), dkpreset::kSizeMax);
+    EXPECT_EQ(morphed.size(), 16352u);
+    EXPECT_EQ(morphed.size(), dkpreset::ImageSize(true, true, 0));
     ASSERT_EQ(Parse(morphed.data(), morphed.size(), p.get()), Status::kOk);
     EXPECT_TRUE(p->has_morph);
     EXPECT_EQ(p->morph.target, 0);
@@ -225,6 +263,141 @@ TEST(PresetMorph, SetMorphRoundTrip) {
 
     EXPECT_EQ(WithMorph(morphed, block.data()), morphed) << "a second block replaces the first";
     EXPECT_EQ(WithMorph(morphed, nullptr), plain);
+}
+
+TEST(PresetPath, SizesFollowTheFlags) {
+    EXPECT_EQ(dkpreset::ImageSize(false, false, 0), 7996u);
+    EXPECT_EQ(dkpreset::ImageSize(false, true, 0), 8060u);
+    EXPECT_EQ(dkpreset::ImageSize(false, true, 2), 23020u);
+    EXPECT_EQ(dkpreset::ImageSize(true, true, 1), 23832u);
+    EXPECT_EQ(dkpreset::ImageSize(true, true, 3), 38792u);
+    EXPECT_EQ(dkpreset::kSizeMax, 38792u);
+}
+
+TEST(PresetPath, WaypointsParseInOrder) {
+    for (int count : {1, 3}) {
+        const std::vector<uint8_t> b = PathFixture(count);
+        ASSERT_EQ(b.size(), 16352u + size_t(count) * 7480u);
+        auto p = std::make_unique<Preset>();
+        ASSERT_EQ(Parse(b.data(), b.size(), p.get()), Status::kOk) << count;
+        EXPECT_TRUE(p->has_morph);
+        EXPECT_EQ(p->waypoint_count, count);
+        EXPECT_EQ(p->morph.model_crc, 0xCB02C66Fu) << "the block is read from before the waypoints";
+        EXPECT_TRUE(p->has_ir);
+        EXPECT_GT(p->ir.tap_count, 0u);
+        for (int k = 0; k < count; ++k) {
+            const std::vector<float> want = Waypoint(k);
+            EXPECT_TRUE(std::equal(want.begin(), want.end(), p->waypoints[k])) << count << " waypoints, waypoint " << k;
+        }
+    }
+}
+
+TEST(PresetPath, ModelOnlyImage) {
+    std::vector<uint8_t> plain = Fixture();
+    plain.resize(dkpreset::kSizeNoIr);
+    Put16(plain, 6, 0);
+    Put32(plain, 8, dkpreset::kSizeNoIr);
+    FixCrc(plain);
+    const std::vector<uint8_t> b = WithPath(plain, MorphBlock(), {Waypoint(0), Waypoint(1)});
+    ASSERT_EQ(b.size(), 23020u);
+    auto p = std::make_unique<Preset>();
+    ASSERT_EQ(Parse(b.data(), b.size(), p.get()), Status::kOk);
+    EXPECT_FALSE(p->has_ir);
+    EXPECT_EQ(p->waypoint_count, 2);
+    EXPECT_EQ(p->waypoints[1][0], 2.0f);
+    EXPECT_EQ(p->morph.model_crc, 0xCB02C66Fu);
+}
+
+TEST(PresetPath, PlainAndBlockOnlyImagesHaveNoWaypoints) {
+    auto p = std::make_unique<Preset>();
+    p->waypoint_count = 3;
+    const std::vector<uint8_t> plain = Fixture();
+    ASSERT_EQ(Parse(plain.data(), plain.size(), p.get()), Status::kOk);
+    EXPECT_EQ(p->waypoint_count, 0);
+    p->waypoint_count = 3;
+    const std::vector<uint8_t> morphed = WithMorph(plain, MorphBlock().data());
+    ASSERT_EQ(Parse(morphed.data(), morphed.size(), p.get()), Status::kOk);
+    EXPECT_EQ(p->waypoint_count, 0);
+}
+
+TEST(PresetPath, WaypointsWithoutMorphFlagIsVersion) {
+    std::vector<uint8_t> b = Fixture();
+    Put16(b, 6, 0x0001 | 1 << 2);
+    FixCrc(b);
+    EXPECT_EQ(ParseBytes(b), Status::kVersion);
+
+    // The bytes of a one-waypoint path, its morph flag cleared.
+    b = PathFixture(1);
+    Put16(b, 6, 0x0001 | 1 << 2);
+    FixCrc(b);
+    EXPECT_EQ(ParseBytes(b), Status::kVersion);
+}
+
+TEST(PresetPath, NonFiniteWaypointIsMorph) {
+    const std::vector<uint8_t> good = PathFixture(3);
+    ASSERT_EQ(ParseBytes(good), Status::kOk);
+    uint8_t raw[4];
+
+    std::vector<uint8_t> b = good;
+    dkbin::PutLeF32(raw, std::nanf(""));
+    std::copy(raw, raw + 4, b.begin() + WaypointOffset(2, dkdsp::a2::kWeightCount - 1));  // the path's last float
+    FixCrc(b);
+    EXPECT_EQ(ParseBytes(b), Status::kMorph);
+
+    b = good;
+    dkbin::PutLeF32(raw, INFINITY);
+    std::copy(raw, raw + 4, b.begin() + WaypointOffset(0, 0));  // its first
+    FixCrc(b);
+    EXPECT_EQ(ParseBytes(b), Status::kMorph);
+}
+
+TEST(PresetPath, SizeMustMatchTheWaypointCount) {
+    // Two waypoints' bytes flagged as three, and as one.
+    for (int flagged : {3, 1}) {
+        std::vector<uint8_t> b = PathFixture(2);
+        Put16(b, 6, uint16_t(0x0003 | flagged << 2));
+        FixCrc(b);
+        EXPECT_EQ(ParseBytes(b), Status::kSize) << flagged;
+    }
+    // A size field that names the image's bytes but no preset's size.
+    std::vector<uint8_t> b = PathFixture(1);
+    b.resize(b.size() + 4);
+    Put32(b, 8, uint32_t(b.size()));
+    FixCrc(b);
+    EXPECT_EQ(ParseBytes(b), Status::kSize);
+}
+
+TEST(PresetPath, SetMorphDropsTheWaypoints) {
+    const std::vector<uint8_t> plain = Fixture(), block = MorphBlock();
+    std::vector<uint8_t> other = block;
+    other[0] = 5;  // another target: the path's own block must not survive
+    const std::vector<uint8_t> path = WithPath(plain, other, {Waypoint(0), Waypoint(1), Waypoint(2)});
+    ASSERT_EQ(ParseBytes(path), Status::kOk);
+
+    const std::vector<uint8_t> set = WithMorph(path, block.data());
+    EXPECT_EQ(set.size(), 16352u);
+    EXPECT_EQ(set, WithMorph(plain, block.data())) << "the block alone, the waypoint bits cleared";
+    auto p = std::make_unique<Preset>();
+    ASSERT_EQ(Parse(set.data(), set.size(), p.get()), Status::kOk);
+    EXPECT_EQ(p->waypoint_count, 0);
+    EXPECT_EQ(p->morph.target, 0);
+
+    EXPECT_EQ(WithMorph(path, nullptr), plain);
+}
+
+// RENAME and GATE rewrite a whole image in place: the path stays.
+TEST(PresetPath, RenameAndSetGateKeepTheWaypoints) {
+    std::vector<uint8_t> b = PathFixture(3);
+    dkpreset::Rename(b.data(), b.size(), "path", 4);
+    dkdsp::GateSettings g = dkdsp::kGateOff;
+    g.enabled = true;
+    dkpreset::SetGate(b.data(), b.size(), g);
+    auto p = std::make_unique<Preset>();
+    ASSERT_EQ(Parse(b.data(), b.size(), p.get()), Status::kOk);
+    EXPECT_STREQ(p->name, "path");
+    EXPECT_TRUE(p->gate.enabled);
+    ASSERT_EQ(p->waypoint_count, 3);
+    EXPECT_EQ(p->waypoints[2][dkdsp::a2::kWeightCount - 1], Waypoint(2).back());
 }
 
 TEST(PresetMorph, ResolveMorph) {

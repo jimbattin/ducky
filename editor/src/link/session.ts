@@ -28,8 +28,8 @@ import {
   gateMsg,
   gateTryMsg,
   type IdentityMessage,
-  IMAGE_SIZES,
   identityRequest,
+  isImageSize,
   listMsg,
   morphMsg,
   type ParamInfo,
@@ -219,7 +219,7 @@ export class PedalSession {
     return out;
   }
 
-  /** The metadata of the preset in an ok slot, read with infoRanges. */
+  /** The metadata of the preset in an ok slot, read with infoRanges (a morph's waypoints are not read). */
   async readInfo(slot: number): Promise<SlotInfo> {
     const [head] = infoRanges(false, false);
     const first = await this.read(slot, head![0], head![1]);
@@ -284,7 +284,7 @@ export class PedalSession {
   }
 
   /**
-   * Writes a preset image (7996 or 16288 bytes) to the slot. BEGIN and each CHUNK are resent on no reply (and a CHUNK
+   * Writes a preset image (protocol.ts isImageSize) to the slot. BEGIN and each CHUNK are resent on no reply (and a CHUNK
    * on `crc`) up to `retries` times; COMMIT is not resent (the pedal has cleared the upload).
    */
   async upload(
@@ -294,8 +294,7 @@ export class PedalSession {
   ): Promise<{ flashMs: number; retries: number }> {
     checkSlot("UPLOAD", slot);
     const size = image.length;
-    if (!(IMAGE_SIZES as readonly number[]).includes(size))
-      throw new LinkError(`UPLOAD: image size ${size}, need ${IMAGE_SIZES.join(" or ")}`);
+    if (!isImageSize(size)) throw new LinkError(`UPLOAD: ${size} bytes is not a preset image's size`);
     let retries = 0;
     for (let tries = 0; ; tries++) {
       const r = await this.exchange(uploadBeginMsg(slot, size), CMD.uploadBegin, this.replyTimeoutMs);

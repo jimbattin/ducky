@@ -41,8 +41,12 @@ export const IDENTITY: MorphTransform = { perm: [0, 1, 2], scale: [1, 1, 1], m: 
 
 /** The scale's range (daisy/src/morph.h ParseBlock). */
 const SCALE_MAX = 16;
-/** The blend positions at which an alignment's blends are compared with the crossfade of the two models' outputs. */
-const BLEND_POSITIONS = [0.25, 0.5, 0.75];
+/**
+ * The blend positions at which a morph is compared with the crossfade of the two models' outputs: the eighths, which
+ * are the knots and the middles of the segments of a path with three waypoints (tools/morph_train.py measures the
+ * same ones).
+ */
+export const BLEND_POSITIONS = [1, 2, 3, 4, 5, 6, 7].map((i) => i / 8);
 const PERMS: [number, number, number][] = [
   [0, 1, 2],
   [0, 2, 1],

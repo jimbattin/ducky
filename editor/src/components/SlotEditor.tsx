@@ -158,9 +158,16 @@ export function SlotEditor({ slot, slots, infos, draft, onChange, onRevert }: Pr
       </div>
       {block !== null && storedMorph !== null && draft.morph === null && draft.model.kind !== "none" && (
         <p class="hint">
-          Fit {percent(block.fit)} %
-          {block.fit > block.unalignedFit && `, aligned (${percent(block.unalignedFit)} % unaligned)`}: how closely the
-          blends follow a crossfade of the two models.
+          {block.waypoints > 0
+            ? `Trained path, ${block.waypoints} waypoint${block.waypoints === 1 ? "" : "s"}: fit ${percent(block.fit)} % ` +
+              `(${percent(block.unalignedFit)} % as a straight blend)`
+            : `Fit ${percent(block.fit)} %${
+                block.fit > block.unalignedFit ? `, aligned (${percent(block.unalignedFit)} % unaligned)` : ""
+              }`}
+          : how closely the blends follow a crossfade of the two models.
+          {block.waypoints > 0
+            ? ` Picking a target here stores a straight blend; tools/pedal.ts morph ${n} ${storedMorph + 1} --train trains a path.`
+            : ` tools/pedal.ts morph ${n} ${storedMorph + 1} --train trains a path through waypoints instead.`}
         </p>
       )}
       {error !== null && (

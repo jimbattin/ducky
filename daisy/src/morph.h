@@ -1,6 +1,7 @@
 // Preset morph: a preset's model A blended, weight by weight, into another preset's model B re-expressed in A's
-// channel coordinates. Host-portable (no libDaisy, no allocation), covered by tests/morph_test.cpp. The transform and
-// the block are the contract with editor/src/morph/align.ts (which fits the transform) and editor/src/preset/morph.ts;
+// channel coordinates, along a straight line or along a trained path through up to kMaxWaypoints waypoint networks.
+// Host-portable (no libDaisy, no allocation), covered by tests/morph_test.cpp. The transform and the block are the
+// contract with editor/src/morph/align.ts (which fits the transform) and editor/src/preset/morph.ts;
 // tests/fixtures/morph pins the two languages together.
 //
 // An A2-Lite network (docs/NAM_FORMAT.md "Forward pass") computes the same output when
@@ -14,11 +15,18 @@
 // u8 perm[3], u32 the target model binary's CRC field, f32 scale[3], f32 m[9] (row-major), f32 fit, f32 unaligned
 // fit (each 0..1, for display: how closely the blends this transform gives, and the blends of the identity, follow
 // a crossfade of the two models' outputs; the host keeps the identity unless the fitted transform does better).
+//
+// Path: a slot's K waypoints (0..kMaxWaypoints, after its block, preset.h) are networks in A's coordinates, each a
+// weight stream with the head scale folded in, as Apply(kIdentity, ..) gives. The nodes are A, the waypoints in
+// stored order, then the aligned B: K + 1 segments of equal length over the blend position, each a straight blend of
+// its two nodes (SegmentAt). K = 0 is the straight blend. A path's block holds the identity transform, the path's
+// fit and the straight unaligned blend's fit (tools/morph_train.py trains the waypoints).
 #pragma once
 
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include "binary.h"
 #include "dsp/a2lite.h"
@@ -44,6 +52,9 @@ struct Block {
 
 // Not kBlockSize: that is dkdsp's audio block.
 constexpr size_t kBlockBytes = 64;
+constexpr int kMaxWaypoints = 3;             // a path's waypoints at most
+constexpr size_t kWaypointBytes = 4 * dkdsp::a2::kWeightCount;  // one waypoint in a slot
+constexpr int kMaxSegments = kMaxWaypoints + 1;
 constexpr int kTargets = 8;                  // dkpreset::kSlots (preset.h includes this file)
 constexpr float kScaleMax = 16.0f;           // a scale lies in [1 / kScaleMax, kScaleMax]
 constexpr double kMinDeterminant = 1e-6;     // of m
@@ -181,12 +192,14 @@ inline void Apply(const Transform& t, const float* stream, float head_scale, flo
     o[3 * a2::kHeadKernel] = float(scale * s[3 * a2::kHeadKernel]);
 }
 
-// What dkdsp::A2Lite::Blend takes: model A and the step to the aligned model B, in the engine layout, head scales
-// folded in.
+// What dkdsp::A2Lite::Blend takes, per segment of the path: the segment's first node and the step to its second, in
+// the engine layout, head scales folded in.
 struct Weights {
-    float a[dkdsp::a2::kWeightCount];
-    float d[dkdsp::a2::kWeightCount];  // aligned B - A
+    float a[kMaxSegments][dkdsp::a2::kWeightCount];  // node s
+    float d[kMaxSegments][dkdsp::a2::kWeightCount];  // node s + 1 - node s
+    int segments;                                    // 1..kMaxSegments: the waypoints + 1
 };
+static_assert(kWaypointBytes == 7480, "a waypoint is a weight stream");
 
 // The blend position (0: model A, 1: the aligned model B) of the morph parameter's value v (0..1): exactly 0 and 1
 // within kEndZone of the ends, so a knob that stops short of its travel's ends still reaches both models, and linear
@@ -195,14 +208,40 @@ DK_ITCM inline float BlendPosition(float v) {
     return std::fmin(std::fmax((v - kEndZone) * (1.0f / (1.0f - 2.0f * kEndZone)), 0.0f), 1.0f);
 }
 
-// *w for model a morphing into model b, which t brings into a's coordinates. scratch: 2 * a2::kWeightCount floats.
-inline void Prepare(const Transform& t, const dkmodel::Model& a, const dkmodel::Model& b, float* scratch, Weights* w) {
+// A blend position's place on a path: the segment and the fraction along it that Blend takes.
+struct Segment {
+    int s;
+    float f;
+};
+
+// Where the blend position t (0..1) lies on a path of segments (>= 1) equal segments: a knot between two segments
+// is the start (fraction 0) of the later one, and t = 1 the end (fraction 1) of the last.
+DK_ITCM inline Segment SegmentAt(float t, int segments) {
+    const float x = t * float(segments);
+    const int s = int(x) < segments ? int(x) : segments - 1;
+    return {s, x - float(s)};
+}
+
+// *w for model a morphing into model b, which t brings into a's coordinates, through the count (0..kMaxWaypoints)
+// waypoints: count * a2::kWeightCount floats, each waypoint a weight stream in a's coordinates with its head scale
+// folded in (null when count is 0). scratch: a2::kWeightCount floats.
+inline void Prepare(const Transform& t, const dkmodel::Model& a, const dkmodel::Model& b, const float* waypoints,
+                    int count, float* scratch, Weights* w) {
     namespace a2 = dkdsp::a2;
+    w->segments = count + 1;
     Apply(kIdentity, a.weights, a.head_scale, scratch);
-    Apply(t, b.weights, b.head_scale, scratch + a2::kWeightCount);
-    dkdsp::A2Lite::ToEngine(scratch, w->a);
-    dkdsp::A2Lite::ToEngine(scratch + a2::kWeightCount, w->d);
-    for (size_t i = 0; i < a2::kWeightCount; ++i) w->d[i] -= w->a[i];
+    dkdsp::A2Lite::ToEngine(scratch, w->a[0]);
+    for (int s = 0; s <= count; ++s) {
+        // d[s] holds node s + 1 until it has started the next segment.
+        if (s < count) {
+            dkdsp::A2Lite::ToEngine(waypoints + size_t(s) * a2::kWeightCount, w->d[s]);
+            std::memcpy(w->a[s + 1], w->d[s], sizeof w->d[s]);
+        } else {
+            Apply(t, b.weights, b.head_scale, scratch);
+            dkdsp::A2Lite::ToEngine(scratch, w->d[s]);
+        }
+        for (size_t i = 0; i < a2::kWeightCount; ++i) w->d[s][i] -= w->a[s][i];
+    }
 }
 
 }  // namespace dkmorph
