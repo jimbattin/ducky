@@ -6,6 +6,8 @@ One model runs, not two: a blend costs 3 % of the block period while the knob mo
 
 Code: `daisy/src/morph.h` (`dkmorph`), `daisy/src/dsp/a2lite.h` (`A2Lite::Blend`, `ToEngine`), `daisy/src/preset.h` (the slot's morph block, `SetMorph`, `ResolveMorph`), `daisy/src/ducky.cpp` (`stepMorph`, `loadPreset`, the link's MORPH), `editor/src/morph/` (the analysis), `editor/src/preset/morph.ts` (the block). Tests: `tests/morph_test.cpp`, `tests/preset_test.cpp`, `editor/src/morph/*.test.ts`, `editor/src/draft.test.ts`.
 
+The research behind the design (what was tried, the measurements, what is still open and worth exploring): `docs/morph-findings.md`.
+
 ## Using it
 
 ```
@@ -49,7 +51,7 @@ That is every symmetry the shape has: the head is shared by all 23 layers, so th
 
 ## Measured blends (the pedal's five models)
 
-Unaligned (what the analysis keeps for all of these), on the stimulus; levels are the AC RMS of the level-matched output.
+Unaligned (what the analysis keeps for all of these), on the stimulus; levels are the AC RMS of the level-matched output. Every position, the correlations and the DC offsets: `docs/morph-findings.md` "The unaligned blends, pair by pair".
 
 | A → B | Fit | Level at 0 % | 25 % | 50 % | 75 % | 100 % |
 |---|---|---|---|---|---|---|
@@ -64,10 +66,11 @@ Unaligned (what the analysis keeps for all of these), on the stimulus; levels ar
 - **A fit near 20 %** is not: the middle of the sweep is some other network, 9–19 dB quieter and unlike either amp. Both ends are still exact. The Mesa capture is the odd one out against both it was tried with.
 - **The dip is a property of the weight blend,** not of the gains: the level match and the input calibration already move in dB.
 
-Not built, with what a trial showed:
+Not built, with what a trial showed (`docs/morph-findings.md` has the trials and a longer list of avenues, starting with captures of one amp at several settings, which were not available to test):
 
 - **Fitting the transform to the crossfade directly** (least squares on the blends' outputs, 12 parameters, from the identity): Fender → Two-Rock's dip at 50 % went from 8.6 to 4 dB and the Mesa → Fender's from 18 to 15 dB, for 25–40 s of analysis per pair. The block and the firmware would not change.
 - **A make-up gain along the sweep,** measured by the analysis and stored in the block, would level the dip without changing the tone in the middle.
+- **The blends' DC offset** in the middle of a sweep (up to −27 dB) is not removed unless the EQ's low-cut is raised.
 
 ## On the pedal
 

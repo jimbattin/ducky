@@ -37,6 +37,7 @@ The FX loop modes (MISO, loop pre-model, loop post-model: signal flow, cabling, 
 USB-MIDI SysEx link (commands, the parameter table, the controls and their pickup rule, upload, slot read-back, status stream, playback rules), generated from `daisy/src/link.h` and `daisy/src/params.h` by `make midi-doc`: `docs/MIDI.md`
 NAM A2 format, A2-Lite shape check, weight order, forward pass, Ducky model binary, converter, reference renders, engine: `docs/NAM_FORMAT.md`
 Preset morph (using it, the weight blend and the alignment transform, the host's analysis and why it keeps the identity for unrelated captures, measured blends, what the pedal does, the morph block): `docs/MORPH.md`
+Preset morph research (what was tried and measured: activation, weight and crossfade matching, the blends pair by pair, the DC offset; limits; avenues to explore). Read before changing the morph's analysis: `docs/morph-findings.md`
 IR convolver, cut filters, noise gate, IR binary, `.wav` converter, getting an IR onto the pedal: `docs/FILTERS.md`
 The EQ (low-cut, three bells, high-cut: controls and ranges, the model, setting A's reference response, required behaviour, as built and its cost): `docs/EQ.md`
 Cortex-M7 float performance (measured cost model, rules for DSP kernels, steering GCC, how to measure). Read before writing or optimising DSP code: `docs/M7_PERFORMANCE.md`
