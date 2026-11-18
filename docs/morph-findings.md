@@ -1,6 +1,6 @@
 # Preset morph: research and findings
 
-What was tried while building the preset morph (`docs/MORPH.md`), what it showed, and what is still open. Findings 1–8 (the straight blend and its alignment) were recorded on 2026-11-17 against firmware `92043c1`; findings 9–18 (trained paths) the same day against the tree that added them. `docs/MORPH.md` describes the feature as built; this file is the evidence behind its design and the list of things worth trying next.
+What was tried while building the preset morph (`docs/MORPH.md`), what it showed, and what is still open. Findings 1–8 (the straight blend and its alignment) were recorded on 2026-11-17 against firmware `92043c1`; findings 9–18 (trained paths) the same day against the tree that added them; finding 19 (the final paths on the pedal) on 2026-11-18 against firmware `2e27d21`. `docs/MORPH.md` describes the feature as built; this file is the evidence behind its design and the list of things worth trying next.
 
 ## Summary
 
@@ -10,7 +10,7 @@ What was tried while building the preset morph (`docs/MORPH.md`), what it showed
 4. **The 12-parameter transform can improve a blend when fitted to the blend's output directly,** but slowly, and only partly for the bad pairs. It is too small a lever: the barrier between two captures lies in the 1,870 weights, not in the 12 numbers of B's symmetries.
 5. **Training the path instead works.** Three waypoint networks, trained by gradient descent so the piecewise-linear path follows the crossfade, take the six pairs from fits of 31–86 % to 89–98 % on the stored-fit stimulus, and from 4–75 % to 92–99.9 % on held-out guitar at three playing levels, with the level within 2 dB of the crossfade's and the DC below −47 dB (`docs/MORPH.md` "Measured blends"). The pedal's run-time cost does not change.
 6. **What the training sees and how its loss weighs it decide what the path can do.** A path trained on a guitar recording alone fails on synthetic plucks and one trained on plucks alone is 14 points worse on the recording; a path trained at a normalised recording's level sags by up to 9 dB for quiet playing; a loss that scores a constant offset against a quiet passage trains a clean pair worse than no training. The trainer therefore mixes both signals at four levels, weighs quiet excerpts like loud ones, and scores the DC by its size.
-7. **Nothing here was judged by ear,** and no pair of captures of the same amp was available to test, which is the most promising case.
+7. **The player tried the trained paths on the pedal and approved them** ("great"); what was listened for was not recorded (finding 19). No pair of captures of the same amp was available to test, which is the most promising case.
 
 ## Setup
 
@@ -218,10 +218,10 @@ Measured on an i7-1185G7 (four cores), float32, PyTorch 2.15 on the CPU.
 - **A step of the trainer's own loop takes 54 ms** on four threads with the machine otherwise idle (120 steps): drawing the excerpts 0.5 ms, forward 15.1 ms, backward 37.5 ms, clipping and Adam 0.4 ms. The forward pass without gradients takes 10 ms.
 - **Half of it is the convolutions' gradient.** A profile of five forward and backward passes: `convolution_backward` 50.4 % of the CPU time, the forward convolutions 14.4 %, and the rest spread over the elementwise operations and their gradients (adds 6.9 %, `bmm` 5.0 %, multiplies 2.8 %, nothing else over 2.5 %). The framework's bookkeeping calls take microseconds each.
 - **Threads:** 103 / 65 / 49 / 77 ms a step (forward and backward) on 1 / 2 / 4 / 8 threads; the eight are hyperthreads.
-- **A whole run takes 11 minutes:** 8,000 steps in 618 s (77 ms a step, 76 ms over the last 500), then the measurements; the two models' outputs on the 66 s of training signal take 6.4 s. Why the run's steps take 23 ms more than the 54 ms measured fresh was not established; the laptop slowing under ten minutes of load is the suspect.
+- **A whole run takes 8 to 11 minutes:** 8,000 steps in 618 s the first time (77 ms a step, then the measurements: 11 minutes) and in 432 s the next day (54 ms a step, as measured fresh: 7 min 46 s for `tools/pedal.ts morph 4 1 --train`, reading the models and storing the path included). The two models' outputs on the 66 s of training signal take 6.4 s. The slow run followed an hour of other training on the same laptop; why it was slower was not established.
 - **No gain from:** MKL-DNN off (93 ms against 56); one blend position a step, so that the six excerpts share their weights and the convolutions are plain ones (70 ms); more excerpts a step (9.1 and 8.2 ms an excerpt at 12 and 24, 9.3 at 6); a per-tap `bmm` formulation of the convolution (the same time as `conv1d`). float64 takes twice as long.
 - **Excerpt length matters little:** 44 % of an 8,192-sample excerpt is receptive-field context that produces no loss. Per scored sample: 1,026 ns at 6 × 8,192, 981 ns at 3 × 16,384, 804 ns at 2 × 32,768, 1,158 ns at 1 × 65,536.
-- **Several pairs train faster side by side:** four at once, one thread each (`OMP_NUM_THREADS=1`), took 1,401–1,415 s for their 8,000 steps, so 5.9 minutes a pair against 11 alone.
+- **Several pairs train faster side by side:** four at once, one thread each (`OMP_NUM_THREADS=1`), took 1,401–1,415 s for their 8,000 steps, so 5.9 minutes a pair against 8 to 11 alone.
 
 ### 17. The stored path is the trained path
 
@@ -233,6 +233,28 @@ Slot 5 read back from the pedal with its three waypoints (finding 13's path, sto
 - **Storing a path:** 0.4 s over the link for the 30,500-byte image, 180–185 ms of it flash.
 - **Cost while sweeping** (the parameter driven up and down every 2 s over the link, slot 5 without an IR): up to 478 avg / 521 max permille against 464 / 468 at rest, 0 underruns. The blend reads one segment's two weight sets, as the straight blend does.
 
+### 19. The final paths on the pedal
+
+2026-11-18, firmware `2e27d21` (the trained-paths commit `e4398fb` and a docs commit), slot 5 playing without an IR, the EQ's low-cut at 162 Hz. The signal at the input was not ours to control, but steady: its peaks averaged −18.4 dBFS over every reading below (−16 to −21 second by second).
+
+- **Stored:** `morph 5 2 --path renders/morph/5_2.path` (`trained path, 3 waypoints, fit 88.7 % (straight 31.4 %)`, 0.4–0.6 s, 184–188 ms of flash); the slot's waypoints read back byte for byte the file's; the log reads `morph slot 2 fit 89 31 % waypoints 3 "FNDR …"`. Slots 2 → 1 and 1 → 3 were stored the same way.
+- **The level along the sweep.** The log's `out` peak (the mean of 8 one-second readings for the path, 5 for the straight blend) with `morph` resting at each eighth, relative to 0 % (−11.0 dBFS), beside the trainer's network on the held-out DI scaled to input peaks of −18 dBFS (the mean of its one-second peaks):
+
+| Position | 12.5 | 25 | 37.5 | 50 | 62.5 | 75 | 87.5 | 100 % |
+|---|---|---|---|---|---|---|---|---|
+| Pedal, straight blend (`morph 5 2`) | −6.0 | −13.6 | −23.2 | −29.0 | −19.8 | −15.6 | −10.6 | −6.6 dB |
+| Pedal, trained path | −1.3 | −3.3 | −5.1 | −6.8 | −9.5 | −10.0 | −9.9 | −7.5 dB |
+| Render, trained path | −1.6 | −3.0 | −4.4 | −5.5 | −7.0 | −8.5 | −10.6 | −8.3 dB |
+| Render, crossfade | −1.1 | −2.4 | −3.7 | −5.3 | −6.7 | −8.2 | −9.4 | −8.3 dB |
+
+  The path takes the output from the Mesa's level to the Fender's along the crossfade's slope, within 2.5 dB of the render on another signal and through the pedal's EQ, where the straight blend falls 29 dB in the middle. The path's lowest point lies 2.5 dB under the Fender's end at 75 %; the crossfade's own peaks do the same (1.1 dB under at 87.5 %, finding 15). The render's straight blend falls less (−14.6 dB at 50 %) because its peaks include the blend's DC offset, which the pedal's low-cut removes.
+- **Finding 13's sag is gone:** that path read −23 to −24 dBFS at 75 % against −20 at 100 % on a like input; this one −21.0 against −18.5, the crossfade's shape.
+- **`--train` end to end:** `bun tools/pedal.ts morph 4 1 --train` read both models, trained (stimulus 80.4 → 95.8 %, held-out DI 64.7 / 54.1 / 34.1 → 96.6 / 97.9 / 97.8 %), stored the path (`trained path, 3 waypoints, fit 95.8 % (straight 80.4 %), flash 167 ms`) and removed its temporary directory, in 7 min 46 s. The MIDI port stayed open and unread for the seven minutes of training and the store after it went through.
+- **The link with waypoints in a slot,** on the playing slot 5: `rename` and back, `gate 5 on` and `off` kept the path (`info 5` unchanged, the waypoints byte for byte the file's afterwards); `swap 2 7` reloaded slot 5 as `morph slot 7 … waypoints 3` and the swap back as `morph slot 2 …`; `swap 5 8` moved the preset with its path and back; another model uploaded over slot 2 logged `morph missing slot 2` and the same model binary uploaded again brought `morph slot 2 fit 89 31 % waypoints 3` back without storing anything in slot 5; `morph 5 none` left a 7,996-byte image and `morph none`.
+- **The editor** (headless Chromium, MIDI with SysEx granted, on two scratch slots holding slot 2's and slot 1's models with the 2 → 1 path): the Presets tab read `Trained path, 3 waypoints: fit 98.3 % (83.6 % as a straight blend)` (and slot 5's and slot 1's likewise); a rename saved there kept the path, byte for byte; **Morph to** another slot saved a straight blend (`Saved slot 6; slot 6 morphs with slot 3 (fit 85.7 %)`); a new model saved over the target analysed again by itself as a straight blend (`Saved slot 7; slot 6 morphs with slot 7 (fit 100.0 %)`: the new model was the preset's own). An IR change was not tried.
+- **Cost:** sweeping the parameter over the link along the path, up to 482 avg / 520 max permille against 464 / 468 at rest, 0 underruns. The bench: `morph` 7,556 cycles avg, 32.0 permille max (7,417 and 31.4 before the paths); `chain` 169,322 cycles, 709.4 permille max against the 850 gate (169,569 and 710.9); `check` 241e-9.
+- **By ear:** the player tried the paths on the pedal as left below and reported "great". Nothing more specific was recorded: which slots, how loud, the path against the straight blend, the knots, zipper noise and a load with the knob mid-travel are still open as checks ("To do on the pedal").
+
 ## What was built from this
 
 - The analysis renders the blends for the activation-matched transform and for the identity and keeps the one with the higher fit (`fitAlignment`). On all real pairs that is the identity; on the fixture, the alignment.
@@ -242,7 +264,7 @@ Slot 5 read back from the pedal with its three waypoints (finding 13's path, sto
 
 ## Limits of this record
 
-- **No listening.** Every number is from a render or from the pedal's meters. The by-ear checks (the ends against FS2, the sweep, clicks, whether an 85–90 % path sounds like a morph) have not been done.
+- **Little listening.** Every number is from a render or from the pedal's meters (finding 19: the final path's level along the sweep on the pedal agrees with its render). The player tried the paths and approved them, without detail; the by-ear checks one by one (the ends against FS2, the path against the straight blend, clicks, the knots) are not recorded.
 - **Six pairs of five captures,** all from one source and all `amp_cab`. No two captures of the same amp at different settings, no pedals alone, no models without a cab.
 - **One guitar recording,** 15 s of it for training and 5 s held out, and one seed: differences of a few points between training runs are not established (finding 14).
 - **The crossfade is a stand-in for "a good morph".** A blend that differs from the crossfade may still sound good; one that matches it is no better than running both amps in parallel, and is quieter in the middle (finding 15).
@@ -252,26 +274,20 @@ Slot 5 read back from the pedal with its three waypoints (finding 13's path, sto
 
 ## To do on the pedal
 
-The pedal was unplugged before the final paths could be stored. Everything in "Measured blends" (`docs/MORPH.md`) is a render on the host; what follows has not been done. Record the results here as findings and in `docs/ROADMAP.md` "Morph: trained paths".
+Everything that can be read from the pedal's meters and the link is in finding 19, with the player's verdict on a first try ("great", no detail). What is left needs ears, check by check. Record the results here as findings and in `docs/ROADMAP.md` "Morph: trained paths".
 
-**As left:**
+**As left** (2026-11-18):
 
-- **Firmware:** the source of commit `e4398fb`, flashed before it was committed, so the Identity reads `a665577+dirty`. Flash again (`make -C daisy -j && tools/flash_when_ready.sh`) for a build id that names the commit.
-- **Slots:** 1–5 as in "Setup", 6–8 empty. Slot 5 morphs with slot 2 along three waypoints trained with finding 13's loss, the one that sags with a quiet input: `info 5` reads `morph slot 2 fit 89.8 % unaligned 31.4 % waypoints 3`. No other slot has a morph.
-- **Controls:** K6 is `morph` (saved: `layout k3 bell2_gain k4 low_cut_freq k5 high_cut_freq k6 morph …`).
-- **The trained paths** of "Measured blends" are local files on the machine of this record (`renders/` is git-ignored): `renders/morph/A_B.path` for 2_1, 2_3, 1_3, 4_1, 5_2 and 5_4. Each names its two models by CRC (slot 1 `5077bd17`, 2 `7fe982f8`, 3 `c7145f5d`, 4 `f2f3b82e`, 5 `81ce3da5`), and `--path` refuses a file whose models are not the slots'. Without the files, a pair trains again in 11 minutes. `renders/slot_backup/slotN.bin` hold the five models as read before this work.
+- **Firmware:** `2e27d21` (the Identity's build id).
+- **Slots:** 1–5 as in "Setup", 6–8 empty. Trained paths, three waypoints each: slot 5 → 2 (Mesa → Fender, `renders/morph/5_2.path`, fit 88.7 %), slot 2 → 1 (Fender → Two-Rock, `2_1.path`, 98.3 %), slot 1 → 3 (Two-Rock → Vox, `1_3.path`, 96.9 %), slot 4 → 1 (Marshall → Two-Rock, trained on the pedal by `--train`, 95.8 %; not a file). Slot 3 has no morph.
+- **Controls:** K6 is `morph` (saved). The parameter was last set over the link (to 0 %), so K6 is held until it moves 3 % of its travel.
+- **The trained paths** of "Measured blends" are local files on the machine of this record (`renders/` is git-ignored): `renders/morph/A_B.path` for 2_1, 2_3, 1_3, 4_1, 5_2 and 5_4. Each names its two models by CRC (slot 1 `5077bd17`, 2 `7fe982f8`, 3 `c7145f5d`, 4 `f2f3b82e`, 5 `81ce3da5`), and `--path` refuses a file whose models are not the slots'. Without the files, a pair trains again in 8 to 11 minutes. `renders/slot_backup/slotN.bin` hold the five models as read before this work.
 
-**In order:**
+**Still to do:**
 
-1. **Check what is there:** `uv run tools/usb_log.py 3 --identity` (`device 64`, the build id), `bun tools/pedal.ts list`, `bun tools/pedal.ts info 5`.
-2. **Store the final path:** `bun tools/pedal.ts morph 5 2 --path renders/morph/5_2.path`. Expect `morph slot 5 -> 2: trained path, 3 waypoints, fit 88.7 % (straight 31.4 %)`, then `info 5` with `fit 88.7 % unaligned 31.4 % waypoints 3` and the log's `morph slot 2 fit 89 31 % waypoints 3 "FNDR …"`.
-3. **The meters, with a repeatable input.** Finding 13's readings were taken on whatever was at the input, which is why they only pointed at the problem. Play the same thing each time (a looper, or `renders/stimuli/guitar_di.wav` played into the input) and read the log's `out` peak with `morph` resting at 0, 25, 50, 75 and 100 %, at a normal and at a quiet level. The renders say the path stays within 2 dB of the crossfade's level, which itself dips up to 4 dB in the middle and, played quietly, falls towards the Fender's end (finding 15).
-4. **Listen,** K6 by hand, loud and quiet: the path against the straight blend (`morph 5 2` stores the straight one, `--path` the path again); the two ends against FS2; whether the knots at 25, 50 and 75 % are heard as steps or changes of character; zipper noise in a fast sweep; a thump from DC; a preset loaded with the knob mid-travel.
-5. **A cleaner pair,** which the renders put at 96–99.9 %: `morph 2 1 --path renders/morph/2_1.path` (or 4_1, 1_3, 2_3; a slot holds one target), and the same listening.
-6. **`--train` end to end,** which has never run against the pedal: `bun tools/pedal.ts morph 4 1 --train`, 11 minutes. The MIDI port stays open and unread while the trainer runs and the pedal goes on logging, so watch that the store after it succeeds; `--path` (the storing half) is the part already exercised.
-7. **The link with waypoints in a slot:** `rename 5 …` and `gate 5 on` keep them (`info 5`); `swap 2 7` and back reloads slot 5 with the morph following its target; `morph 5 none` removes them; an upload over slot 2 logs `morph missing slot 2`. All host-tested, none tried on the device.
-8. **The editor:** the Presets tab reads `Trained path, 3 waypoints: fit …`; a rename or an IR change saved there keeps the path; picking **Morph to** again stores a straight blend; a new model saved over the target analyses again (a straight blend). The screenshots predate all of it.
-9. **The bench:** `make -C daisy APP=bench -j`, flash it, and read the `morph` and `chain` lines against 7,417 cycles and 13.0 k (`docs/FIRMWARE.md` "Bench"): the blend is the same code on one segment, but it was not measured again. Flash the pedal's image back.
+1. **Listen, check by check** (a first try was approved without detail), K6 by hand, loud and quiet, on slot 5 (the hard pair) and on slots 2, 1 and 4 (the cleaner ones): the path against the straight blend (`bun tools/pedal.ts morph 5 2` stores the straight one, `morph 5 2 --path renders/morph/5_2.path` the path again); the two ends against FS2; whether the knots at 25, 50 and 75 % are heard as steps or changes of character; zipper noise in a fast sweep; a thump from DC; a preset loaded with the knob mid-travel.
+2. **The meters at a quiet level and with a known input.** Finding 19's input was steady but not ours, at one level. Play `renders/stimuli/guitar_di.wav` (or a looper) into the input at a normal and a quiet level and read the log's `out` peak at each eighth; the same file through the trainer's network is the comparison.
+3. **The editor's screenshots** predate the Morph to row's trained-path line.
 
 Open on the host, no pedal needed: whether the trainer needs its 8,000 steps with the final loss (finding 14 measured an earlier loss at 4,000). Train one cleaner pair and one Mesa pair at 2,000 and 4,000 steps (`--steps`), side by side.
 
@@ -279,7 +295,7 @@ Open on the host, no pedal needed: whether the trainer needs its 8,000 steps wit
 
 Roughly by expected value for the effort.
 
-1. **Listen.** Sweep a trained path of a good pair and of a Mesa pair, loud and quiet, against the straight blend ("To do on the pedal"). Everything below depends on what is heard.
+1. **Listen closely.** A first try on the pedal was approved (finding 19); sweep a trained path of a good pair and of a Mesa pair, loud and quiet, against the straight blend, check by check ("To do on the pedal"). What is worth doing below depends on what is heard.
 2. **Captures of one amp at several settings.** Clean to crunch to lead on the same amp, or the same amp with and without a boost, is what a morph knob is most naturally for. Untested for want of models: measure the straight fit (`bun tools/pedal.ts morph A B` prints it) and train a path on such a set.
 3. **Real captures as the targets in between.** The trainer's target at a knot can be any model's output, not only the crossfade: with a capture of the amp at a middle setting, train the path A → W → B so that W renders that capture. One model still runs, and the middle of the sweep is an amp, not a mix of two.
 4. **More and other training signal.** A second recording, other pickups and playing, and a check with another seed (finding 14). The trainer takes any 48 kHz WAV (`--di`).

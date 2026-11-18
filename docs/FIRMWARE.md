@@ -544,16 +544,16 @@ The compressor (M11) adds `bench comp cycles avg … max … permille avg … ma
 
 | Stage | Avg cycles | Max permille |
 |---|---|---|
-| Whole model (`a2lite`) | 87,190 | 366.3 |
-| IR convolver, AXI SRAM (`ir axi`) | 43,554 | 186.7 |
-| EQ (`eq`) | 15,561 | 64.9 |
-| Compressor (`comp`) | 7,105 | 29.9 |
-| Morph (`morph`: the blend and its two `powf`) | 7,417 | 31.4 |
-| Whole chain (`chain`, blending on every block) | 169,569 | 710.9 |
+| Whole model (`a2lite`) | 86,985 | 365.2 |
+| IR convolver, AXI SRAM (`ir axi`) | 43,720 | 186.4 |
+| EQ (`eq`) | 15,562 | 64.9 |
+| Compressor (`comp`) | 7,094 | 29.8 |
+| Morph (`morph`: the blend of one segment and its two `powf`) | 7,556 | 32.0 |
+| Whole chain (`chain`, blending on every block) | 169,322 | 709.4 |
 
-- **Gate:** go, 710.9 permille against 850 (657.4 before the morph).
-- **In the chain** the morph costs 13.0 k cycles, 5.6 k more than alone. Not investigated; the blend reads its 15 KB of weights from AXI SRAM through the same 16 KB D-cache the convolver's spectra stream through. One segment's two weight sets fit DTCM (14,960 bytes, about 20 KB free) should the ceiling ever need it; `gMorphW`'s four segments do not.
+- **Gate:** go, 709.4 permille against 850 (657.4 before the morph).
+- **In the chain** the morph costs about 13 k cycles, 5 k more than alone. Not investigated; the blend reads its 15 KB of weights from AXI SRAM through the same 16 KB D-cache the convolver's spectra stream through. One segment's two weight sets fit DTCM (14,960 bytes, about 20 KB free) should the ceiling ever need it; `gMorphW`'s four segments do not.
 - **Check:** 241e-9 on every pass, so reloading the engine after the chain restores the model exactly.
-- **Image:** bench DTCM 110,616 bytes; SRAM 95.55 %: the IR check's buffers, the morph's scratch and the weights `Prepare` fills are in SDRAM (none is timed), which SRAM has no room for; the segment the blend reads is copied to AXI SRAM.
+- **Image:** firmware `2e27d21`; bench DTCM 110,616 bytes; SRAM 95.55 %: the IR check's buffers, the morph's scratch and the weights `Prepare` fills are in SDRAM (none is timed), which SRAM has no room for; the segment the blend reads is copied to AXI SRAM.
 
 How the engine got here from 570 permille, the measured cost model behind it, and how to check an image for a regression: `docs/M7_PERFORMANCE.md`. Run the bench after any change to the engine, the compiler or its flags: the gate line is the only test that sees a slowdown.
