@@ -256,7 +256,7 @@ The pedal was unplugged before the final paths could be stored. Everything in "M
 
 **As left:**
 
-- **Firmware:** this tree, flashed before it was committed, so the Identity reads `a665577+dirty`. The source is the commit's: flash again (`make -C daisy -j && tools/flash_when_ready.sh`) for a build id that names it.
+- **Firmware:** the source of commit `e4398fb`, flashed before it was committed, so the Identity reads `a665577+dirty`. Flash again (`make -C daisy -j && tools/flash_when_ready.sh`) for a build id that names the commit.
 - **Slots:** 1–5 as in "Setup", 6–8 empty. Slot 5 morphs with slot 2 along three waypoints trained with finding 13's loss, the one that sags with a quiet input: `info 5` reads `morph slot 2 fit 89.8 % unaligned 31.4 % waypoints 3`. No other slot has a morph.
 - **Controls:** K6 is `morph` (saved: `layout k3 bell2_gain k4 low_cut_freq k5 high_cut_freq k6 morph …`).
 - **The trained paths** of "Measured blends" are local files on the machine of this record (`renders/` is git-ignored): `renders/morph/A_B.path` for 2_1, 2_3, 1_3, 4_1, 5_2 and 5_4. Each names its two models by CRC (slot 1 `5077bd17`, 2 `7fe982f8`, 3 `c7145f5d`, 4 `f2f3b82e`, 5 `81ce3da5`), and `--path` refuses a file whose models are not the slots'. Without the files, a pair trains again in 11 minutes. `renders/slot_backup/slotN.bin` hold the five models as read before this work.
