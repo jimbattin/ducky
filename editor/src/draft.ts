@@ -1,12 +1,15 @@
-// The Presets tab's unsaved edits: per slot, the name, model, IR and noise gate the user wants, each part kept from
-// the pedal, removed, or replaced. Save turns a draft into an ERASE, a GATE or an UPLOAD (saveDraft).
+// The Presets tab's unsaved edits: per slot, the name, model, IR, noise gate and morph target the user wants, each
+// part kept from the pedal, removed, or replaced. Save turns a draft into an ERASE, a GATE or an UPLOAD (saveDraft),
+// then the morph targets are analysed and written (morph/save.ts).
 
 import type { ConvertedIr } from "./ir/convert";
-import { IMAGE_SIZES, SLOT_STATUS, SLOT_STATUS_NAMES, type SlotMessage } from "./link/protocol";
+import { SLOT_STATUS, SLOT_STATUS_NAMES, type SlotMessage } from "./link/protocol";
 import type { PedalSession } from "./link/session";
 import type { ConvertedModel } from "./nam/convert";
 import { buildSlot, OFF_GATE, type SlotParts, splitSlot } from "./preset/bank";
 import { decodeGate, GATE_DEFAULT, GATE_SIZE, type GateSettings } from "./preset/gate";
+import type { SlotInfo } from "./preset/info";
+import { resolveMorph } from "./preset/morph";
 
 /** A preset part: what the slot stores, nothing, or a newly converted file. */
 export type Part<T> = { kind: "stored" } | { kind: "none" } | { kind: "new"; value: T };
@@ -20,6 +23,8 @@ export interface Draft {
    * stored gate here: the slot infos are null while a refresh runs, and a guessed one would save over the real gate.
    */
   gate: GateSettings | null;
+  /** The slot (0-7) to morph with, "none" for no morph, null to keep the slot's stored morph. */
+  morph: number | "none" | null;
 }
 
 /** Unsaved drafts by slot. */
@@ -27,8 +32,15 @@ export type Drafts = Readonly<Partial<Record<number, Draft>>>;
 
 /** The draft that changes nothing: the slot as the pedal holds it (a corrupt slot drafts as empty). */
 export function baseDraft(s: SlotMessage): Draft {
-  if (s.status !== SLOT_STATUS.ok) return { name: "", model: { kind: "none" }, ir: { kind: "none" }, gate: null };
-  return { name: s.name, model: { kind: "stored" }, ir: { kind: s.hasIr ? "stored" : "none" }, gate: null };
+  if (s.status !== SLOT_STATUS.ok)
+    return { name: "", model: { kind: "none" }, ir: { kind: "none" }, gate: null, morph: null };
+  return {
+    name: s.name,
+    model: { kind: "stored" },
+    ir: { kind: s.hasIr ? "stored" : "none" },
+    gate: null,
+    morph: null,
+  };
 }
 
 /** The draft differs from what the slot holds. */
@@ -36,7 +48,7 @@ export function isEdited(d: Draft, s: SlotMessage): boolean {
   const b = baseDraft(s);
   if (d.model.kind !== b.model.kind || d.ir.kind !== b.ir.kind) return true;
   if (d.model.kind === "new" || d.ir.kind === "new") return true;
-  if (d.gate !== null && d.model.kind !== "none") return true;
+  if ((d.gate !== null || d.morph !== null) && d.model.kind !== "none") return true;
   return d.model.kind !== "none" && d.name !== b.name;
 }
 
@@ -101,42 +113,70 @@ export function composeSlot(d: Draft, stored: SlotParts | null, gate: GateSettin
   return buildSlot(model, ir, d.name.trim(), gate);
 }
 
+/** What saveDraft did, and the morph step that must follow it once every draft is written (morph/save.ts). */
+export interface DraftSaved {
+  result: "erased" | "saved";
+  /** The slot to morph with (to analyse and write), "none" to remove the stored morph, null for nothing to do. */
+  morph: number | "none" | null;
+}
+
 /**
- * Applies a draft to its slot: ERASE when its model is removed; GATE when only the gate changed (no upload, so the
- * playing preset is not reloaded); else UPLOAD of the composed preset, reading the slot back first when the draft
- * keeps a stored part or the stored gate. Returns what was done.
+ * Applies a draft to its slot: ERASE when its model is removed; GATE when the model, the IR and the name are kept and
+ * the gate changed (no upload, so the playing preset is not reloaded); else UPLOAD of the composed preset, reading the
+ * slot back first when the draft keeps a stored part or the stored gate. An upload drops the slot's morph block, so
+ * its stored target (storedMorph: resolveMorph's, null for none) is returned to be analysed again, against the new
+ * model if it changed.
  */
 export async function saveDraft(
   session: PedalSession,
   s: SlotMessage,
   d: Draft,
+  storedMorph: number | null,
   onProgress: (fraction: number) => void,
-): Promise<"erased" | "saved"> {
+): Promise<DraftSaved> {
   const problem = draftProblem(d);
   if (problem !== null) throw new Error(`Slot ${s.slot + 1}: ${problem}`);
   if (d.model.kind === "none") {
     await session.erase(s.slot);
-    return "erased";
+    return { result: "erased", morph: null };
   }
-  if (
-    d.gate !== null &&
-    d.model.kind === "stored" &&
-    d.ir.kind === (s.hasIr ? "stored" : "none") &&
-    d.name === s.name
-  ) {
-    await session.gate(s.slot, d.gate);
-    return "saved";
+  const keeps = d.model.kind === "stored" && d.ir.kind === (s.hasIr ? "stored" : "none") && d.name === s.name;
+  if (keeps) {
+    if (d.gate !== null) await session.gate(s.slot, d.gate);
+    return { result: "saved", morph: d.morph };
   }
   let stored: SlotParts | null = null;
   if (d.model.kind === "stored" || d.ir.kind === "stored") {
     if (s.status !== SLOT_STATUS.ok || (d.ir.kind === "stored" && !s.hasIr))
       throw new Error(`Slot ${s.slot + 1} changed on the pedal: revert it and edit again`);
-    stored = splitSlot(await session.read(s.slot, 0, IMAGE_SIZES[s.hasIr ? 1 : 0]));
+    stored = splitSlot(await session.readImage(s.slot));
   }
   const gate =
     d.gate ??
     stored?.gate ??
     (s.status === SLOT_STATUS.ok ? decodeGate(await session.read(s.slot, OFF_GATE, GATE_SIZE)) : GATE_DEFAULT);
   await session.upload(s.slot, composeSlot(d, stored, gate), (sent, size) => onProgress(sent / size));
-  return "saved";
+  return { result: "saved", morph: d.morph === "none" ? null : (d.morph ?? storedMorph) };
+}
+
+/**
+ * The stored morphs a save of drafts breaks and must analyse again: [slot, target] for every ok slot that keeps its
+ * own model and its stored morph and whose morph target gets a new model. A slot that gets a new model or a morph
+ * choice of its own is saveDraft's to report; a target that is erased is not analysed again (the pedal turns that
+ * morph off).
+ */
+export function morphDependents(
+  slots: readonly SlotMessage[],
+  infos: readonly (SlotInfo | null)[],
+  drafts: Drafts,
+): [slot: number, target: number][] {
+  const out: [number, number][] = [];
+  for (const s of slots) {
+    const own = drafts[s.slot];
+    if (s.status !== SLOT_STATUS.ok || (own !== undefined && (own.model.kind !== "stored" || own.morph !== null)))
+      continue;
+    const target = resolveMorph(infos, s.slot);
+    if (target !== null && drafts[target]?.model.kind === "new") out.push([s.slot, target]);
+  }
+  return out;
 }

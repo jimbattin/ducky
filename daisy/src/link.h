@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "dsp/noise_gate.h"
+#include "morph.h"
 #include "params.h"
 
 namespace dklink {
@@ -17,7 +18,8 @@ constexpr uint8_t kManufacturer = 0x7D, kDevice = 0x64, kVersion = 0x01;
 // Host -> pedal.
 constexpr uint8_t kHello = 0x01, kList = 0x02, kErase = 0x03, kRename = 0x04, kSwap = 0x05, kDfu = 0x06,
                   kWatch = 0x07, kUploadBegin = 0x08, kUploadChunk = 0x09, kUploadCommit = 0x0A, kRead = 0x0B,
-                  kGate = 0x0C, kGateTry = 0x0D, kDump = 0x0E, kSet = 0x0F, kAssign = 0x10, kSave = 0x11;
+                  kGate = 0x0C, kGateTry = 0x0D, kDump = 0x0E, kSet = 0x0F, kAssign = 0x10, kSave = 0x11,
+                  kMorph = 0x19;
 // Pedal -> host.
 constexpr uint8_t kLog = 0x12, kSlot = 0x13, kResult = 0x14, kStatus = 0x15, kData = 0x16, kParam = 0x17,
                   kValues = 0x18;
@@ -33,6 +35,8 @@ constexpr size_t kParamHead = 15;     // a PARAM payload before its text
 
 // Pack7's output size for n bytes: one header byte per group of up to 7.
 constexpr size_t Packed7Size(size_t n) { return n + (n + 6) / 7; }
+constexpr size_t kMorphPayload = 1 + Packed7Size(dkmorph::kBlockBytes);  // a MORPH that sets: the slot, the block
+static_assert(kMorphPayload == 75, "a MORPH payload with a block");
 // The largest host -> pedal frame: an UPLOAD CHUNK (header 5, offset 3, CRC 5, packed data, F7).
 constexpr size_t kMaxHostFrame = 5 + 3 + 5 + Packed7Size(kChunkBytes) + 1;
 static_assert(kMaxHostFrame == 307, "an UPLOAD CHUNK frame of 256 bytes");
@@ -333,8 +337,8 @@ inline constexpr CommandDoc kCommands[] = {
      "files differ (e.g. `711fa7c+dirty`), or `unknown` outside git."},
     {kHello, Dir::kToPedal, "HELLO", "none",
      "The pedal answers with LOG lines: the boot line `ducky <board> seed <version> sysclk N MHz audio N Hz N bit "
-     "block N <build id>`, then the `slots`, `preset`, `model`, `ir`, `gate`, `settings` and `layout` lines "
-     "(docs/FIRMWARE.md \"Log lines\"). No RESULT."},
+     "block N <build id>`, then the `slots`, `preset`, `model`, `ir`, `gate`, `morph`, `settings` and `layout` "
+     "lines (docs/FIRMWARE.md \"Log lines\"). No RESULT."},
     {kList, Dir::kToPedal, "LIST", "none",
      "8 SLOT messages (slots 0-7), then RESULT `02` ok with value 8."},
     {kErase, Dir::kToPedal, "ERASE", "`<slot 0-7>`",
@@ -391,6 +395,14 @@ inline constexpr CommandDoc kCommands[] = {
      "Writes the assignments and every parameter's value to the settings record, used at the next power-up. Logs "
      "`settings seq N T ms`. RESULT ok with the flash time in ms; `flash` when the write fails (`settings write "
      "failed`)."},
+    {kMorph, Dir::kToPedal, "MORPH",
+     "`<slot 0-7>` (clear) or `<slot 0-7> <Pack7 64-byte morph block>` (docs/FIRMWARE.md \"Preset store\")",
+     "Rewrites the preset's morph block (and its CRC), or removes it; the model, the IR, the name and the gate are "
+     "kept. The block's target slot must be ok, hold the model whose CRC the block names, and not be the slot "
+     "itself. On the playing slot the preset reloads, with the preset-switch fade. RESULT ok with the flash time "
+     "in ms; `bad-request` for a payload of another length, a block that does not parse (target, permutation, "
+     "scales, matrix, fits) or one that targets its own slot; `slot-state` when the slot or the target is not ok, "
+     "or the target's model is not the block's."},
     {kLog, Dir::kToHost, "LOG", "`<printable ASCII, at most 120 bytes>`",
      "One log line (boot, HELLO, slot and control changes, the controls and status lines once a second)."},
     {kSlot, Dir::kToHost, "SLOT",
@@ -438,15 +450,16 @@ inline constexpr ResultDoc kResults[] = {
     {Result::kOk, "ok", "Done."},
     {Result::kBadRequest, "bad-request",
      "Wrong payload length or a field out of range (slot, size, name, a == b, chunk data past the image, bad "
-     "Pack7, a gate field, a parameter or control field)."},
+     "Pack7, a gate field, a parameter or control field, a morph block)."},
     {Result::kNoUpload, "no-upload", "UPLOAD CHUNK or COMMIT without an UPLOAD BEGIN (or after a COMMIT)."},
     {Result::kOffset, "offset", "The chunk's offset is past the next expected offset (the value); resend from there."},
     {Result::kCrc, "crc", "The chunk's data does not match its CRC; resend it."},
     {Result::kIncomplete, "incomplete", "COMMIT before every byte of the image was received."},
     {Result::kInvalid, "invalid", "COMMIT: the image does not parse as a preset (the value is the slot status)."},
     {Result::kFlash, "flash", "The flash erase, write or read-back failed."},
-    {Result::kSlotState, "slot-state", "The slot's state does not allow it (RENAME or GATE of a slot that is not "
-                                        "ok, SWAP of a corrupt slot, GATE TRY of a slot that is not playing)."},
+    {Result::kSlotState, "slot-state", "The slot's state does not allow it (RENAME, GATE or MORPH of a slot that is "
+                                        "not ok, SWAP of a corrupt slot, GATE TRY of a slot that is not playing, "
+                                        "MORPH to a target that is not ok or holds another model)."},
 };
 
 }  // namespace dklink

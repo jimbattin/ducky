@@ -6,6 +6,7 @@ import * as ir from "../ir/convert";
 import * as model from "../nam/convert";
 import * as preset from "./bank";
 import { decodeGate, type GateSettings } from "./gate";
+import { decodeMorphBlock, MORPH_BLOCK_SIZE, type MorphBlock } from "./morph";
 
 /** A stored model's metadata. convert.ts's ModelInfo is assignable to it. */
 export interface StoredModel {
@@ -31,8 +32,11 @@ export interface StoredIr {
 export interface SlotInfo {
   name: string;
   model: StoredModel;
+  /** The model binary's stored CRC: what a morph block names its target's model by. */
+  modelCrc: number;
   ir: StoredIr | null;
   gate: GateSettings;
+  morph: MorphBlock | null;
 }
 
 const MODEL_AT = preset.PRESET_HEADER_SIZE;
@@ -40,12 +44,13 @@ const IR_AT = preset.PRESET_HEADER_SIZE + model.MODEL_BIN_SIZE;
 const TEXT_SIZE = 64;
 
 /** The [offset, length] runs of a preset image that slotInfo reads. */
-export function infoRanges(hasIr: boolean): [offset: number, length: number][] {
+export function infoRanges(hasIr: boolean, hasMorph: boolean): [offset: number, length: number][] {
   const ranges: [number, number][] = [
     [0, MODEL_AT + 12], // the preset header (the gate block included), then the model's magic, version, flags and size
-    [MODEL_AT + model.OFF_LOUDNESS, model.OFF_CRC - model.OFF_LOUDNESS], // loudness .. modeled_by
+    [MODEL_AT + model.OFF_LOUDNESS, model.MODEL_BIN_SIZE - model.OFF_LOUDNESS], // loudness .. modeled_by, the CRC
   ];
   if (hasIr) ranges.push([IR_AT + ir.OFF_TAP_COUNT, ir.OFF_TAPS - ir.OFF_TAP_COUNT]); // tap count .. name
+  if (hasMorph) ranges.push([preset.imageSize(hasIr, true) - 4 - MORPH_BLOCK_SIZE, MORPH_BLOCK_SIZE]);
   return ranges;
 }
 
@@ -68,7 +73,9 @@ function textOrNull(image: Uint8Array, at: number): string | null {
 /** Decodes a preset image's metadata from the bytes in infoRanges only; no CRC is checked. */
 export function slotInfo(image: Uint8Array): SlotInfo {
   const dv = new DataView(image.buffer, image.byteOffset, image.length);
-  const hasIr = (dv.getUint16(preset.OFF_FLAGS, true) & preset.PRESET_FLAG_HAS_IR) !== 0;
+  const flags = dv.getUint16(preset.OFF_FLAGS, true);
+  const hasIr = (flags & preset.PRESET_FLAG_HAS_IR) !== 0;
+  const hasMorph = (flags & preset.PRESET_FLAG_HAS_MORPH) !== 0;
   const mflags = dv.getUint16(MODEL_AT + model.OFF_FLAGS, true);
   const m: StoredModel = {
     name: text(image, MODEL_AT + model.OFF_NAME),
@@ -89,5 +96,12 @@ export function slotInfo(image: Uint8Array): SlotInfo {
         gainDb: 20 * Math.log10(dv.getFloat32(IR_AT + ir.OFF_GAIN, true)),
       }
     : null;
-  return { name: text(image, preset.OFF_NAME), model: m, ir: i, gate: decodeGate(image, preset.OFF_GATE) };
+  return {
+    name: text(image, preset.OFF_NAME),
+    model: m,
+    modelCrc: dv.getUint32(MODEL_AT + model.OFF_CRC, true),
+    ir: i,
+    gate: decodeGate(image, preset.OFF_GATE),
+    morph: hasMorph ? decodeMorphBlock(image, preset.imageSize(hasIr, true) - 4 - MORPH_BLOCK_SIZE) : null,
+  };
 }

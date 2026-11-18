@@ -41,6 +41,7 @@ struct Model {
     float loudness;         // dB; 0 without kFlagHasLoudness
     float input_level_dbu;  // 0 without kFlagHasInputLevel
     char name[kNameSize];   // NUL-terminated printable ASCII
+    uint32_t crc;           // the image's CRC field: names this model in a preset's morph block (morph.h)
 };
 
 namespace detail {
@@ -82,6 +83,7 @@ inline Status Parse(const uint8_t* data, size_t n, Model* out) {
     for (size_t i = 0; i <= a2::kWeightCount; ++i)  // the weights, then head_scale right after them
         if (!std::isfinite(LeF32(data + kOffWeights + 4 * i))) return Status::kWeights;
 
+    out->crc = Le32(data + kOffCrc);
     out->flags = Le16(data + kOffFlags);
     for (size_t i = 0; i < a2::kWeightCount; ++i) out->weights[i] = LeF32(data + kOffWeights + 4 * i);
     out->head_scale = LeF32(data + kOffHeadScale);

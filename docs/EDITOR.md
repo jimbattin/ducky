@@ -32,7 +32,7 @@ make -C editor fmt        # Biome's fixes and formatting, same files
 
 The slot table lists the 8 slots: the playing lamp, the slot number (click it, or the row, to select), the preset, model and IR names, ↑/↓ to swap with a neighbour, and **Erase**. Unsaved changes are amber. **Save** and **Discard** under the table act on every unsaved change at once.
 
-Under the table, the selected slot's editor: its name, its model (**Add .nam…** / **Replace…** / **Remove**) and its IR (**Add .wav…** / **Replace…** / **Remove**). Each part is kept, replaced or removed. Below them are the metadata, level match and input calibration of the result, its warnings, and **Revert slot N**. The warnings are: no loudness, no `input_level_dbu`, a cab model with an IR, and a truncated new IR. Files go through the same converters as the CLI tools (`editor/src/nam/`, `editor/src/ir/`).
+Under the table, the selected slot's editor: its name, its model (**Add .nam…** / **Replace…** / **Remove**), its IR (**Add .wav…** / **Replace…** / **Remove**) and **Morph to**, the preset it morphs with (None, or any other slot that holds a preset; `docs/MORPH.md`). Each part is kept, replaced or removed. Below them are the stored morph's fit, the metadata, level match and input calibration of the result, its warnings, and **Revert slot N**. The warnings are: no loudness, no `input_level_dbu`, a cab model with an IR, a truncated new IR, and a morph target whose model changed since the morph was analysed (the pedal then plays the preset's own model alone until it is picked and saved again). Files go through the same converters as the CLI tools (`editor/src/nam/`, `editor/src/ir/`).
 
 ![Importing a model and an IR into slot 5](images/editor/import.png)
 
@@ -40,9 +40,16 @@ Edits stay in per-slot drafts (`editor/src/draft.ts`) until Save, which applies 
 
 - A removed model erases the slot, after a confirmation.
 - A changed gate alone is a GATE: no upload, so no reload fade.
+- A changed morph target alone writes nothing here: it is analysed below.
 - Otherwise the preset is composed and uploaded. When it keeps the stored model or IR, the whole slot is read back first (READ, CRC-checked by `splitSlot` in `editor/src/preset/bank.ts`). When it keeps neither, only the stored gate is read (8 bytes).
 
-A new model renames the preset while its name is still the old model's. A swap moves the drafts with the slots. Leaving the page with unsaved drafts asks first. After every slot change the table is listed and read again, so it shows what the flash holds even after a failure.
+Then, once every draft is written, the morphs are analysed and written (`editor/src/morph/save.ts`: both models are read back, `fitAlignment` runs for a second or two under `ANALYSING SLOT N…`, MORPH stores the block), and the status ends `; slot 5 morphs with slot 2 (fit 20.8 %)` or `; slot 5 morph off` for each:
+
+- a slot whose draft picked a target, or None;
+- a slot that was uploaded and had a morph: an upload drops the block, so its target is analysed again, against the new model if that changed;
+- a slot whose target got a new model in this save (`morphDependents`), so replacing a model never leaves the presets that morph with it behind. A target that is emptied is not analysed: Save refuses a draft that picks one, and a stored morph with it just stops.
+
+A new model renames the preset while its name is still the old model's. A swap moves the drafts with the slots, and the morph targets they name. Leaving the page with unsaved drafts asks first. After every slot change the table is listed and read again, so it shows what the flash holds even after a failure.
 
 ### Noise gate box
 
@@ -56,6 +63,10 @@ The sliders:
 - Page Up/Down move 10 % of the travel; Home/End go to the ends.
 - Dragging the thumb moves it from where it is; pressing the track jumps there first. Shift drags 10× finer.
 - Double-click resets the setting to its default.
+
+### Morph box
+
+Under the gate box: the `morph` parameter as a row (its control, a slider, its readout) and **Save**, as on the Loop tab. It is the pedal's one morph position, not the selected preset's: set here it is heard at once on the playing preset, holds until its knob moves, and is kept by Save with the other settings. The line under it names what the selected preset morphs between (`0 %: slot 5's model. 100 %: slot 2's model. Slot 5's IR and noise gate stay throughout.`); the row is dimmed for a preset without a morph target. Firmware without the parameter shows no box.
 
 ## Controls tab
 
@@ -113,7 +124,7 @@ The pedal's log lines (`docs/FIRMWARE.md` "Log lines"; the last 1,000), each wit
 ## Link and sync
 
 - **Link:** the editor picks the input and output ports whose name contains `daisy` (the toolbar's In/Out menus override them). It sends HELLO every second until the pedal answers, and reads `LINKED` while anything arrived in the last 4 s. WATCH's STATUS and VALUES every 100 ms keep the link fresh.
-- **Sync:** on each link, on the boot line (`ducky …`, so a reflashed or power-cycled pedal is picked up without a reload), and every 3 s until one succeeds. A sync is Identity (device 64), LIST, every ok slot's metadata over READ (`editor/src/preset/info.ts`: 4 READs per slot, 5 with an IR), DUMP (the parameter table and the values), then WATCH on. A boot line also clears `Not saved on the pedal`: a restarted pedal is back on its saved settings.
+- **Sync:** on each link, on the boot line (`ducky …`, so a reflashed or power-cycled pedal is picked up without a reload), and every 3 s until one succeeds. A sync is Identity (device 64), LIST, every ok slot's metadata over READ (`editor/src/preset/info.ts`: 4 READs per slot, one more with an IR and one more with a morph block), DUMP (the parameter table and the values), then WATCH on. A boot line also clears `Not saved on the pedal`: a restarted pedal is back on its saved settings.
 - **One request at a time:** every request goes through one queue (`usePedal.ts` `serial`), because the pedal answers one request at a time.
 - **DFU mode…** sends DFU after a confirmation. `tools/flash_when_ready.sh` then flashes, and the editor relinks and resyncs by itself.
 
@@ -135,14 +146,14 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 | `biome.jsonc`, `tsconfig.json` | Lint, format and type-check settings (Code conventions). |
 | `package.json`, `bun.lock` | Preact; TypeScript, Biome and Bun's types for development. |
 | `src/editor.html`, `src/main.tsx` | The page and its entry point. |
-| `src/App.tsx` | The window: tabs (Presets, Controls, Compressor, EQ, Loop, Log), the slot actions (swap, erase, save, discard, DFU), the drafts, and the settings actions (assign, save). |
+| `src/App.tsx` | The window: tabs (Presets, Controls, Compressor, EQ, Loop, Log), the slot actions (swap, erase, save with its morph analyses, discard, DFU), the drafts, and the settings actions (assign, save). |
 | `src/ducky.css` | The Platinum styles. |
 | `src/midi.ts` | `PedalLink`: Web MIDI ports, SysEx reassembly, the HELLO keep-alive, the link status, the session's transport. |
 | `src/usePedal.ts` | The link's lifecycle: the reducer it feeds, the sync and its retries, the `serial` request queue. |
 | `src/state.ts` | The reducer: link, identity, slots, slot infos, STATUS (`compCutDb` among its fields), load, log, the parameter table, VALUES, and whether the settings are unsaved. |
 | `src/useGateAudition.ts` | GATE TRY auditions of the gate box's changes on the playing slot. |
 | `src/useParamEdits.ts` | SETs from the Compressor, EQ and Loop tabs, coalesced per parameter, and the value shown while one is in flight. |
-| `src/draft.ts` | Per-slot unsaved drafts, what the slot table shows for them, and Save (`saveDraft`). |
+| `src/draft.ts` | Per-slot unsaved drafts (name, model, IR, gate, morph target), what the slot table shows for them, Save (`saveDraft`) and the stored morphs a save must analyse again (`morphDependents`). |
 | `src/importer.ts` | `.nam` and `.wav` files through the converters; rejection text and import warnings. |
 | `src/controls.ts` | Knob 1's and Knob 2's readouts in the firmware's tapers; a toggle's position; level match and input calibration. |
 | `src/eqModel.ts` | The EQ's bands (`BANDS`) and their frequency response from the EQ parameters' values and Knob 2; when a resonance has no effect. |
@@ -170,9 +181,10 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 | `src/components/Meter.tsx` | A bar with a fill and markers over a lamp line; the CPU, gate and compressor meters. |
 | `src/components/TabNav.tsx` | The WAI-ARIA tab list (Left/Right cycle, Home/End jump). |
 | `src/components/SlotTable.tsx` | The slot table with swap, erase, Save and Discard. |
-| `src/components/SlotEditor.tsx` | The selected slot's name, model and IR, its warnings and Revert. |
+| `src/components/SlotEditor.tsx` | The selected slot's name, model, IR and morph target, its warnings and Revert. |
 | `src/components/Details.tsx` | A model's and an IR's metadata. |
 | `src/components/GateEditor.tsx` | The noise gate box. |
+| `src/components/MorphBox.tsx` | The Presets tab's Morph box: the `morph` parameter's row, what the selected preset morphs between, and Save. |
 | `src/components/GateMeter.tsx` | The gate's input level against its thresholds, and its state. |
 | `src/components/Slider.tsx` | `Slider` (pointer and keyboard) and `SliderTrack`, which `KnobGauge` shares. |
 | `src/components/EqGraph.tsx` | The EQ tab's response graph and its draggable band handles (pointer, wheel, keys). |
@@ -181,12 +193,13 @@ All paths are under `editor/`. Each `*.test.ts` sits beside the module it tests.
 | `src/link/` | The SysEx link (`docs/MIDI.md`): `protocol.ts` builders, codecs and parsing; `session.ts` `PedalSession`; `params.ts` a parameter's code as its value and readout, the controls and what each accepts. Shared with `tools/pedal.ts`. |
 | `src/nam/` | The `.nam` → model binary converter (`docs/NAM_FORMAT.md`). Shared with `tools/nam_convert.ts`. |
 | `src/ir/` | The `.wav` → IR binary converter, its WAV reader and resampler (`docs/FILTERS.md`). Shared with `tools/ir_convert.ts`. |
-| `src/preset/` | `bank.ts` the slot and bank builders, `gate.ts` the gate block, `info.ts` a stored preset's metadata. Shared with `tools/preset_bank.ts` and `tools/pedal.ts`. |
+| `src/preset/` | `bank.ts` the slot and bank builders, `gate.ts` the gate block, `morph.ts` the morph block and the slot it resolves to, `info.ts` a stored preset's metadata. Shared with `tools/preset_bank.ts` and `tools/pedal.ts`. |
+| `src/morph/` | The morph's analysis (`docs/MORPH.md`): `a2.ts` the A2-Lite network in float64, `stimulus.ts` its test signal, `align.ts` the alignment transform and its fit, `save.ts` reading two stored models and writing the block. Shared with `tools/pedal.ts`. |
 
 ## Code conventions
 
 - **TypeScript:** `strict` with `noUncheckedIndexedAccess`. A `!` marks an index that a check before it guarantees (the wire parsers above all); `biome.jsonc` says why `noNonNullAssertion` is off. Where a type can carry what is known, use the type instead (App's `edited` list and `selDraft`).
 - **Biome:** the recommended rules plus the React domain, imports organised, 120 columns. `make -C editor check` must pass with no warnings; a `biome-ignore` states its reason.
 - **One module per shared fact:** the sample rate and name rules in `device.ts`, display formats in `format.ts`, the SLOT statuses in `link/protocol.ts` `SLOT_STATUS`, the slot count in `preset/bank.ts` `SLOT_COUNT`, the controls in `link/params.ts` `CONTROLS`. The parameters' names, ranges and labels come from the pedal. No local copies.
-- **Shared code stays portable:** `link/`, `nam/`, `ir/`, `preset/`, `device.ts`, `format.ts` and `crc32.ts` are plain TypeScript (no DOM, no Bun APIs), because `tools/*.ts` imports them too.
+- **Shared code stays portable:** `link/`, `nam/`, `ir/`, `preset/`, `morph/`, `controls.ts`, `device.ts`, `format.ts` and `crc32.ts` are plain TypeScript (no DOM, no Bun APIs), because `tools/*.ts` imports them too.
 - **CSS:** each class in `ducky.css` is used by a component, and each class a component uses is styled; shared looks (bevels, wells, ellipsis, focus ring) are one rule with a selector list.

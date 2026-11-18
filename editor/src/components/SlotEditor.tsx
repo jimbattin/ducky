@@ -2,16 +2,19 @@ import { useState } from "preact/hooks";
 import { NAME_MAX } from "../device";
 import { type Draft, irName, isEdited, modelName, withModel } from "../draft";
 import { type IrMeta, importWarnings, loadIr, loadModel, rejectionText } from "../importer";
-import type { SlotMessage } from "../link/protocol";
+import { SLOT_STATUS, type SlotMessage } from "../link/protocol";
 import type { SlotInfo, StoredModel } from "../preset/info";
+import { resolveMorph } from "../preset/morph";
 import { Details } from "./Details";
 import { GroupBox } from "./GroupBox";
 import { Lamp } from "./Lamp";
 
 interface Props {
   slot: SlotMessage;
-  /** The stored preset's metadata, null until read (or when the slot is not ok). */
-  info: SlotInfo | null;
+  /** The pedal's 8 slots: the morph targets to choose from. */
+  slots: readonly SlotMessage[];
+  /** Each slot's stored metadata, null until read (or where the slot is not ok). */
+  infos: readonly (SlotInfo | null)[];
   draft: Draft;
   onChange: (d: Draft) => void;
   onRevert: () => void;
@@ -37,12 +40,14 @@ function FileButton({ label, accept, onFile }: { label: string; accept: string; 
 }
 
 /**
- * The selected slot as it will be saved: its name, model and IR, each kept, replaced from a .nam/.wav or removed, with
- * the metadata and warnings of the result. Changes stay in the draft until the Slots box's Save.
+ * The selected slot as it will be saved: its name, model and IR, each kept, replaced from a .nam/.wav or removed, and
+ * the preset it morphs with, with the metadata and warnings of the result. Changes stay in the draft until the Slots
+ * box's Save.
  */
-export function SlotEditor({ slot, info, draft, onChange, onRevert }: Props) {
+export function SlotEditor({ slot, slots, infos, draft, onChange, onRevert }: Props) {
   const [error, setError] = useState<string | null>(null);
   const n = slot.slot + 1;
+  const info = infos[slot.slot] ?? null;
   const edited = isEdited(draft, slot);
 
   const pick = async <T,>(load: () => Promise<T>, apply: (v: T) => void) => {
@@ -72,6 +77,17 @@ export function SlotEditor({ slot, info, draft, onChange, onRevert }: Props) {
   const warnings = model ? importWarnings(model, ir) : [];
   const partText = (name: string | null, kind: string) =>
     name === null ? "None" : kind === "new" ? `${name} (new)` : name;
+
+  // The stored morph: the slot its block resolves to. A block that resolves to none is stale (its target's model was
+  // replaced or erased), which is only certain once every ok slot's info has been read.
+  const block = info?.morph ?? null;
+  const storedMorph = resolveMorph(infos, slot.slot);
+  const infosRead = slots.every((x, k) => x.status !== SLOT_STATUS.ok || (infos[k] ?? null) !== null);
+  if (block !== null && storedMorph === null && draft.morph === null && draft.model.kind !== "none" && infosRead)
+    warnings.push(
+      `Slot ${block.target + 1}'s model changed since the morph was analysed: pick it again and save to re-analyse.`,
+    );
+  const percent = (fit: number) => (100 * fit).toFixed(1);
 
   return (
     <GroupBox title={edited ? `Slot ${n} (unsaved)` : `Slot ${n}`}>
@@ -118,7 +134,35 @@ export function SlotEditor({ slot, info, draft, onChange, onRevert }: Props) {
             Remove
           </button>
         </div>
+        <label for="edit-morph">Morph to</label>
+        <div>
+          <select
+            id="edit-morph"
+            value={String(draft.morph ?? storedMorph ?? "none")}
+            disabled={draft.model.kind === "none"}
+            onChange={(e) => {
+              const v = e.currentTarget.value === "none" ? "none" : Number(e.currentTarget.value);
+              onChange({ ...draft, morph: v === (storedMorph ?? "none") ? null : v });
+            }}
+          >
+            <option value="none">None</option>
+            {slots
+              .filter((x) => x.status === SLOT_STATUS.ok && x.slot !== slot.slot)
+              .map((x) => (
+                <option key={x.slot} value={String(x.slot)}>
+                  {x.slot + 1}: {x.name}
+                </option>
+              ))}
+          </select>
+        </div>
       </div>
+      {block !== null && storedMorph !== null && draft.morph === null && draft.model.kind !== "none" && (
+        <p class="hint">
+          Fit {percent(block.fit)} %
+          {block.fit > block.unalignedFit && `, aligned (${percent(block.unalignedFit)} % unaligned)`}: how closely the
+          blends follow a crossfade of the two models.
+        </p>
+      )}
       {error !== null && (
         <p class="edit-error" role="alert">
           {error}

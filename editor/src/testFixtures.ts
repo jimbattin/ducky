@@ -1,5 +1,7 @@
 // The repo's tests/fixtures and the pedal's parameter table, for the editor's tests.
+import { crc32 } from "./crc32";
 import type { ParamInfo } from "./link/protocol";
+import { OFF_FLAGS, OFF_SIZE, PRESET_FLAG_HAS_MORPH } from "./preset/bank";
 
 export const FIXTURES = `${import.meta.dir}/../../tests/fixtures`;
 
@@ -7,6 +9,18 @@ export const readFixture = async (rel: string): Promise<Uint8Array> =>
   new Uint8Array(await Bun.file(`${FIXTURES}/${rel}`).arrayBuffer());
 
 export const readFixtureText = (rel: string): Promise<string> => Bun.file(`${FIXTURES}/${rel}`).text();
+
+/** A preset image without a morph block, with block added as the pedal's MORPH stores it (preset.h SetMorph). */
+export function withMorphBlock(image: Uint8Array, block: Uint8Array): Uint8Array {
+  const out = new Uint8Array(image.length + block.length);
+  out.set(image.subarray(0, image.length - 4));
+  out.set(block, image.length - 4);
+  const dv = new DataView(out.buffer);
+  dv.setUint16(OFF_FLAGS, dv.getUint16(OFF_FLAGS, true) | PRESET_FLAG_HAS_MORPH, true);
+  dv.setUint32(OFF_SIZE, out.length, true);
+  dv.setUint32(out.length - 4, crc32(out.subarray(0, out.length - 4)), true);
+  return out;
+}
 
 const SLOPES = "24 dB/oct,12 dB/oct,6 dB/oct";
 const EQ = { off: "none", group: "EQ" } as const;
@@ -122,5 +136,17 @@ export const PARAMS: ParamInfo[] = [
     min: -12,
     max: 12,
     unit: "dB",
+  },
+  {
+    id: 23,
+    name: "morph",
+    label: "Morph",
+    taper: "linear",
+    off: "none",
+    group: "Morph",
+    defCode: 0,
+    min: 0,
+    max: 100,
+    unit: "%",
   },
 ];

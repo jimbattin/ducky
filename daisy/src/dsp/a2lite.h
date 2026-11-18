@@ -109,14 +109,15 @@ namespace dkdsp {
 class A2Lite {
 public:
     static constexpr size_t kMaxFrames = kBlockSize;  // Process splits longer calls into chunks of this size
+    static constexpr size_t kBlendRun = 12;           // Blend's island: 12 sums, 12 sources and t in FP registers
 
-    // weights: the 1870 floats of the NAM weight stream without the trailing head_scale (docs/NAM_FORMAT.md
-    // "Weight stream"), i.e. dkmodel::Model::weights. Permutes them into the engine layout, then Reset().
-    void Load(const float* weights, float head_scale) {
-        const float* s = weights;
-        for (int c = 0; c < 3; ++c) w_[c] = *s++;
+    // stream: the 1870 floats of a NAM weight stream without the trailing head_scale (docs/NAM_FORMAT.md "Weight
+    // stream"); out: the same floats in the engine layout (kWeightCount of them).
+    static void ToEngine(const float* stream, float* out) {
+        const float* s = stream;
+        for (int c = 0; c < 3; ++c) out[c] = *s++;
         for (const a2::LayerLayout& lay : a2::kLayout) {
-            float* w = w_ + lay.w_off;
+            float* w = out + lay.w_off;
             const int k_n = lay.kernel;
             for (int o = 0; o < 3; ++o)
                 for (int i = 0; i < 3; ++i)
@@ -128,12 +129,39 @@ public:
                 for (int i = 0; i < 3; ++i) rest[6 + i * 3 + o] = *s++;
             for (int o = 0; o < 3; ++o) rest[15 + o] = *s++;
         }
-        float* head = w_ + a2::kHeadWOff;
+        float* head = out + a2::kHeadWOff;
         for (int j = 0; j < 3; ++j)
             for (int k = 0; k < a2::kHeadKernel; ++k) head[k * 3 + j] = *s++;
         head[a2::kHeadKernel * 3] = *s++;
+    }
+
+    // weights: a stream as ToEngine takes it, i.e. dkmodel::Model::weights. Permutes them into the engine layout,
+    // then Reset().
+    void Load(const float* weights, float head_scale) {
+        ToEngine(weights, w_);
         head_scale_ = head_scale;
         Reset();
+    }
+
+    // The network a + t d, between the calls of Process: a and d are kWeightCount floats each in the engine layout
+    // (ToEngine) with the head scale folded into the head (morph.h), so the head scale becomes 1. The histories are
+    // kept: the networks a blend moves between share their coordinates. Runs of kBlendRun elements as islands
+    // (docs/M7_PERFORMANCE.md): the loads, the multiply-adds, then the stores.
+    DK_ITCM void Blend(const float* a, const float* d, float t) {
+        size_t i = 0;
+        for (; i + kBlendRun <= a2::kWeightCount; i += kBlendRun) {
+            float s[kBlendRun], x[kBlendRun];
+#pragma GCC unroll 12
+            for (size_t j = 0; j < kBlendRun; ++j) s[j] = FpHere(a[i + j]);
+#pragma GCC unroll 12
+            for (size_t j = 0; j < kBlendRun; ++j) x[j] = FpHere(d[i + j]);
+#pragma GCC unroll 12
+            for (size_t j = 0; j < kBlendRun; ++j) s[j] += t * x[j];
+#pragma GCC unroll 12
+            for (size_t j = 0; j < kBlendRun; ++j) w_[i + j] = s[j];
+        }
+        for (; i < a2::kWeightCount; ++i) w_[i] = a[i] + t * d[i];
+        head_scale_ = 1.0f;
     }
 
     // Fills every history with the settled zero-input state, the state NAM's prewarm reaches. Uses RunLayer, so the

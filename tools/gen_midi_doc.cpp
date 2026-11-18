@@ -68,9 +68,9 @@ int main() {
     std::printf("## Results\n\n");
     std::printf("RESULT's value: the next expected offset for UPLOAD BEGIN and CHUNK; for READ the next offset; for "
                 "COMMIT the flash time in ms on ok, the slot status on `invalid`, else 0; for ERASE, RENAME, SWAP, "
-                "GATE and SAVE the flash time in ms on ok, else 0; 8 for LIST; the parameter count for DUMP; the "
-                "code taken for SET; 0 for WATCH, GATE TRY and ASSIGN. A LIST, WATCH, COMMIT, DUMP or SAVE with a "
-                "payload of the wrong length answers `bad-request`.\n\n");
+                "GATE, MORPH and SAVE the flash time in ms on ok, else 0; 8 for LIST; the parameter count for DUMP; "
+                "the code taken for SET; 0 for WATCH, GATE TRY and ASSIGN. A LIST, WATCH, COMMIT, DUMP or SAVE with "
+                "a payload of the wrong length answers `bad-request`.\n\n");
     std::printf("|Code|Name|Meaning|\n|---|---|---|\n");
     for (const ResultDoc& r : kResults) std::printf("|%d|%s|%s|\n", int(r.code), r.name, r.meaning);
     std::printf("\n");
@@ -79,7 +79,7 @@ int main() {
     std::printf("SLOT's status byte and an `invalid` COMMIT's value: the slot parser's verdict (daisy/src/preset.h, "
                 "docs/FIRMWARE.md \"Preset store\").\n\n");
     std::printf("|Value|Name|\n|---|---|\n");
-    for (int s = 0; s <= int(dkpreset::Status::kIr); ++s)
+    for (int s = 0; s <= int(dkpreset::Status::kMorph); ++s)
         std::printf("|%d|%s|\n", s, dkpreset::StatusName(dkpreset::Status(s)));
     std::printf("\n");
 
@@ -134,7 +134,8 @@ int main() {
 
     std::printf("## Upload\n\n");
     std::printf("An image is a complete format-3 preset slot (docs/FIRMWARE.md \"Preset store\"): %zu bytes without "
-                "an IR, %zu with one.\n\n",
+                "an IR, %zu with one. An upload never carries a morph block: MORPH adds it to a stored preset, and "
+                "an upload over a preset drops the one it had.\n\n",
                 dkpreset::kSizeNoIr, dkpreset::kSizeWithIr);
     std::printf("1. UPLOAD BEGIN `<slot> <size>`; RESULT ok, value 0. A BEGIN discards any earlier upload. Resend "
                 "it when no RESULT arrives.\n");
@@ -153,8 +154,8 @@ int main() {
                 "Each flash operation blocks the pedal's main loop for its erase and write (hundreds of ms): LOG "
                 "lines, STATUS and footswitch preset switches wait, then catch up.\n");
     std::printf("- Every successful slot change logs a line (`upload slot N \"NAME\" T ms`, `erase slot N T ms`, "
-                "`rename slot N \"NAME\" T ms`, `swap slots A B T ms`, `gate slot N on|off T ms`), then the `slots` "
-                "line; a failed write logs `slot write failed N`.\n");
+                "`rename slot N \"NAME\" T ms`, `swap slots A B T ms`, `gate slot N on|off T ms`, "
+                "`morph slot N -> M|off T ms`), then the `slots` line; a failed write logs `slot write failed N`.\n");
     std::printf("- An upload into the playing slot reloads it at once, with the usual preset-switch fade. An "
                 "upload while the pedal plays dry (no valid slot) starts playing the new slot.\n");
     std::printf("- Erasing the playing slot switches to the next filled slot (LED2 blinks its number), or to dry "
@@ -162,6 +163,10 @@ int main() {
     std::printf("- GATE on the playing slot changes the running gate at once, without a reload or a fade. GATE TRY "
                 "changes only the running gate, so an editor can audition settings while a slider moves; the next "
                 "preset load (a footswitch switch, an upload, an erase) or GATE undoes it.\n");
+    std::printf("- MORPH on the playing slot reloads it, with the preset-switch fade. A playing preset whose morph "
+                "target is uploaded over, erased or swapped reloads too: it goes on morphing with whichever slot "
+                "holds the model its block was fitted to, and plays its own model alone when none does (the log's "
+                "`morph missing slot N`).\n");
     std::printf("- SWAP moves presets, not playback: the playing preset keeps playing under its new slot number, "
                 "which the pedal remembers (as after a footswitch switch, once it has settled for 2 s). SWAP writes "
                 "slot a, then slot b: a power loss between the two writes leaves both slots holding b's old preset, "

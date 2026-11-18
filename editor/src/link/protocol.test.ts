@@ -10,6 +10,7 @@ import {
   CMD_NAMES,
   fromSeptets,
   gateMsg,
+  morphMsg,
   pack7,
   parseMessage,
   pedalMsg,
@@ -159,6 +160,15 @@ test("gateMsg frame", () => {
   ]);
 });
 
+test("morphMsg frames", () => {
+  expect([...morphMsg(4, null)]).toEqual([0xf0, 0x7d, 0x64, 0x01, 0x19, 0x04, 0xf7]);
+  const block = Uint8Array.from({ length: 64 }, (_, i) => 0xc0 + i);
+  const set = morphMsg(4, block);
+  expect(set.length).toBe(5 + 75 + 1);
+  expect(set[5]).toBe(4);
+  expect(unpack7(set.subarray(6, -1))).toEqual(block);
+});
+
 test("DATA parses only with its CRC", () => {
   // tests/link_test.cpp Data.Bytes: CRC DEADBEEF does not match the data.
   const bad = Uint8Array.of(
@@ -213,9 +223,9 @@ test("PARAM parses a linear row", () => {
 test("VALUES parses", () => {
   // tests/link_test.cpp Values.Bytes.
   const codes = [
-    1, 0, 8192, 1, 8192, 16383, 0, 8192, 8192, 0, 8192, 8192, 0, 16383, 8192, 1, 0, 12287, 1, 16383, 0, 8192, 8192,
+    1, 0, 8192, 1, 8192, 16383, 0, 8192, 8192, 0, 8192, 8192, 0, 16383, 8192, 1, 0, 12287, 1, 16383, 0, 8192, 8192, 0,
   ];
-  const p = [...Array<number>(7).fill(0x7f), 0x05, 0x17, ...codes.flatMap((c) => [c >> 7, c & 0x7f])];
+  const p = [...Array<number>(7).fill(0x7f), 0x05, 0x18, ...codes.flatMap((c) => [c >> 7, c & 0x7f])];
   expect(parseMessage(pedalMsg(CMD.values, p))).toEqual({
     type: "values",
     assign: Array(7).fill(null),

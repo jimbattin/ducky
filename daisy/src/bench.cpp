@@ -14,11 +14,13 @@
 //   flipping every 10 blocks, so every glide and coefficient ramp runs on every block), the noise gate (enabled, the
 //   longest hold: the longest detector scan), the compressor (on, blend, its Sustain, Level and Balance flipping every
 //   10 blocks, so every glide and ramp runs on every block, and the noise drives the side chain into compression and
-//   the clamp), and the pedal's whole chain (gate, compressor, trim, engine, IR, EQ, output gain with the gate's gain,
-//   mute), timed the same way; the chain gate is its maximum against kChainGatePermille, the load ceiling
-//   (docs/ROADMAP.md "Decisions").
+//   the clamp), the morph (dkdsp::A2Lite::Blend on every block and the two gains the pedal blends in dB: a knob that
+//   never rests; both weight sets are the model's own, so the engine goes on computing it) and the pedal's whole
+//   chain (gate, morph, compressor, trim, engine, IR, EQ, output gain with the gate's gain, mute), timed the same
+//   way; the chain gate is its maximum against kChainGatePermille, the load ceiling (docs/ROADMAP.md "Decisions").
+//   The engine is reloaded after the chain: a blend leaves it with the head scale folded into the head.
 // Placement matches the pedal's: the engine, the compressor and the EQ in DTCM, the pedal's convolver in AXI SRAM
-// (gIrAxi; gIrD2 is the D2 SRAM comparison), the stages and the timed blocks in ITCM.
+// (gIrAxi; gIrD2 is the D2 SRAM comparison) with the morph weights, the stages and the timed blocks in ITCM.
 // Log lines (usb_log.py; docs/FIRMWARE.md "Bench"):
 //   at power-on and on HELLO "ducky_bench <board> sysclk N MHz <build id>";
 //   "bench model "<name>" ok" (or "bench model <status>", repeated, when the embedded model does not parse);
@@ -30,7 +32,7 @@
 //   "bench a2lite cycles avg A max M permille avg P.p max Q.q" (permille of B), then
 //   "bench gate a2lite max Q.q permille limit 450 go|no-go";
 //   per stage "bench input|layer NN kK dD|head cycles avg ... " as above;
-//   "bench ir d2|ir axi|eq|noise gate|comp|chain cycles avg ..." as above, then
+//   "bench ir d2|ir axi|eq|noise gate|comp|morph|chain cycles avg ..." as above, then
 //   "bench gate chain max Q.q permille limit 850 go|no-go"; then "bench pass N done".
 // Passes repeat forever, 2 s apart. The link's DFU message restarts into the bootloader (checked between stages).
 #include <cmath>
@@ -51,6 +53,7 @@
 #include "ir.h"
 #include "memory.h"
 #include "model.h"
+#include "morph.h"
 #include "usb_link.h"
 
 using namespace daisy;
@@ -135,8 +138,14 @@ DK_DTCM dkdsp::GainRamp gInGain, gOutGain;
 DK_DTCM dkdsp::MuteRamp gMute;
 DK_DTCM dkdsp::NoiseGate gGate;
 float gNoise[kBlockSize * kNoiseBlocks];  // SRAM: DTCM has no room beside the engine and the stack reserve
-float gIrIn[kIrCheckSamples], gIrOut[kIrCheckSamples];  // SRAM, the IR check's
+// SDRAM: the IR check's buffers and dkmorph::Prepare's scratch are not timed, and SRAM (which holds the image and the
+// fixtures too) has no room for them. Each is written before it is read.
+DK_SDRAM float gIrIn[kIrCheckSamples], gIrOut[kIrCheckSamples];
+DK_SDRAM float gMorphScratch[2 * a2::kWeightCount];
 DK_DTCM float gOut[kBlockSize];
+dkmorph::Weights gMorphW;                   // AXI SRAM (.bss): the pedal's placement
+DK_DTCM uint32_t gMorphBlocks;              // counts the morph's blocks: the blend position flips on each
+DK_DTCM float gMorphGain[2];                // the level match and the input calibration the morph step computes
 uint32_t gBudget = 1;  // cycles in one block period
 
 void logBoot() {
@@ -264,9 +273,21 @@ DK_ITCM void blockComp(const float* in) { gComp.Process(in, gOut, kBlockSize, co
 // The gate's detector input is the block's input peak, as in the pedal's AudioCallback.
 DK_ITCM void blockGate(const float* in) { gOut[0] = gGate.Process(dkdsp::Peak(in, kBlockSize)); }
 
+// The pedal's morph step with a knob that never rests: the weights blended on every block, at positions 0 and 1 in
+// turn, and the level match and the input calibration from dB.
+DK_ITCM void stepMorph() {
+    const float t = float(gMorphBlocks++ & 1u);
+    gEngine.Blend(gMorphW.a, gMorphW.d, t);
+    gMorphGain[0] = dkdsp::DbToGain(-3.0f + 6.0f * t);
+    gMorphGain[1] = dkdsp::DbToGain(-7.5f + 3.0f * t);
+}
+
+DK_ITCM void blockMorph(const float*) { stepMorph(); }
+
 // The pedal's AudioCallback chain, without the control reads and meters.
 DK_ITCM void blockChain(const float* in) {
     const float gate = gGate.Process(dkdsp::Peak(in, kBlockSize));
+    stepMorph();
     gComp.Process(in, gOut, kBlockSize, compValues());
     gInGain.Process(gOut, gOut, kBlockSize, 1.0f);
     gEngine.Process(gOut, gOut, kBlockSize);
@@ -373,7 +394,10 @@ void runPass(unsigned pass) {
     dkusb::Serve(logBoot);
     timeStage("comp", blockComp);
     dkusb::Serve(logBoot);
+    timeStage("morph", blockMorph);
+    dkusb::Serve(logBoot);
     logGate("chain", timeStage("chain", blockChain), kChainGatePermille);
+    gEngine.Load(gModel.weights, gModel.head_scale);  // the next pass's check runs the model as loaded
     dkusb::Log("bench pass %u done", pass);
     serveFor(kPassGapMs);
 }
@@ -415,6 +439,7 @@ int main() {
     dkusb::Log("bench ir \"%s\" ok", gIrData.name);
     gIrD2.Load(gIrData.taps);
     gIrAxi.Load(gIrData.taps);
+    dkmorph::Prepare(dkmorph::kIdentity, gModel, gModel, gMorphScratch, &gMorphW);
     gEq.Init(eqValues());
     gComp.Init(compValues());
     gInGain.Init(1.0f);

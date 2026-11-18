@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
-import { baseDraft, composeSlot, type Draft, isEdited, saveDraft, withModel } from "./draft";
+import { baseDraft, composeSlot, type Draft, isEdited, morphDependents, saveDraft, withModel } from "./draft";
 import type { SlotMessage } from "./link/protocol";
 import type { PedalSession } from "./link/session";
 import type { ConvertedModel, ModelInfo } from "./nam/convert";
 import { buildSlot, splitSlot } from "./preset/bank";
 import type { GateSettings } from "./preset/gate";
-import { readFixture } from "./testFixtures";
+import { type SlotInfo, slotInfo } from "./preset/info";
+import { decodeMorphBlock } from "./preset/morph";
+import { readFixture, withMorphBlock } from "./testFixtures";
 
 const model = await readFixture("nam/A2.bin");
 const ir = await readFixture("ir/decay.bin");
@@ -51,22 +53,90 @@ test("a draft with only a gate is edited", () => {
   expect(isEdited({ ...baseDraft(slot), gate }, slot)).toBe(true);
 });
 
-test("saving a gate-only draft sends GATE and never uploads", async () => {
+/** A session that records its calls; readImage returns image. */
+function fakeSession(image: Uint8Array = new Uint8Array()) {
   const calls: string[] = [];
+  const uploads: Uint8Array[] = [];
   const session = {
     gate: async (k: number, g: GateSettings) => {
       calls.push(`gate ${k} ${g.thresholdDb}`);
       return 0;
     },
-    upload: async () => {
+    upload: async (_k: number, bytes: Uint8Array) => {
       calls.push("upload");
+      uploads.push(bytes);
       return { flashMs: 0, retries: 0 };
     },
     read: async () => {
       calls.push("read");
       return new Uint8Array();
     },
+    readImage: async () => {
+      calls.push("readImage");
+      return image;
+    },
   } as unknown as PedalSession;
-  expect(await saveDraft(session, slot, { ...baseDraft(slot), gate }, () => undefined)).toBe("saved");
+  return { session, calls, uploads };
+}
+
+test("saving a gate-only draft sends GATE and never uploads", async () => {
+  const { session, calls } = fakeSession();
+  expect(await saveDraft(session, slot, { ...baseDraft(slot), gate }, 1, () => undefined)).toEqual({
+    result: "saved",
+    morph: null,
+  });
   expect(calls).toEqual(["gate 2 -55"]);
+});
+
+test("a morph-only draft is edited, writes nothing itself and hands its target on", async () => {
+  const d: Draft = { ...baseDraft(slot), morph: 1 };
+  expect(isEdited(d, slot)).toBe(true);
+  const { session, calls } = fakeSession();
+  expect(await saveDraft(session, slot, d, null, () => undefined)).toEqual({ result: "saved", morph: 1 });
+  expect(await saveDraft(session, slot, { ...d, morph: "none" }, 1, () => undefined)).toEqual({
+    result: "saved",
+    morph: "none",
+  });
+  expect(calls).toEqual([]);
+});
+
+const morphBlock = await readFixture("morph/A2_shuffled.morph");
+const morphed = withMorphBlock(await readFixture("preset/A2_decay.bin"), morphBlock);
+
+test("an upload drops the morph block and hands the stored target on to be analysed again", async () => {
+  const renamed: Draft = { ...baseDraft(slot), name: "Renamed" };
+  const { session, calls, uploads } = fakeSession(morphed);
+  expect(await saveDraft(session, slot, renamed, 1, () => undefined)).toEqual({ result: "saved", morph: 1 });
+  expect(calls).toEqual(["readImage", "upload"]);
+  expect(uploads[0]).toEqual(buildSlot(model, ir, "Renamed"));
+  // The draft's own choice wins; "none" needs no MORPH after an upload.
+  expect((await saveDraft(session, slot, { ...renamed, morph: 4 }, 1, () => undefined)).morph).toBe(4);
+  expect((await saveDraft(session, slot, { ...renamed, morph: "none" }, 1, () => undefined)).morph).toBeNull();
+});
+
+// Slots 2 and 5 hold the fixture preset (the same model); slot 5 morphs with slot 2.
+const slots: SlotMessage[] = Array.from({ length: 8 }, (_, k) =>
+  k === 1 || k === 4
+    ? { ...slot, slot: k }
+    : { type: "slot", slot: k, status: 1, hasIr: false, playing: false, name: "", model: "", ir: "" },
+);
+const info = slotInfo(morphed);
+const infos: (SlotInfo | null)[] = Array(8).fill(null);
+infos[1] = { ...info, morph: null };
+infos[4] = { ...info, morph: { ...decodeMorphBlock(morphBlock, 0), target: 1, modelCrc: info.modelCrc } };
+
+test("a new model in a morph target puts the presets that morph with it up for analysis again", () => {
+  const target = withModel(baseDraft(slots[1]!), slots[1]!, newModel("Other"));
+  expect(morphDependents(slots, infos, { 1: target })).toEqual([[4, 1]]);
+  expect(morphDependents(slots, infos, { 1: target, 4: { ...baseDraft(slots[4]!), gate } })).toEqual([[4, 1]]);
+});
+
+test("a renamed target, an erased dependent and a dependent with a model or a morph of its own are not dependents", () => {
+  const target = withModel(baseDraft(slots[1]!), slots[1]!, newModel("Other"));
+  const own = (d: Draft) => morphDependents(slots, infos, { 1: target, 4: d });
+  expect(morphDependents(slots, infos, { 1: { ...baseDraft(slots[1]!), name: "Renamed" } })).toEqual([]);
+  expect(own({ ...baseDraft(slots[4]!), model: { kind: "none" } })).toEqual([]);
+  expect(own(withModel(baseDraft(slots[4]!), slots[4]!, newModel("Mine")))).toEqual([]);
+  // Its own "none" stands, even when its save uploads (a rename) and so returns no morph step.
+  expect(own({ ...baseDraft(slots[4]!), name: "Renamed", morph: "none" })).toEqual([]);
 });

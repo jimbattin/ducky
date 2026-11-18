@@ -45,6 +45,7 @@ enum ParamId : uint8_t {
     kLoopMode,
     kLoopSend,
     kLoopReturn,
+    kMorph,
     kParamCount
 };
 enum class Taper : uint8_t { kLog = 0, kChoice = 1, kLinear = 2 };  // wire values
@@ -77,7 +78,8 @@ constexpr float kCompSustainMaxDb = 20.827854f;  // 20 log10(11): the stage's ga
 // The bells' default positions: 250 Hz, 515 Hz (an amp's usual mid) and 3 kHz, Q 1. The compressor's: Off, Sustain
 // +15.6 dB (position 0.75), Level 0 dB (the toggle's middle), Balance fully compressed. comp_mode is both the stage's
 // switch and the output's mix, so one toggle sets it: down Off, middle Blend, up Direct. Balance is the knob's
-// rotation; the DSP applies the audio taper. The loop's (docs/LOOP.md): MISO, send and return 0 dB at noon.
+// rotation; the DSP applies the audio taper. The loop's (docs/LOOP.md): MISO, send and return 0 dB at noon. Morph
+// (morph.h): the preset's own model.
 inline constexpr ParamDef kParams[kParamCount] = {
     {kEqEnable, "eq_enable", "EQ", "off,on", "EQ", 0.0f, 1.0f, 1.0f, Taper::kChoice, OffEnd::kNone},
     {kLowCutFreq, "low_cut_freq", "Low-cut frequency", "Hz", "EQ", dkdsp::kLowCutMinHz, dkdsp::kLowCutMaxHz, 0.0f,
@@ -123,6 +125,7 @@ inline constexpr ParamDef kParams[kParamCount] = {
      Taper::kLinear, OffEnd::kNone},
     {kLoopReturn, "loop_return", "Return level", "dB", "Loop", -dkdsp::kTrimRangeDb, dkdsp::kTrimRangeDb, 0.5f,
      Taper::kLinear, OffEnd::kNone},
+    {kMorph, "morph", "Morph", "%", "Morph", 0.0f, 100.0f, 0.0f, Taper::kLinear, OffEnd::kNone},
 };
 
 constexpr bool TableValid() {

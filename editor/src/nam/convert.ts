@@ -282,3 +282,37 @@ export function convertNam(text: string, fallbackName: string): ConvertedModel {
   dv.setUint32(OFF_CRC, crc32(bin.subarray(0, OFF_CRC)), true);
   return { bin, info };
 }
+
+/** A model binary's network and what the morph alignment needs beside it (morph/align.ts). */
+export interface ModelWeights {
+  weights: Float32Array; // the 1870 stream weights, without head_scale
+  headScale: number;
+  loudness: number | null;
+  inputLevelDbu: number | null;
+  crc: number; // the binary's stored CRC
+}
+
+/** Reads a model binary (MODEL_BIN_SIZE bytes, e.g. a stored preset's); nothing is checked. */
+export function modelWeights(bin: Uint8Array): ModelWeights {
+  const dv = new DataView(bin.buffer, bin.byteOffset, bin.length);
+  const flags = dv.getUint16(OFF_FLAGS, true);
+  const weights = new Float32Array(NETWORK_WEIGHT_COUNT);
+  for (let i = 0; i < NETWORK_WEIGHT_COUNT; i++) weights[i] = dv.getFloat32(OFF_WEIGHTS + 4 * i, true);
+  return {
+    weights,
+    headScale: dv.getFloat32(OFF_HEAD_SCALE, true),
+    loudness: flags & FLAG_HAS_LOUDNESS ? dv.getFloat32(OFF_LOUDNESS, true) : null,
+    inputLevelDbu: flags & FLAG_HAS_INPUT_LEVEL ? dv.getFloat32(OFF_INPUT_LEVEL, true) : null,
+    crc: dv.getUint32(OFF_CRC, true),
+  };
+}
+
+/** A copy of a model binary with other weights and head_scale, and its CRC recomputed: for fixtures and tests. */
+export function withWeights(bin: Uint8Array, weights: ArrayLike<number>, headScale: number): Uint8Array {
+  const out = bin.slice();
+  const dv = new DataView(out.buffer);
+  for (let i = 0; i < NETWORK_WEIGHT_COUNT; i++) dv.setFloat32(OFF_WEIGHTS + 4 * i, weights[i]!, true);
+  dv.setFloat32(OFF_HEAD_SCALE, headScale, true);
+  dv.setUint32(OFF_CRC, crc32(out.subarray(0, OFF_CRC)), true);
+  return out;
+}

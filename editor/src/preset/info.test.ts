@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { convertIr } from "../ir/convert";
 import { convertNam } from "../nam/convert";
-import { readFixture, readFixtureText } from "../testFixtures";
+import { readFixture, readFixtureText, withMorphBlock } from "../testFixtures";
 import { buildSlot } from "./bank";
 import { GATE_DEFAULT } from "./gate";
 import { infoRanges, type SlotInfo, slotInfo } from "./info";
@@ -37,17 +37,27 @@ function expectMatches(info: SlotInfo, withIr: boolean): void {
 }
 
 // A zero-filled image holding only the infoRanges bytes of full.
-function onlyRanges(full: Uint8Array, hasIr: boolean): Uint8Array {
+function onlyRanges(full: Uint8Array, hasIr: boolean, hasMorph: boolean): Uint8Array {
   const sparse = new Uint8Array(full.length);
-  for (const [off, len] of infoRanges(hasIr)) sparse.set(full.subarray(off, off + len), off);
+  for (const [off, len] of infoRanges(hasIr, hasMorph)) sparse.set(full.subarray(off, off + len), off);
   return sparse;
 }
 
-for (const withIr of [true, false]) {
-  test(`a ${withIr ? "model + IR" : "model-only"} slot decodes to its sources' metadata from infoRanges alone`, () => {
-    const full = buildSlot(model.bin, withIr ? ir.bin : null, "Info test");
-    const info = slotInfo(full);
-    expectMatches(info, withIr);
-    expect(slotInfo(onlyRanges(full, withIr))).toEqual(info);
-  });
-}
+const morphBlock = await readFixture("morph/A2_shuffled.morph");
+
+for (const withIr of [true, false])
+  for (const withMorph of [true, false]) {
+    const what = `${withIr ? "model + IR" : "model-only"} slot ${withMorph ? "with" : "without"} a morph block`;
+    test(`a ${what} decodes to its sources' metadata from infoRanges alone`, () => {
+      const plain = buildSlot(model.bin, withIr ? ir.bin : null, "Info test");
+      const full = withMorph ? withMorphBlock(plain, morphBlock) : plain;
+      const info = slotInfo(full);
+      expectMatches(info, withIr);
+      expect(info.modelCrc).toBe(new DataView(model.bin.buffer).getUint32(model.bin.length - 4, true));
+      if (withMorph) {
+        expect(info.morph).toMatchObject({ target: 0, perm: [1, 2, 0], modelCrc: 0xcb02c66f });
+        expect(info.morph!.fit).toBeGreaterThan(0.999);
+      } else expect(info.morph).toBeNull();
+      expect(slotInfo(onlyRanges(full, withIr, withMorph))).toEqual(info);
+    });
+  }

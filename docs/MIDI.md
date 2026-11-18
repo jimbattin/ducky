@@ -18,7 +18,7 @@ Ducky talks to a host over the Seed's USB MIDI port with SysEx only: no notes, C
 |---|---|---|---|
 |host to pedal|Identity Request|`F0 7E <id> 06 01 F7` (Universal Non-Real-Time, any id 00-7F)|The pedal answers the Identity Reply.|
 |pedal to host|Identity Reply|`F0 7E 7F 06 02 7D 64 00 <board> 00 00 00 00 00 <build id> F7`|Manufacturer 7D, family 64 00 (the device byte 64, then 00), member `<board>` 00 (1 HotHouse), version 00 00 00 00, then the build id: 1-32 printable ASCII bytes, the short git commit with `+dirty` when tracked files differ (e.g. `711fa7c+dirty`), or `unknown` outside git.|
-|host to pedal|`01` HELLO|none|The pedal answers with LOG lines: the boot line `ducky <board> seed <version> sysclk N MHz audio N Hz N bit block N <build id>`, then the `slots`, `preset`, `model`, `ir`, `gate`, `settings` and `layout` lines (docs/FIRMWARE.md "Log lines"). No RESULT.|
+|host to pedal|`01` HELLO|none|The pedal answers with LOG lines: the boot line `ducky <board> seed <version> sysclk N MHz audio N Hz N bit block N <build id>`, then the `slots`, `preset`, `model`, `ir`, `gate`, `morph`, `settings` and `layout` lines (docs/FIRMWARE.md "Log lines"). No RESULT.|
 |host to pedal|`02` LIST|none|8 SLOT messages (slots 0-7), then RESULT `02` ok with value 8.|
 |host to pedal|`03` ERASE|`<slot 0-7>`|Erases the slot (it reads empty afterwards). RESULT ok with the flash time in ms.|
 |host to pedal|`04` RENAME|`<slot 0-7> <name: 1-63 bytes 20-7E>`|Rewrites the preset's name (and its CRC); the model and the IR are kept. RESULT ok with the flash time in ms; `slot-state` when the slot is not ok.|
@@ -35,6 +35,7 @@ Ducky talks to a host over the Seed's USB MIDI port with SysEx only: no notes, C
 |host to pedal|`0F` SET|`<id> <code u14>`|Sets the parameter's value from the next audio block (continuous: code / 16383 along its taper; choice: the index). Every control on it is held until it moves (a knob more than 3 % of its travel, a switch to another position). RESULT ok with the code taken (clamped). `bad-request` for a payload other than 3 bytes or an unknown id. No log line.|
 |host to pedal|`10` ASSIGN|`<control 0-6> <id, or 7F none>`|Puts the parameter on the control (0-3 Knobs 3-6, 4-6 SW1-SW3); it keeps its value until the control moves. Logs `assign CONTROL NAME`. RESULT ok (value 0). `bad-request` for a payload other than 2 bytes, a control past 6, an unknown id, or a continuous parameter on a switch.|
 |host to pedal|`11` SAVE|none|Writes the assignments and every parameter's value to the settings record, used at the next power-up. Logs `settings seq N T ms`. RESULT ok with the flash time in ms; `flash` when the write fails (`settings write failed`).|
+|host to pedal|`19` MORPH|`<slot 0-7>` (clear) or `<slot 0-7> <Pack7 64-byte morph block>` (docs/FIRMWARE.md "Preset store")|Rewrites the preset's morph block (and its CRC), or removes it; the model, the IR, the name and the gate are kept. The block's target slot must be ok, hold the model whose CRC the block names, and not be the slot itself. On the playing slot the preset reloads, with the preset-switch fade. RESULT ok with the flash time in ms; `bad-request` for a payload of another length, a block that does not parse (target, permutation, scales, matrix, fits) or one that targets its own slot; `slot-state` when the slot or the target is not ok, or the target's model is not the block's.|
 |pedal to host|`12` LOG|`<printable ASCII, at most 120 bytes>`|One log line (boot, HELLO, slot and control changes, the controls and status lines once a second).|
 |pedal to host|`13` SLOT|`<slot 0-7> <status> <flags> <preset name> 00 <model name> 00 <ir name>`|One slot, answering LIST. Status: Slot status. Flags: bit 0 has an IR, bit 1 playing. Names: printable ASCII of at most 63 bytes (anything else becomes `?`); all three are empty unless the status is ok, the IR name is empty without an IR.|
 |pedal to host|`14` RESULT|`<cmd> <code> <value u21>`|The outcome of a request (Results). Every request except HELLO and DFU gets exactly one RESULT, and it comes last.|
@@ -45,19 +46,19 @@ Ducky talks to a host over the Seed's USB MIDI port with SysEx only: no notes, C
 
 ## Results
 
-RESULT's value: the next expected offset for UPLOAD BEGIN and CHUNK; for READ the next offset; for COMMIT the flash time in ms on ok, the slot status on `invalid`, else 0; for ERASE, RENAME, SWAP, GATE and SAVE the flash time in ms on ok, else 0; 8 for LIST; the parameter count for DUMP; the code taken for SET; 0 for WATCH, GATE TRY and ASSIGN. A LIST, WATCH, COMMIT, DUMP or SAVE with a payload of the wrong length answers `bad-request`.
+RESULT's value: the next expected offset for UPLOAD BEGIN and CHUNK; for READ the next offset; for COMMIT the flash time in ms on ok, the slot status on `invalid`, else 0; for ERASE, RENAME, SWAP, GATE, MORPH and SAVE the flash time in ms on ok, else 0; 8 for LIST; the parameter count for DUMP; the code taken for SET; 0 for WATCH, GATE TRY and ASSIGN. A LIST, WATCH, COMMIT, DUMP or SAVE with a payload of the wrong length answers `bad-request`.
 
 |Code|Name|Meaning|
 |---|---|---|
 |0|ok|Done.|
-|1|bad-request|Wrong payload length or a field out of range (slot, size, name, a == b, chunk data past the image, bad Pack7, a gate field, a parameter or control field).|
+|1|bad-request|Wrong payload length or a field out of range (slot, size, name, a == b, chunk data past the image, bad Pack7, a gate field, a parameter or control field, a morph block).|
 |2|no-upload|UPLOAD CHUNK or COMMIT without an UPLOAD BEGIN (or after a COMMIT).|
 |3|offset|The chunk's offset is past the next expected offset (the value); resend from there.|
 |4|crc|The chunk's data does not match its CRC; resend it.|
 |5|incomplete|COMMIT before every byte of the image was received.|
 |6|invalid|COMMIT: the image does not parse as a preset (the value is the slot status).|
 |7|flash|The flash erase, write or read-back failed.|
-|8|slot-state|The slot's state does not allow it (RENAME or GATE of a slot that is not ok, SWAP of a corrupt slot, GATE TRY of a slot that is not playing).|
+|8|slot-state|The slot's state does not allow it (RENAME, GATE or MORPH of a slot that is not ok, SWAP of a corrupt slot, GATE TRY of a slot that is not playing, MORPH to a target that is not ok or holds another model).|
 
 ## Slot status
 
@@ -73,6 +74,7 @@ SLOT's status byte and an `invalid` COMMIT's value: the slot parser's verdict (d
 |5|crc|
 |6|model|
 |7|ir|
+|8|morph|
 
 ## Parameters
 
@@ -103,6 +105,7 @@ The table DUMP sends (daisy/src/params.h); ids are append-only. A continuous par
 |20|`loop_mode`|Loop mode|choice|0 MISO, 1 pre-model, 2 post-model|-|0|Loop|
 |21|`loop_send`|Send level|linear|-12 to 12 dB|-|8192|Loop|
 |22|`loop_return`|Return level|linear|-12 to 12 dB|-|8192|Loop|
+|23|`morph`|Morph|linear|0 to 100 %|-|0|Morph|
 
 ## Controls
 
@@ -116,7 +119,7 @@ The table DUMP sends (daisy/src/params.h); ids are append-only. A continuous par
 
 ## Upload
 
-An image is a complete format-3 preset slot (docs/FIRMWARE.md "Preset store"): 7996 bytes without an IR, 16288 with one.
+An image is a complete format-3 preset slot (docs/FIRMWARE.md "Preset store"): 7996 bytes without an IR, 16288 with one. An upload never carries a morph block: MORPH adds it to a stored preset, and an upload over a preset drops the one it had.
 
 1. UPLOAD BEGIN `<slot> <size>`; RESULT ok, value 0. A BEGIN discards any earlier upload. Resend it when no RESULT arrives.
 2. UPLOAD CHUNK for each run of up to 256 bytes, in order: `<offset> <crc> <data>`. RESULT ok gives the next offset. With no RESULT (1 s) or `crc`, resend the same chunk: a chunk at or below the next offset is accepted again, so resending is safe. `offset` (the chunk starts past the next expected offset) gives the offset to continue from. `tools/pedal.ts` gives up after 5 retries of one chunk.
@@ -125,8 +128,9 @@ An image is a complete format-3 preset slot (docs/FIRMWARE.md "Preset store"): 7
 ## Slot changes and playback
 
 - Audio keeps running through every slot operation: the audio callback reads nothing from QSPI. Each flash operation blocks the pedal's main loop for its erase and write (hundreds of ms): LOG lines, STATUS and footswitch preset switches wait, then catch up.
-- Every successful slot change logs a line (`upload slot N "NAME" T ms`, `erase slot N T ms`, `rename slot N "NAME" T ms`, `swap slots A B T ms`, `gate slot N on|off T ms`), then the `slots` line; a failed write logs `slot write failed N`.
+- Every successful slot change logs a line (`upload slot N "NAME" T ms`, `erase slot N T ms`, `rename slot N "NAME" T ms`, `swap slots A B T ms`, `gate slot N on|off T ms`, `morph slot N -> M|off T ms`), then the `slots` line; a failed write logs `slot write failed N`.
 - An upload into the playing slot reloads it at once, with the usual preset-switch fade. An upload while the pedal plays dry (no valid slot) starts playing the new slot.
 - Erasing the playing slot switches to the next filled slot (LED2 blinks its number), or to dry when none is left. A rename leaves the audio untouched.
 - GATE on the playing slot changes the running gate at once, without a reload or a fade. GATE TRY changes only the running gate, so an editor can audition settings while a slider moves; the next preset load (a footswitch switch, an upload, an erase) or GATE undoes it.
+- MORPH on the playing slot reloads it, with the preset-switch fade. A playing preset whose morph target is uploaded over, erased or swapped reloads too: it goes on morphing with whichever slot holds the model its block was fitted to, and plays its own model alone when none does (the log's `morph missing slot N`).
 - SWAP moves presets, not playback: the playing preset keeps playing under its new slot number, which the pedal remembers (as after a footswitch switch, once it has settled for 2 s). SWAP writes slot a, then slot b: a power loss between the two writes leaves both slots holding b's old preset, or both empty when b was empty (a's preset is lost); LIST shows it, and an upload restores it.

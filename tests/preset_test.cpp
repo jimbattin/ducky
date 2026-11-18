@@ -42,6 +42,19 @@ std::vector<uint8_t> State(uint32_t seq, int slot) {
     return r;
 }
 
+std::vector<uint8_t> MorphBlock() {
+    std::vector<uint8_t> b = ReadFile(RepoPath("tests/fixtures/morph/A2_shuffled.morph"));
+    EXPECT_EQ(b.size(), dkmorph::kBlockBytes);
+    return b;
+}
+
+// image with its morph block set to block (null: removed).
+std::vector<uint8_t> WithMorph(const std::vector<uint8_t>& image, const uint8_t* block) {
+    std::vector<uint8_t> out(dkpreset::kSizeMax);
+    out.resize(dkpreset::SetMorph(image.data(), image.size(), block, out.data()));
+    return out;
+}
+
 }  // namespace
 
 TEST(PresetParse, Fixture) {
@@ -141,7 +154,7 @@ TEST(PresetParse, TruncatedIsSize) {
 
 TEST(PresetParse, UnknownFlagIsVersion) {
     std::vector<uint8_t> b = Fixture();
-    Put16(b, 6, 2);
+    Put16(b, 6, 4);
     FixCrc(b);
     EXPECT_EQ(ParseBytes(b), Status::kVersion);
 }
@@ -178,6 +191,74 @@ TEST(PresetParse, BadEmbeddedIrIsIr) {
     b[7992 + 1000] ^= 0xFF;
     FixCrc(b);
     EXPECT_EQ(ParseBytes(b), Status::kIr);
+}
+
+TEST(PresetParse, BadMorphBlockIsMorph) {
+    std::vector<uint8_t> b = WithMorph(Fixture(), MorphBlock().data());
+    ASSERT_EQ(ParseBytes(b), Status::kOk);
+    const size_t perm = b.size() - 4 - dkmorph::kBlockBytes + 1;
+    b[perm] = 0;
+    b[perm + 1] = 0;
+    b[perm + 2] = 1;
+    FixCrc(b);
+    EXPECT_EQ(ParseBytes(b), Status::kMorph);
+}
+
+TEST(PresetMorph, SetMorphRoundTrip) {
+    const std::vector<uint8_t> plain = Fixture(), block = MorphBlock();
+    auto p = std::make_unique<Preset>();
+    ASSERT_EQ(Parse(plain.data(), plain.size(), p.get()), Status::kOk);
+    EXPECT_FALSE(p->has_morph);
+
+    const std::vector<uint8_t> morphed = WithMorph(plain, block.data());
+    EXPECT_EQ(morphed.size(), dkpreset::kSizeMax);
+    ASSERT_EQ(Parse(morphed.data(), morphed.size(), p.get()), Status::kOk);
+    EXPECT_TRUE(p->has_morph);
+    EXPECT_EQ(p->morph.target, 0);
+    EXPECT_EQ(p->morph.model_crc, 0xCB02C66Fu);
+    EXPECT_EQ(p->morph.t.perm[0], 1);
+    EXPECT_EQ(p->morph.t.perm[1], 2);
+    EXPECT_EQ(p->morph.t.perm[2], 0);
+    EXPECT_TRUE(p->has_ir);
+    EXPECT_GT(p->ir.tap_count, 0u);
+    EXPECT_STREQ(p->name, "A2 + decay");
+
+    EXPECT_EQ(WithMorph(morphed, block.data()), morphed) << "a second block replaces the first";
+    EXPECT_EQ(WithMorph(morphed, nullptr), plain);
+}
+
+TEST(PresetMorph, ResolveMorph) {
+    std::vector<Preset> presets(dkpreset::kSlots);
+    bool filled[dkpreset::kSlots] = {};
+    auto resolve = [&](int a) { return dkpreset::ResolveMorph(presets.data(), filled, a); };
+    filled[1] = filled[4] = true;
+    presets[1].model.crc = 0x1111;
+    presets[4].model.crc = 0x4444;
+    presets[4].has_morph = true;
+    presets[4].morph.target = 1;
+    presets[4].morph.model_crc = 0x1111;
+    EXPECT_EQ(resolve(4), 1);
+    EXPECT_EQ(resolve(1), -1) << "no block";
+
+    // The target's model moved to slot 6 (a swap): found there, whatever slot 1 holds now.
+    filled[6] = true;
+    presets[6].model.crc = 0x1111;
+    presets[1].model.crc = 0x2222;
+    EXPECT_EQ(resolve(4), 6);
+    filled[1] = false;
+    EXPECT_EQ(resolve(4), 6);
+
+    presets[6].model.crc = 0x3333;
+    EXPECT_EQ(resolve(4), -1) << "no slot holds the model the block was fitted to";
+    filled[6] = false;
+    presets[6].model.crc = 0x1111;
+    EXPECT_EQ(resolve(4), -1) << "an empty slot's stale preset does not count";
+
+    presets[4].morph.target = 4;
+    presets[4].morph.model_crc = 0x4444;
+    EXPECT_EQ(resolve(4), -1) << "a preset does not morph with itself";
+    filled[4] = false;
+    EXPECT_EQ(resolve(4), -1);
 }
 
 TEST(PresetState, HigherSeqWins) {

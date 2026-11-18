@@ -13,13 +13,15 @@
 // FS1 mutes L Out only; a loop_mode change fades both outputs out, reroutes and fades them in (gModeFade). Presets
 // live in QSPI (preset.h: 8 slots, written by tools/preset_bank.ts over DFU, or slot by slot over the link:
 // docs/MIDI.md) and are parsed into SDRAM at boot and after every slot change; corrupt or empty slots are skipped.
+// A preset with a morph target (morph.h: a block naming another slot's model and its alignment) plays the blend of
+// its model's weights and the aligned target's at the morph parameter's position, with its own IR and gate.
 // With no valid slot the pedal plays dry (compressor, trim, EQ, volume, mute; no gate). If the IR convolver's FFT does
 // not initialise, audio never starts: the pedal serves USB (DFU included) and logs "ir fft" once a second.
 //
 // Two threads of control:
 // - AudioCallback (the audio DMA interrupt, 48 kHz, 24-sample blocks): reads and publishes the controls (30 ms toggle
 //   hysteresis), toggles the mute on FS1, counts FS2 presses, applies the link's parameter edits and arbitrates the
-//   control slots (param_store.h), steps the preset switch and the loop mode, runs the gate's detector, the
+//   control slots (param_store.h), steps the preset switch, the loop mode and the morph, runs the gate's detector, the
 //   compressor, the trim, the engine, the IR, the EQ, the loop's send and return levels and the output gain, the mute
 //   ramp, the preset fade and the mode fade, measures the input and output peaks (both channels), the gate's level and
 //   cut and the compressor's gain reduction, drives LED1 and LED2's blinks, and measures the load and the underruns.
@@ -28,19 +30,21 @@
 //   (writeState), the settings record (saveSettings), the slot writes (writeSlot), the once-a-second log lines and
 //   the `loop` line when loop_mode changes.
 // A preset switch: the main loop raises gSwapReq; the callback fades out (gSwapFade), then parks (writes silence,
-// touches neither the engine nor the IR) and acks with gSwapParked; the main loop loads the next preset into the engine
-// and the IR and publishes its gains with gSwapLoaded; the callback takes them and fades in.
+// touches neither the engine, the IR nor the morph weights) and acks with gSwapParked; the main loop loads the next
+// preset into the engine and the IR, prepares its morph weights and publishes its gains with gSwapLoaded; the
+// callback takes them and fades in.
 // They share only atomics, each with one writer, and one single-producer single-consumer ring:
 // - callback -> main loop (relaxed): gKnob, gToggle, gFsHeld, gMutedPub, gUnderruns, gPeak, gOutPeak, gRinPeak,
 //   gRoutPeak, gLoadAvg, gLoadMax, gFs2Presses, gGateLevel, gGateGain, gCompGain, gParamPub, gAssignPub, gHeldPub;
 //   gSwapParked and gEditsDone (release/acquire);
 // - main loop -> callback (relaxed): gPeakReset, gLoadReset, gBlinkCount, gGateWord (publishGate), gMeterReset;
-//   gSwapReq, gSwapLoaded (publishing gNextLevel, gNextInCal, gNextIrOn, gNextModelOn) and gBlinkReq
-//   (release/acquire); gEdits (the ring: SET and ASSIGN, applied at the next block).
+//   gSwapReq, gSwapLoaded (publishing gNextLevel, gNextInCal, gNextIrOn, gNextModelOn, gNextMorphOn, gNextLevelDb,
+//   gNextInCalDb and gMorphW) and gBlinkReq (release/acquire); gEdits (the ring: SET and ASSIGN, applied at the next
+//   block).
 // Memory (memory.h): AudioCallback runs from ITCM; the engine, the compressor, the EQ and the callback's own state live
 // in DTCM, the IR convolver (66 KB of spectra, streamed through the D-cache every block) in AXI SRAM, which the bench
-// measured 24% faster for it than D2 SRAM (docs/FILTERS.md), the parsed presets in SDRAM. FPSCR.FZ is on (denormals
-// flush to zero).
+// measured 24% faster for it than D2 SRAM (docs/FILTERS.md), the morph weights (15 KB, read when the blend moves) in
+// AXI SRAM too, the parsed presets in SDRAM. FPSCR.FZ is on (denormals flush to zero).
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -63,6 +67,7 @@
 #include "ir.h"
 #include "memory.h"
 #include "model.h"
+#include "morph.h"
 #include "param_store.h"
 #include "params.h"
 #include "preset.h"
@@ -86,8 +91,14 @@ DK_DTCM uint32_t gBlockTicks;  // System::GetTick() ticks in one block period (s
 DK_DTCM dkctl::ToggleFilter gToggleFilter[dkboard::kToggles];
 DK_DTCM dkdsp::MuteRamp gMute;
 DK_DTCM_BSS dkdsp::A2Lite gEngine;  // the main loop loads it while the callback is parked (and before StartAudio)
-DK_DTCM float gLevel = 1.0f;  // the current model's level match
-DK_DTCM float gInCal = 1.0f;  // the current model's input calibration
+DK_DTCM float gLevel = 1.0f;  // the current model's level match (the morph's blend of two)
+DK_DTCM float gInCal = 1.0f;  // the current model's input calibration (likewise)
+DK_DTCM bool gMorphOn = false;               // the current preset has a morph target (gMorphW is its)
+DK_DTCM float gLevelDb[2], gInCalDb[2];      // with gMorphOn: gLevel and gInCal in dB, the preset's and its target's
+DK_DTCM dkdsp::Smoother gMorphKnob;          // morph's position
+DK_DTCM float gMorphApplied = -1.0f;         // the blend position the engine, gLevel and gInCal hold; -1: none yet
+// A blend position this close to the applied one is not applied (a resting knob's noise), unless it is an end.
+constexpr float kMorphDeadband = 0.001f;
 DK_DTCM dkdsp::Smoother gInKnob, gOutKnob;  // knobs 1 and 2
 DK_DTCM dkdsp::GainRamp gInGain, gOutGain;  // Knob 1's trim times gInCal; Knob 2's volume times gLevel
 DK_DTCM float gPeakAcc;        // input peak since the main loop last read gPeak
@@ -152,6 +163,11 @@ std::atomic<bool> gMeterReset{false};      // restart gGateLevelAcc, gGateGainAc
 SpscRing<dkparam::Edit, 16> gEdits;        // SET and ASSIGN (onCommand), applied by the callback's next block
 float gNextLevel = 1.0f, gNextInCal = 1.0f;  // the loaded preset's gains, IR and model, published by gSwapLoaded
 bool gNextIrOn = false, gNextModelOn = false;
+// The loaded preset's morph, published by gSwapLoaded: whether it has a target, the two models' gains in dB (the
+// preset's, the target's) and the weights. AXI SRAM: the callback reads gMorphW only while not parked.
+bool gNextMorphOn = false;
+float gNextLevelDb[2], gNextInCalDb[2];
+dkmorph::Weights gMorphW;
 
 // Main loop only.
 DK_SDRAM ps::Preset gPresets[ps::kSlots];  // valid where gFilled
@@ -166,11 +182,13 @@ bool gPersistPending = false;  // a switch not yet written to the state record
 uint32_t gSwitchedAt = 0;      // System::GetNow() at the last switch
 constexpr uint32_t kPersistDelayMs = 2000;  // the state record is written once switching has settled this long
 bool gReload = false;          // reload the target slot (its flash changed) even when it is already loaded
+int gMorphFrom = -1;           // the slot the loaded preset morphs with (ps::ResolveMorph at its load); -1 = none
+DK_SDRAM float gMorphScratch[2 * dkdsp::a2::kWeightCount];  // dkmorph::Prepare's
 
 // The link's slot and parameter commands (onCommand, serveReplies). Main loop only.
 DK_SDRAM uint8_t gUploadBuf[ps::kSizeWithIr];
 dklink::Upload gUpload(gUploadBuf);
-DK_SDRAM uint8_t gScratch[2][ps::kSizeWithIr];  // RENAME's, SWAP's and GATE's copies of slot images
+DK_SDRAM uint8_t gScratch[2][ps::kSizeMax];  // RENAME's, SWAP's, GATE's and MORPH's copies of slot images
 DK_SDRAM ps::Preset gCheck;                     // COMMIT's validation target
 int gListNext = -1;                             // the next SLOT to send for LIST; 8: its RESULT; -1: none
 bool gResultDue = false;                        // a RESULT waiting for room in Tx()
@@ -286,14 +304,32 @@ void logNoiseGate(const dkdsp::GateSettings* g) {
                unsigned(g->ratio / 10), unsigned(g->ratio % 10));
 }
 
-// The current preset (1-based), with its load time when loadUs > 0, then its model, IR and gate; "preset none" when
-// dry.
+// The current preset's morph: `morph slot N fit F U % "NAME"` (the slot it morphs with, the block's fit and
+// unaligned fit in percent, that preset's name, last as in logModel); `morph missing slot N` when no slot holds the
+// model the block was fitted to (N: the block's target); `morph none` without a block, or dry.
+void logMorph() {
+    if (gCur < 0 || !gPresets[gCur].has_morph) {
+        dkusb::Log("morph none");
+        return;
+    }
+    const dkmorph::Block& m = gPresets[gCur].morph;
+    if (gMorphFrom < 0) {
+        dkusb::Log("morph missing slot %d", m.target + 1);
+        return;
+    }
+    dkusb::Log("morph slot %d fit %d %d %% \"%s\"", gMorphFrom + 1, pct(m.fit), pct(m.unaligned_fit),
+               gPresets[gMorphFrom].name);
+}
+
+// The current preset (1-based), with its load time when loadUs > 0, then its model, IR, gate and morph; "preset none"
+// when dry.
 void logPreset(uint32_t loadUs) {
     if (gCur < 0) {
         dkusb::Log("preset none");
         logModel(nullptr);
         logIr(nullptr);
         logNoiseGate(nullptr);
+        logMorph();
         return;
     }
     const ps::Preset& p = gPresets[gCur];
@@ -304,6 +340,7 @@ void logPreset(uint32_t loadUs) {
     logModel(&p.model);
     logIr(p.has_ir ? &p.ir : nullptr);
     logNoiseGate(&p.gate);
+    logMorph();
 }
 
 void logBootLine() {
@@ -419,6 +456,12 @@ DK_ITCM void takeNextPreset() {
     gInCal = gNextInCal;
     gIrOn = gNextIrOn;
     gModelOn = gNextModelOn;
+    gMorphOn = gNextMorphOn;
+    for (int i = 0; i < 2; ++i) {
+        gLevelDb[i] = gNextLevelDb[i];
+        gInCalDb[i] = gNextInCalDb[i];
+    }
+    gMorphApplied = -1.0f;  // the engine holds the preset's own model: the next block blends
 }
 
 // The audio callback (docs/FIRMWARE.md "Threads": its steps in order).
@@ -536,6 +579,22 @@ DK_ITCM void driveLeds() {
     gLed2.Update();
 }
 
+// Step 6, first: the morph (morph.h). The blend position follows the morph parameter (smoothed every block, so it stays
+// settled). With a morph target, a position that has moved makes the engine's weights the blend of the preset's model
+// and its aligned target, and the level match and the input calibration the blend of the two models' in dB: before
+// the block's gains are computed. The histories stay: the blend's networks share their coordinates.
+DK_ITCM void stepMorph(float value, bool parked) {
+    const float t = dkmorph::BlendPosition(gMorphKnob.Process(value));
+    if (parked || !gMorphOn) return;
+    const float moved = std::fabs(t - gMorphApplied);
+    if (moved > kMorphDeadband || (moved > 0.0f && (t == 0.0f || t == 1.0f))) {
+        gEngine.Blend(gMorphW.a, gMorphW.d, t);
+        gLevel = dkdsp::DbToGain(gLevelDb[0] + t * (gLevelDb[1] - gLevelDb[0]));
+        gInCal = dkdsp::DbToGain(gInCalDb[0] + t * (gInCalDb[1] - gInCalDb[0]));
+        gMorphApplied = t;
+    }
+}
+
 DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size) {
     gLoad.OnBlockStart();
     const uint32_t start = System::GetTick();
@@ -544,6 +603,7 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     stepParams(tog);
     stepSwap();
     stepLoop();
+    const bool parked = gSwap == Swap::kParked;  // the main loop owns the engine, the IR and the morph weights
     // Step 5: the gate's settings (publishGate), then its detector on the raw input peak: its gain joins the output
     // ramp (the send's in post-model).
     const float peak = dkdsp::Peak(in[0], size);
@@ -554,11 +614,11 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     // parameters (stepParams). The knobs' smoothers run every block in every mode, so they stay settled; the send and
     // return gains are computed only in the loop modes.
     const float* v = gStore.Values();
+    stepMorph(v[dkparam::kMorph], parked);
     const float sendPos = gSendKnob.Process(v[dkparam::kLoopSend]);
     const float returnPos = gReturnKnob.Process(v[dkparam::kLoopReturn]);
     const float inTarget = gInCal * dkdsp::InputGain(gInKnob.Process(hw.Knob(0)));
     const float vol = dkdsp::OutputGain(gOutKnob.Process(hw.Knob(1)));
-    const bool parked = gSwap == Swap::kParked;  // the main loop owns the engine and the IR
     const bool pre = gLoop == dkparam::kLoopPre, post = gLoop == dkparam::kLoopPost;
     // In pre-model the compressor's output, times the send level, is the send: independent of the preset, so the swap
     // fade leaves it alone. The return feeds the rest of the chain.
@@ -608,10 +668,13 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
 
 // Presets.
 
-// The engine and the IR from gPresets[slot], its gains, IR and model state into gNext*; slot < 0 (dry) only sets
-// gNext* to no model, no IR, unity gains. Only while the callback is parked or before StartAudio.
+// The engine and the IR from gPresets[slot], its gains, IR and model state into gNext*, and its morph (the target
+// ps::ResolveMorph finds now, gMorphFrom) into gMorphW and gNext*; slot < 0 (dry) only sets gNext* to no model, no
+// IR, no morph, unity gains. Only while the callback is parked or before StartAudio.
 void loadPreset(int slot) {
     publishGate(slot < 0 ? dkdsp::kGateOff : gPresets[slot].gate);
+    gMorphFrom = -1;
+    gNextMorphOn = false;
     if (slot < 0) {
         gNextModelOn = gNextIrOn = false;
         gNextLevel = gNextInCal = 1.0f;
@@ -624,6 +687,15 @@ void loadPreset(int slot) {
     gNextIrOn = p.has_ir;
     gNextLevel = levelOf(p.model);
     gNextInCal = calOf(p.model);
+    gMorphFrom = ps::ResolveMorph(gPresets, gFilled, slot);
+    if (gMorphFrom < 0) return;
+    const dkmodel::Model& b = gPresets[gMorphFrom].model;
+    dkmorph::Prepare(p.morph.t, p.model, b, gMorphScratch, &gMorphW);
+    gNextLevelDb[0] = 20.0f * log10f(gNextLevel);
+    gNextLevelDb[1] = 20.0f * log10f(levelOf(b));
+    gNextInCalDb[0] = 20.0f * log10f(gNextInCal);
+    gNextInCalDb[1] = 20.0f * log10f(calOf(b));
+    gNextMorphOn = true;
 }
 
 // Sets the wanted slot and restarts LED2's repeating blinks for it; dry turns them off.
@@ -697,7 +769,9 @@ bool saveSettings(uint32_t& ms) {
 // FS2 steps gTarget through the filled slots (presses while dry are dropped) and starts LED2's blinks; a target other
 // than the loaded slot, or gReload, runs a switch (the callback fades out and parks, this loads, the callback fades
 // in); presses during a switch coalesce into the next one, and a reload asked for during a switch is served by its
-// load. kPersistDelayMs after the last switch the slot goes to the state record (dry is not recorded).
+// load. A loaded preset whose morph target is no longer the slot it was loaded with (the target was uploaded over,
+// erased or swapped, or one appeared) reloads. kPersistDelayMs after the last switch the slot goes to the state
+// record (dry is not recorded).
 void servePresets(uint32_t now) {
     const uint32_t presses = gFs2Presses.load(std::memory_order_relaxed);
     if (presses != gFs2Seen && gTarget >= 0) {
@@ -707,6 +781,7 @@ void servePresets(uint32_t now) {
     }
     gFs2Seen = presses;
 
+    if (!gSwapping && gCur >= 0 && ps::ResolveMorph(gPresets, gFilled, gCur) != gMorphFrom) gReload = true;
     if (!gSwapping && (gTarget != gCur || gReload)) {
         gSwapReq.store(++gReq, std::memory_order_release);
         gSwapping = true;
@@ -739,7 +814,7 @@ void rescan(int k) {
 }
 
 // A filled slot's image size.
-size_t imageSize(int k) { return gPresets[k].has_ir ? ps::kSizeWithIr : ps::kSizeNoIr; }
+size_t imageSize(int k) { return ps::ImageSize(gPresets[k].has_ir, gPresets[k].has_morph); }
 
 // Copies filled slot k's image into dst; returns its size.
 size_t copySlot(int k, uint8_t* dst) {
@@ -1007,6 +1082,41 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
             finishWrite(cmd, ok, ms);
             return true;
         }
+        case dklink::kMorph: {
+            // One byte clears the block; kMorphPayload sets it.
+            const bool set = n == dklink::kMorphPayload;
+            uint8_t raw[dkmorph::kBlockBytes];
+            dkmorph::Block block{};
+            size_t len = 0;
+            bool valid = (n == 1 || set) && p[0] < ps::kSlots;
+            if (valid && set)
+                valid = dklink::Unpack7(p + 1, n - 1, raw, len) && len == sizeof raw &&
+                        dkmorph::ParseBlock(raw, &block) && block.target != p[0];
+            if (!valid) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            const int k = p[0];
+            if (!gFilled[k] ||
+                (set && (!gFilled[block.target] || gPresets[block.target].model.crc != block.model_crc))) {
+                result(cmd, Result::kSlotState, 0);
+                return true;
+            }
+            const size_t size = copySlot(k, gScratch[0]);
+            const size_t newSize = ps::SetMorph(gScratch[0], size, set ? raw : nullptr, gScratch[1]);
+            uint32_t ms;
+            const bool ok = rewriteSlot(k, gScratch[1], newSize, ms);
+            if (ok) {
+                // A new fit to the same target changes nothing servePresets would see: reload here.
+                if (k == gTarget) gReload = true;
+                if (set)
+                    dkusb::Log("morph slot %d -> %d %lu ms", k + 1, block.target + 1, (unsigned long)ms);
+                else
+                    dkusb::Log("morph slot %d off %lu ms", k + 1, (unsigned long)ms);
+            }
+            finishWrite(cmd, ok, ms);
+            return true;
+        }
         case dklink::kDump:
             if (n != 0) {
                 result(cmd, Result::kBadRequest, 0);
@@ -1171,6 +1281,7 @@ int main() {
     gModeFade.Init(false);
     gSendKnob.Init(dkdsp::kBlockRate, dkdsp::kKnobSmoothS, gStore.Value(dkparam::kLoopSend));
     gReturnKnob.Init(dkdsp::kBlockRate, dkdsp::kKnobSmoothS, gStore.Value(dkparam::kLoopReturn));
+    gMorphKnob.Init(dkdsp::kBlockRate, dkdsp::kKnobSmoothS, gStore.Value(dkparam::kMorph));
     gSendGain.Init(0.0f);
     gReturnGain.Init(dkdsp::InputGain(gStore.Value(dkparam::kLoopReturn)));
     gLoad.Init(hw.seed.AudioSampleRate(), hw.seed.AudioBlockSize());

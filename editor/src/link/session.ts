@@ -3,7 +3,17 @@
 // Pure TypeScript: the transport supplies the I/O.
 
 import { NAME_MAX } from "../device";
-import { OFF_FLAGS, PRESET_FLAG_HAS_IR, SLOT_COUNT } from "../preset/bank";
+import { MODEL_BIN_SIZE } from "../nam/convert";
+import {
+  imageSize,
+  OFF_FLAGS,
+  OFF_SIZE,
+  PRESET_FLAG_HAS_IR,
+  PRESET_FLAG_HAS_MORPH,
+  PRESET_HEADER_SIZE,
+  SLOT_BYTES,
+  SLOT_COUNT,
+} from "../preset/bank";
 import { type GateSettings, gateProblem } from "../preset/gate";
 import { infoRanges, type SlotInfo, slotInfo } from "../preset/info";
 import { CONTROLS } from "./params";
@@ -21,6 +31,7 @@ import {
   IMAGE_SIZES,
   identityRequest,
   listMsg,
+  morphMsg,
   type ParamInfo,
   type PedalMessage,
   parseMessage,
@@ -58,7 +69,7 @@ export class LinkError extends Error {
 export interface SessionOptions {
   /** LIST, WATCH, Identity, READ, BEGIN, CHUNK, DUMP, SET and ASSIGN. */
   replyTimeoutMs?: number;
-  /** COMMIT, ERASE, RENAME, SWAP, GATE and SAVE: they write flash. */
+  /** COMMIT, ERASE, RENAME, SWAP, GATE, MORPH and SAVE: they write flash. */
   flashTimeoutMs?: number;
   /** Resends of one READ, BEGIN or CHUNK. */
   retries?: number;
@@ -164,6 +175,15 @@ export class PedalSession {
     return (await this.request(gateMsg(slot, g), CMD.gate, this.flashTimeoutMs)).value;
   }
 
+  /**
+   * Rewrites the slot's morph block (64 bytes, preset/morph.ts; null removes it): the slot and the block's target
+   * must be ok. The flash time in ms.
+   */
+  async morph(slot: number, block: Uint8Array | null): Promise<number> {
+    checkSlot("MORPH", slot);
+    return (await this.request(morphMsg(slot, block), CMD.morph, this.flashTimeoutMs)).value;
+  }
+
   /** Sets the playing slot's running gate only (an audition): nothing is written, the next preset load undoes it. */
   async gateTry(slot: number, g: GateSettings): Promise<void> {
     checkGate("GATE TRY", slot, g);
@@ -201,13 +221,30 @@ export class PedalSession {
 
   /** The metadata of the preset in an ok slot, read with infoRanges. */
   async readInfo(slot: number): Promise<SlotInfo> {
-    const [head, ...rest] = infoRanges(false);
+    const [head] = infoRanges(false, false);
     const first = await this.read(slot, head![0], head![1]);
     const hasIr = (first[OFF_FLAGS]! & PRESET_FLAG_HAS_IR) !== 0;
-    const image = new Uint8Array(IMAGE_SIZES[hasIr ? 1 : 0]);
+    const hasMorph = (first[OFF_FLAGS]! & PRESET_FLAG_HAS_MORPH) !== 0;
+    const image = new Uint8Array(imageSize(hasIr, hasMorph));
     image.set(first, head![0]);
-    for (const [off, len] of hasIr ? infoRanges(true).slice(1) : rest) image.set(await this.read(slot, off, len), off);
+    for (const [off, len] of infoRanges(hasIr, hasMorph).slice(1)) image.set(await this.read(slot, off, len), off);
     return slotInfo(image);
+  }
+
+  /** The whole preset image of an ok slot: its size field's bytes. */
+  async readImage(slot: number): Promise<Uint8Array> {
+    const head = await this.read(slot, 0, OFF_SIZE + 4);
+    const size = new DataView(head.buffer).getUint32(OFF_SIZE, true);
+    if (size < head.length || size > SLOT_BYTES) throw new LinkError(`READ: slot ${slot}: image size ${size}`);
+    const image = new Uint8Array(size);
+    image.set(head);
+    image.set(await this.read(slot, head.length, size - head.length), head.length);
+    return image;
+  }
+
+  /** The model binary of the preset in an ok slot. */
+  readModel(slot: number): Promise<Uint8Array> {
+    return this.read(slot, PRESET_HEADER_SIZE, MODEL_BIN_SIZE);
   }
 
   /** STATUS and VALUES every 100 ms while on. */

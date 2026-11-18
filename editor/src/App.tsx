@@ -6,17 +6,29 @@ import { FrontPanel } from "./components/FrontPanel";
 import { GateEditor } from "./components/GateEditor";
 import { LogView } from "./components/LogView";
 import { LoopTab } from "./components/LoopTab";
+import { MorphBox } from "./components/MorphBox";
 import { SlotEditor } from "./components/SlotEditor";
 import { SlotTable } from "./components/SlotTable";
 import { NO_STATUS, type Status, StatusLine } from "./components/StatusLine";
 import { type NavTab, TabNav } from "./components/TabNav";
 import { Toolbar } from "./components/Toolbar";
-import { baseDraft, type Draft, type Drafts, draftProblem, isEdited, saveDraft, slotView } from "./draft";
+import {
+  baseDraft,
+  type Draft,
+  type Drafts,
+  draftProblem,
+  isEdited,
+  morphDependents,
+  saveDraft,
+  slotView,
+} from "./draft";
 import { errorText } from "./format";
 import { CONTROLS } from "./link/params";
 import { dfuMsg, SLOT_STATUS, type SlotMessage } from "./link/protocol";
 import type { PedalSession } from "./link/session";
+import { saveMorph } from "./morph/save";
 import { GATE_DEFAULT, type GateSettings, gateEqual } from "./preset/gate";
+import { resolveMorph } from "./preset/morph";
 import { useGateAudition } from "./useGateAudition";
 import { useParamEdits } from "./useParamEdits";
 import { usePedal } from "./usePedal";
@@ -98,10 +110,12 @@ export function App() {
   const onSwap = (a: number, b: number) =>
     void slotChange("SWAPPING…", async (session) => {
       await session.swap(a, b);
+      // The drafts follow their presets, and so do the morph targets they name.
+      const moved = (k: number) => (k === a ? b : k === b ? a : k);
       setDrafts((ds) => {
-        const out = without(ds, a, b);
-        if (ds[a]) out[b] = ds[a];
-        if (ds[b]) out[a] = ds[b];
+        const out: Partial<Record<number, Draft>> = {};
+        for (const [k, d] of Object.entries(ds))
+          if (d) out[moved(Number(k))] = typeof d.morph === "number" ? { ...d, morph: moved(d.morph) } : d;
         return out;
       });
       setSelected(b);
@@ -118,28 +132,50 @@ export function App() {
     });
   };
   const onSave = () => {
+    const emptied = edited
+      .filter(({ slot: x, draft }) => x.status === SLOT_STATUS.ok && draft.model.kind === "none")
+      .map(({ slot: x }) => x.slot);
     for (const { slot: x, draft } of edited) {
-      const problem = draftProblem(draft);
+      const target = draft.model.kind !== "none" && typeof draft.morph === "number" ? draft.morph : null;
+      const problem =
+        draftProblem(draft) ??
+        (target !== null && emptied.includes(target) ? `Slot ${target + 1}, its morph target, is being emptied` : null);
       if (problem !== null) {
         setSelected(x.slot);
         setStatus({ text: `Slot ${x.slot + 1}: ${problem}`, error: true });
         return;
       }
     }
-    const emptied = edited
-      .filter(({ slot: x, draft }) => x.status === SLOT_STATUS.ok && draft.model.kind === "none")
-      .map(({ slot: x }) => x.slot);
     if (emptied.length > 0 && !window.confirm(`Saving empties ${slotList(emptied)}. Continue?`)) return;
+    const infos = s.infos;
+    const dependents = morphDependents(s.slots ?? [], infos, drafts);
     void slotChange("SAVING…", async (session) => {
       const done: number[] = [];
+      // The morph targets to analyse and write once every draft is written: a target replaced in this save is then
+      // analysed as it now is.
+      const morphs = new Map<number, number | "none">();
       for (const { slot: x, draft } of edited) {
         const label = `SAVING SLOT ${x.slot + 1}…`;
         setBusy(label);
-        await saveDraft(session, x, draft, (f) => setBusy(`${label} ${Math.floor(100 * f)} %`));
+        const saved = await saveDraft(session, x, draft, resolveMorph(infos, x.slot), (f) =>
+          setBusy(`${label} ${Math.floor(100 * f)} %`),
+        );
+        if (saved.morph !== null) morphs.set(x.slot, saved.morph);
         done.push(x.slot);
         setDrafts((ds) => without(ds, x.slot));
       }
-      return `Saved ${slotList(done)}`;
+      for (const [k, target] of dependents) if (!morphs.has(k)) morphs.set(k, target);
+      let notes = "";
+      for (const [k, target] of morphs) {
+        if (target !== "none" && emptied.includes(target)) continue; // the pedal turns a morph with an erased slot off
+        setBusy(`ANALYSING SLOT ${k + 1}…`);
+        const r = await saveMorph(session, k, target);
+        notes +=
+          r.target === null
+            ? `; slot ${k + 1} morph off`
+            : `; slot ${k + 1} morphs with slot ${r.target + 1} (fit ${(100 * (r.fit ?? 0)).toFixed(1)} %)`;
+      }
+      return `Saved ${slotList(done)}${notes}`;
     });
   };
   const onDiscard = () => {
@@ -210,7 +246,8 @@ export function App() {
       <SlotEditor
         key={selected}
         slot={sel}
-        info={s.infos[selected] ?? null}
+        slots={s.slots}
+        infos={s.infos}
         draft={selDraft}
         onChange={(d) => setDrafts((ds) => ({ ...ds, [selected]: d }))}
         onRevert={() => {
@@ -226,6 +263,17 @@ export function App() {
         playing={selected === playing}
         status={s.status}
         onChange={onGate}
+      />
+      <MorphBox
+        params={s.params}
+        values={s.values}
+        shownCode={shownCode}
+        infos={s.infos}
+        selected={selected}
+        enabled={ready}
+        edited={s.settingsEdited}
+        onSet={setParam}
+        onSave={onSaveSettings}
       />
     </>
   );

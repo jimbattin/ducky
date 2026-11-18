@@ -37,6 +37,7 @@ export const CMD = {
   data: 0x16,
   param: 0x17,
   values: 0x18,
+  morph: 0x19,
 } as const;
 
 /** docs/MIDI.md's command names, by code. */
@@ -65,6 +66,7 @@ export const CMD_NAMES: Readonly<Record<number, string>> = {
   [CMD.data]: "DATA",
   [CMD.param]: "PARAM",
   [CMD.values]: "VALUES",
+  [CMD.morph]: "MORPH",
 };
 
 /** RESULT codes (link.h Result); the index is the code. */
@@ -92,7 +94,7 @@ export const RESULT = {
 } as const;
 
 /** SLOT's status byte (preset.h Status); the index is the value. */
-export const SLOT_STATUS_NAMES = ["ok", "empty", "magic", "version", "size", "crc", "model", "ir"] as const;
+export const SLOT_STATUS_NAMES = ["ok", "empty", "magic", "version", "size", "crc", "model", "ir", "morph"] as const;
 /** The SLOT statuses the editor and tools tell apart; any other is corrupt (SLOT_STATUS_NAMES says why). */
 export const SLOT_STATUS = { ok: 0, empty: 1 } as const;
 
@@ -188,6 +190,9 @@ export const setMsg = (id: number, code: number): Uint8Array => pedalMsg(CMD.set
 export const assignMsg = (control: number, id: number | null): Uint8Array =>
   pedalMsg(CMD.assign, [control, id ?? NO_PARAM]);
 export const saveMsg = (): Uint8Array => pedalMsg(CMD.save);
+/** block: the preset's 64-byte morph block (preset/morph.ts); null removes it. */
+export const morphMsg = (slot: number, block: Uint8Array | null): Uint8Array =>
+  pedalMsg(CMD.morph, block ? [slot, ...pack7(block)] : [slot]);
 
 /**
  * Reassembles SysEx messages from a MIDI byte stream (link.h SysExAssembler): realtime bytes are ignored, F0 restarts,

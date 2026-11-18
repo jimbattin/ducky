@@ -33,4 +33,10 @@ inline void PutLe32(uint8_t* p, uint32_t v) {
     for (int i = 0; i < 4; ++i) p[i] = uint8_t(v >> (8 * i));
 }
 
+inline void PutLeF32(uint8_t* p, float f) {
+    uint32_t u;
+    std::memcpy(&u, &f, sizeof u);
+    PutLe32(p, u);
+}
+
 }  // namespace dkbin

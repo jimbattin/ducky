@@ -4,6 +4,7 @@
 !/tests/fixtures/nam/A2.bin
 !/tests/fixtures/ir/decay.bin
 !/tests/fixtures/preset/A2_decay.bin
+!/tests/fixtures/morph/A2_shuffled.bin
 *.elf
 *.hex
 *.map

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { crc32 } from "../crc32";
-import { readFixture } from "../testFixtures";
+import { readFixture, withMorphBlock } from "../testFixtures";
 import { BANK_BYTES, buildBank, buildSlot, PresetError, SLOT_BYTES, SLOT_COUNT, splitSlot } from "./bank";
 import { encodeGate, GATE_DEFAULT, type GateSettings } from "./gate";
 
@@ -19,6 +19,13 @@ test("splitSlot returns the parts a stored preset was built from", async () => {
     gate: GATE_DEFAULT,
   });
   expect(splitSlot(buildSlot(model, null, "A2"))).toEqual({ name: "A2", model, ir: null, gate: GATE_DEFAULT });
+});
+
+test("splitSlot drops a morph block", async () => {
+  const plain = await readFixture("preset/A2_decay.bin");
+  const morphed = withMorphBlock(plain, await readFixture("morph/A2_shuffled.morph"));
+  expect(morphed.length).toBe(plain.length + 64);
+  expect(splitSlot(morphed)).toEqual(splitSlot(plain));
 });
 
 test("a gate is stored as its 8-byte block and read back", () => {

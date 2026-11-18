@@ -49,7 +49,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | Path | Contents | Host-portable |
 |---|---|---|
 | `daisy/src/ducky.cpp` | The pedal: the boot slot scan, `AudioCallback`, the parameter step (`stepParams`), the preset switch (`servePresets`), the state record (`writeState`), the settings record (`saveSettings`), the link's slot and parameter commands (`onCommand`, `writeSlot`) and replies (`serveReplies`), the main loop, the log lines. | no |
-| `daisy/src/bench.cpp` | `APP=bench`: the A2-Lite and IR device checks and the cycle timing of the engine, the IR, the EQ, the noise gate, the compressor and the whole chain ("Bench"). | no |
+| `daisy/src/bench.cpp` | `APP=bench`: the A2-Lite and IR device checks and the cycle timing of the engine, the IR, the EQ, the noise gate, the compressor, the morph's blend and the whole chain ("Bench"). | no |
 | `daisy/src/latency.cpp` | `APP=latency`: the FX loop's round trip and the crosstalk between the channels, from clicks on each output captured on both inputs (`docs/LOOP.md` "Measuring the loop"). | no |
 | `daisy/src/board.h` | `dkboard::Board`: the HotHouse pins, knobs, toggles, footswitches. `kBoardId` 1, `kKnobs` 6, `kToggles` 3. | no |
 | `daisy/src/firmware.h` | `dkfw::Start` (flush-to-zero, board init, MPU) and `kBuildId`. | no |
@@ -64,14 +64,15 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `daisy/src/dsp/mute.h` | `dkdsp::MuteRamp`: FS1's 5 ms linear mute, the preset switch's fade and the loop mode's; `ProcessPair` fades two buffers with one ramp (the output and the send). | yes |
 | `daisy/src/dsp/noise_gate.h` | `dkdsp::NoiseGate`, `GateSettings`, `kGateOff`, `GateValid`, `ClampGate`: the per-preset side-chained gate (`docs/FILTERS.md` "Noise gate"). | yes |
 | `daisy/src/dsp/gain.h` | `dkdsp::InputGain` (Knob 1), `OutputGain` (Knob 2), `LevelMatchGain`, `Smoother` (one-pole), `GainRamp` (per-block linear gain ramp). | yes |
-| `daisy/src/dsp/a2lite.h` | `dkdsp::A2Lite`: the A2-Lite network (`docs/NAM_FORMAT.md` "Engine"); `dkdsp::a2` holds the shape and memory layout. | yes |
+| `daisy/src/dsp/a2lite.h` | `dkdsp::A2Lite`: the A2-Lite network (`docs/NAM_FORMAT.md` "Engine"), with `ToEngine` (a weight stream in the engine's layout) and `Blend` (the weights between two sets, for the morph); `dkdsp::a2` holds the shape and memory layout. | yes |
 | `daisy/src/dsp/convolver.h` | `dkdsp::IrConvolver`: the partitioned FFT IR convolver (`docs/FILTERS.md`). | yes |
 | `daisy/src/dsp/filters.h` | The EQ's sections: `dkdsp::CutFilter` (with `EdgeBypass`, the cut maps), `DesignBell` and `Bell` (`docs/FILTERS.md`, `docs/EQ.md`). | yes |
 | `daisy/src/dsp/eq.h` | `dkdsp::Eq`: the EQ stage, low-cut, bells 1–3, high-cut, driven by the parameters' values (`docs/EQ.md`). | yes |
 | `daisy/src/dsp/compressor.h` | `dkdsp::Compressor`: the optical compressor before the input trim, the reduced OTC-201 model (`docs/compressor-spec.md` "DSP model"), driven by the parameters' values; `gain()` for the meter. | yes |
-| `daisy/src/model.h` | `dkmodel::Parse`: validates and decodes a format-2 model binary. | yes |
+| `daisy/src/model.h` | `dkmodel::Parse`: validates and decodes a format-2 model binary (its CRC field is kept: a morph block names its target's model by it). | yes |
+| `daisy/src/morph.h` | `dkmorph`: the preset morph (`docs/MORPH.md`): the morph block (`ParseBlock`, `PutBlock`), the alignment transform applied to a weight stream (`Apply`), the two weight sets a blend runs on (`Prepare`, `Weights`) and the parameter's blend position (`BlendPosition`). | yes |
 | `daisy/src/ir.h` | `dkir::Parse`: validates and decodes a format-1 IR binary. | yes |
-| `daisy/src/preset.h` | `dkpreset`: the slot format (`Parse`, `PutGate`/`GetGate`/`SetGate` for its gate block), the state record (`StateValid`, `NewestState`, `BuildState`), slot stepping (`NextFilled`, `BootSlot`), the QSPI layout ("Preset store"). | yes |
+| `daisy/src/preset.h` | `dkpreset`: the slot format (`Parse`, `ImageSize`, `PutGate`/`GetGate`/`SetGate` for its gate block, `SetMorph` for its morph block, `ResolveMorph` for the slot a preset morphs with), the state record (`StateValid`, `NewestState`, `BuildState`), slot stepping (`NextFilled`, `BootSlot`), the QSPI layout ("Preset store"). | yes |
 | `daisy/src/binary.h` | `dkbin`: `Crc32` and the little-endian readers and writer the binaries and the link share. | yes |
 | `daisy/cmsis_fft.mk` | The CMSIS-DSP FFT sources and table defines every build compiles. | |
 | `daisy/src/memory.h/.cpp` | `DK_ITCM`, `DK_DTCM`, `DK_DTCM_BSS`, `DK_D2`, `DK_SDRAM` placement and the boot-time TCM copy. | yes (`.h`) |
@@ -82,19 +83,21 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `tools/gen_midi_doc.cpp` | `build/host/gen_midi_doc`: prints `docs/MIDI.md` from `link.h` and `params.h` (`make midi-doc`; `make test` diffs it). | |
 | `editor/src/link/`, `tools/pedal.ts`, `tools/rawmidi.ts`, `tools/slot_source.ts` | The link's TypeScript side (`protocol.ts`: builders, codecs, parsing; `session.ts`: `PedalSession`, the upload with its retries; `params.ts`: a parameter's code as its value and readout, the controls), the CLI, its ALSA rawmidi transport, and the model + IR → slot image loading it shares with `preset_bank.ts`. | |
 | `editor/` (UI) | The browser editor; its layout: `docs/EDITOR.md` "Source layout". | |
-| `editor/src/preset/info.ts` | `infoRanges`, `slotInfo`: a stored preset's metadata from the bytes READ fetches. | |
+| `editor/src/preset/info.ts` | `infoRanges`, `slotInfo`: a stored preset's metadata (its model's CRC and its morph block included) from the bytes READ fetches. | |
 | `editor/src/nam/`, `tools/nam_convert.ts`, `tools/nam_reference.sh`, `tools/make_stimuli.py` | The `.nam` → model binary converter and its CLI, the NAM reference renders, and their stimulus (`docs/NAM_FORMAT.md`). | |
 | `tools/comp_reference.py` | The compressor's Python reference (`docs/compressor-spec.md` appendix B verbatim) and the generator of `tests/fixtures/comp/` (`uv run tools/comp_reference.py`). | |
 | `editor/src/ir/`, `tools/ir_convert.ts`, `tools/make_ir_fixture.ts` | The `.wav` → IR binary converter and its CLI, and the generator of `tests/fixtures/ir/decay.wav` (`docs/FILTERS.md`). | |
-| `editor/src/preset/`, `tools/preset_bank.ts`, `tools/make_preset_fixture.ts` | The slot and bank builders (`buildSlot`, `buildBank`), the gate block and its units (`gate.ts`), the bank CLI, and the generator of `tests/fixtures/preset/A2_decay.bin`. | |
+| `editor/src/preset/`, `tools/preset_bank.ts`, `tools/make_preset_fixture.ts` | The slot and bank builders (`buildSlot`, `buildBank`), the gate block and its units (`gate.ts`), the morph block and the slot it resolves to (`morph.ts`), the bank CLI, and the generator of `tests/fixtures/preset/A2_decay.bin`. | |
+| `editor/src/morph/`, `tools/make_morph_fixture.ts` | The morph's analysis (`docs/MORPH.md`): the network in float64 (`a2.ts`), the stimulus, the alignment fit and its transform (`align.ts`), reading two stored models and writing the block (`save.ts`); the generator of `tests/fixtures/morph/`. | |
 | `editor/src/device.ts`, `editor/src/crc32.ts` | `SAMPLE_RATE`, `NAME_MAX`, `sanitiseName`, `writeAscii`; CRC-32: shared by the converters, the preset code and the link. | |
 | `tools/render.cpp`, `tools/wav.h` | `build/host/render` (`make render`): the engine, then the IR with `--ir`, over a WAV file; `dkwav` WAV reading and float32 writing (host only). | |
 | `tests/fixtures/nam/` | Upstream MIT `.nam` and WAV fixtures, `A2.bin` converted from `A2.nam`, and the committed `A2.nam` reference render. | |
 | `tests/fixtures/ir/` | `decay.wav` (generated: 44.1 kHz decaying noise, 4,410 frames) and `decay.bin` converted from it. | |
 | `tests/fixtures/preset/` | `A2_decay.bin`: `A2.bin` with `decay.bin`, named `A2 + decay`, built by `editor/src/preset/bank.ts`; both the host tests and the editor tests check it. | |
+| `tests/fixtures/morph/` | `A2_shuffled.bin`: `A2.bin`'s network in other channel coordinates (the same output), and `A2_shuffled.morph`: the morph block the analysis finds to bring it back. `tests/morph_test.cpp`, `tests/preset_test.cpp` and the editor's tests check them, which pins the transform and the block across the two languages. | |
 | `tests/fixtures/comp/` | The compressor's reference fixtures from `tools/comp_reference.py`: inputs `step_30_300.in.wav`, `step_10_1000.in.wav`, `di.in.wav` (synthetic plucked notes, 1.5 s); outputs `step_30_300.s100.ref.wav`, `step_30_300.s50.ref.wav`, `step_10_1000.s100.ref.wav`, `di.ref.wav`; the static curve `static.csv`. `tests/compressor_test.cpp` checks the kernel against them and against the spec's SPICE tables. | |
 
-- **Naming:** namespaces are `dkboard`, `dkfw`, `dkusb`, `dklink`, `dkctl`, `dkparam`, `dkdsp`, `dkbin`, `dkmodel`, `dkir`, `dkpreset` and (host only) `dkwav`. Macros use the `DK_` prefix, and the board define is `DUCKY_BOARD_HOTHOUSE`.
+- **Naming:** namespaces are `dkboard`, `dkfw`, `dkusb`, `dklink`, `dkctl`, `dkparam`, `dkdsp`, `dkbin`, `dkmodel`, `dkir`, `dkmorph`, `dkpreset` and (host only) `dkwav`. Macros use the `DK_` prefix, and the board define is `DUCKY_BOARD_HOTHOUSE`.
 - **DSP code** goes under `daisy/src/dsp/`, host-portable and covered by `tests/`. The top-level `Makefile` rebuilds the tests and `render` whenever any `daisy/src/*.h`, `daisy/src/dsp/*.h`, `tests/*.h` or `tools/*.h` changes. Tests find fixtures through `DK_REPO_ROOT`, so `build/host/tests` runs from any directory.
 - **Before writing or optimising a DSP kernel,** read `docs/M7_PERFORMANCE.md`: what float code costs on this core, measured, and the rules that follow. Host tests cannot see performance; the bench can.
 
@@ -106,7 +109,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
   3. applies the link's queued SETs and ASSIGNs, lets the control slots (Knobs 3–6, SW1–SW3) write their parameters (`dkparam::Store::Update`: pickup and holds, `docs/MIDI.md` "Controls"), and publishes the values, the assignments and the held controls;
   4. steps the preset switch's handshake ("Preset switch" below), then the loop mode (`stepLoop`): when `loop_mode` differs from the routing in use (`gLoop`), both outputs fade out over 5 ms (`gModeFade`), the routing follows at silence, and they fade back in;
   5. measures the input peak (the raw jack, before the compressor), takes new gate settings (`gGateWord`, published by the main loop) and runs the gate's detector on that peak (`NoiseGate::Process`, every block, dry and parked included);
-  6. runs the chain, routed by `gLoop` (`docs/LOOP.md`). The send and return levels (`loop_send`, `loop_return`) are smoothed every block in every mode and ramped like the knobs. In MISO, on the left input, into the left output buffer, then in place:
+  6. steps the morph (`stepMorph`, `docs/MORPH.md`): the `morph` parameter is smoothed every block, and for a preset with a morph target a position that has moved blends the engine's weights (`A2Lite::Blend`) and sets the level match and the input calibration between the two models'; then runs the chain, routed by `gLoop` (`docs/LOOP.md`). The send and return levels (`loop_send`, `loop_return`) are smoothed every block in every mode and ramped like the knobs. In MISO, on the left input, into the left output buffer, then in place:
      - `Compressor::Process` on the compressor's four parameters (step 3), from the input buffer into the output buffer (`docs/compressor-spec.md` "DSP model"). `comp_mode` off is a bit-exact bypass after a 20 ms crossfade (the fade out keeps the blend or direct mix it had) and runs nothing; turning it on restarts the side chain from rest;
      - the input trim: the model's input calibration times Knob 1, smoothed (one-pole, 20 ms) and ramped linearly across the block, −12…+12 dB around the calibration, which is at noon;
      - while a switch is parked, silence instead of the engine and the IR; otherwise, with a preset loaded:
@@ -126,25 +129,25 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 - **Main loop** runs `serveReplies` (LIST's SLOTs, DUMP's PARAMs and VALUES, the pending RESULT, STATUS and VALUES every 100 ms with WATCH on), `dkusb::Serve(logBoot, onCommand)`, `servePresets`, the `loop` line when `loop_mode` changes, and the once-a-second log lines. If the IR convolver's FFT does not initialise, audio never starts and the LEDs stay off; the main loop serves USB (DFU included) and logs `ir fft` once a second.
 - **Sharing:** the two threads share only `std::atomic`s, each with one writer, and one single-producer single-consumer ring:
   - callback → main loop, relaxed: `gKnob`, `gToggle`, `gFsHeld`, `gMutedPub`, `gUnderruns`, `gPeak`, `gOutPeak`, `gRinPeak`, `gRoutPeak`, `gLoadAvg`, `gLoadMax`, `gFs2Presses`, `gGateLevel`, `gGateGain`, `gCompGain`, `gParamPub`, `gAssignPub`, `gHeldPub`; release/acquire: `gSwapParked`, `gEditsDone`;
-  - main loop → callback, relaxed: `gPeakReset`, `gLoadReset`, `gBlinkCount`, `gGateWord` (the 8-byte gate block as two words: a torn pair mixes two valid settings for one block), `gMeterReset` (restarts the gate's and the compressor's meters); release/acquire: `gSwapReq`, `gSwapLoaded` (which publishes the plain `gNextLevel`, `gNextInCal`, `gNextIrOn`, `gNextModelOn`) and `gBlinkReq`; the ring `gEdits` (16 SETs and ASSIGNs).
+  - main loop → callback, relaxed: `gPeakReset`, `gLoadReset`, `gBlinkCount`, `gGateWord` (the 8-byte gate block as two words: a torn pair mixes two valid settings for one block), `gMeterReset` (restarts the gate's and the compressor's meters); release/acquire: `gSwapReq`, `gSwapLoaded` (which publishes the plain `gNextLevel`, `gNextInCal`, `gNextIrOn`, `gNextModelOn`, and the morph's `gNextMorphOn`, `gNextLevelDb`, `gNextInCalDb` and weights `gMorphW`, which the callback reads only while not parked) and `gBlinkReq`; the ring `gEdits` (16 SETs and ASSIGNs).
 - **Parameters:** the callback owns `gStore` (`dkparam::Store`, DTCM). SET and ASSIGN push an edit to `gEdits` and answer at once; the next block applies it (within 0.5 ms). DUMP and SAVE first wait until the callback has applied every edit pushed so far and published the result (`awaitEdits`: `gEditsDone` against the count pushed), so they see what the RESULTs before them promised. The step costs 327 cycles a block (1.4 permille), measured with the cycle counter: the knob slots write every block without comparing values, and a write tests one mask for other controls on its parameter (`docs/M7_PERFORMANCE.md`: a float compare and branch costs 6 cycles or more).
 - **Gate settings:** `loadPreset` publishes the loaded preset's gate (`kGateOff` when dry) while the callback is parked, so a switch changes the gate in silence; GATE on the playing slot and GATE TRY publish while it plays, and the gate glides to the new settings.
 - **Preset switch:** the engine and the convolver have two owners in turn, and the handshake hands them over.
   1. The main loop steps its target slot once per FS2 press (`NextFilled`), restarts LED2's blinks for it, and, when it differs from the loaded slot or a slot change asked for a reload (`gReload`: an upload into the playing slot), raises `gSwapReq`. The target may be dry (-1).
   2. The callback fades out over 5 ms. Once the fade lands on 0 it parks: it writes silence, touches neither the engine nor the convolver nor the gains, and stores the request in `gSwapParked`.
-  3. The main loop loads the target (`A2Lite::Load` and `IrConvolver::Load` both reset their state), computes its gains, publishes its gate, and stores the request in `gSwapLoaded`.
-  4. The callback takes the gains, the IR flag and the model flag (dry or not) and fades in over 5 ms.
+  3. The main loop loads the target (`A2Lite::Load` and `IrConvolver::Load` both reset their state), computes its gains, prepares its morph weights when it has a morph target (`dkmorph::Prepare`), publishes its gate, and stores the request in `gSwapLoaded`.
+  4. The callback takes the gains, the IR flag, the model flag (dry or not) and the morph's and fades in over 5 ms; its first block blends to the `morph` parameter's position.
   Presses during a switch move the target, and the next switch follows at once, so fast presses coalesce. 2 s after the last switch, the main loop writes the slot to the state record if it changed.
 
 ## Memory
 
 | Region | Size | Holds now | Reserved for |
 |---|---|---|---|
-| ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages, the convolver, the noise gate, the EQ's and the compressor's sample loops, the gains, the loop's send and return ramps, the fades and the parameter store inlined), `A2Lite::RunLayer`, `Eq::Control`, `Compressor::Control`, `Compressor::SideChain` (19,392 bytes in all) | |
-| DTCM `0x20000000` | 128 KB | The engine (92,116 bytes in `.dtcm_bss`: history 83,976, weights 7,480); callback state, the parameter store, the EQ and the compressor included; the 16 KB stack reserve at the top: 110,824 bytes in all | |
-| AXI SRAM `0x24000000` | 480 KB | Code (CMSIS-DSP's FFT included), `.data`, `.bss` with the IR convolver (68 KB): 238 KB in total | |
+| ITCM `0x00000000` | 64 KB | `AudioCallback` (with the engine's other stages and its blend, the convolver, the noise gate, the EQ's and the compressor's sample loops, the gains, the loop's send and return ramps, the fades and the parameter store inlined), `A2Lite::RunLayer`, `Eq::Control`, `Compressor::Control`, `Compressor::SideChain` (20,192 bytes in all) | |
+| DTCM `0x20000000` | 128 KB | The engine (92,116 bytes in `.dtcm_bss`: history 83,976, weights 7,480); callback state, the parameter store, the EQ and the compressor included; the 16 KB stack reserve at the top: 110,856 bytes in all | |
+| AXI SRAM `0x24000000` | 480 KB | Code (CMSIS-DSP's FFT included), `.data`, `.bss` with the IR convolver (68 KB) and the morph's two weight sets (`gMorphW`, 15 KB): 265 KB, and 288 KB with the TCMs' load images | |
 | D2 SRAM `0x30008000` | 256 KB | — (the convolver measured slower here than in AXI SRAM, `docs/FILTERS.md`) | |
-| SDRAM `0xC0000000` | 64 MB | The 8 parsed presets (`gPresets`, 127,296 bytes; the gear texts stay in flash), the link's upload buffer (16,288), RENAME/SWAP/GATE scratch (2 × 16,288) and COMMIT's parse target (`gCheck`, 15,912): 192,072 bytes in `.sdram_bss` | |
+| SDRAM `0xC0000000` | 64 MB | The 8 parsed presets (`gPresets`, 127,904 bytes; the gear texts stay in flash), the link's upload buffer (16,288), RENAME/SWAP/GATE/MORPH scratch (2 × 16,352), COMMIT's parse target (`gCheck`, 15,988) and the morph's scratch (`gMorphScratch`, 14,960): 207,844 bytes in `.sdram_bss` | |
 | QSPI `0x90000000` | 8 MB | Image at `0x90040000`; preset slots at `0x90400000`; state records at `0x90480000` ("Preset store"); settings records at `0x90482000` ("Settings record") | |
 
 - **TCM copy:** `.itcm_text` and `.dtcm_data` are copied from their SRAM load image in `.preinit_array` (`memory.cpp`), before any constructor runs; `.dtcm_bss` is zeroed there.
@@ -157,7 +160,7 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 
 ## Preset store
 
-`daisy/src/preset.h` is the reference and the contract with `editor/src/preset/bank.ts`. Tests: `tests/preset_test.cpp`, `editor/src/preset/bank.test.ts`; both check the committed `tests/fixtures/preset/A2_decay.bin`.
+`daisy/src/preset.h` is the reference and the contract with `editor/src/preset/bank.ts` (and `morph.ts` for the morph block). Tests: `tests/preset_test.cpp`, `editor/src/preset/bank.test.ts`; both check the committed `tests/fixtures/preset/A2_decay.bin`.
 
 | QSPI | Size | Holds |
 |---|---|---|
@@ -173,15 +176,18 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 |---|---|
 | 0 | magic `DKPS` |
 | 4 | u16 version (3) |
-| 6 | u16 flags: bit 0 has IR; other bits 0 |
-| 8 | u32 size: 7,996, or 16,288 with an IR |
+| 6 | u16 flags: bit 0 has IR, bit 1 has a morph block; other bits 0 |
+| 8 | u32 size: 7,996, or 16,288 with an IR; 64 more with a morph block |
 | 12 | name[64], NUL-terminated printable ASCII |
 | 76 | gate block (8 bytes): u8 flags (bit 0 enabled), u8 threshold (dB below full scale), u8 attack (0.1 ms), u8 hold (ms), u16 release (ms), u8 ratio (tenths), u8 0; `docs/FILTERS.md` "Noise gate" |
 | 84 | model binary (7,908 bytes, `docs/NAM_FORMAT.md`) |
 | 7992 | IR binary (8,292 bytes, `docs/FILTERS.md`), only with the IR flag |
+| size − 68 | morph block (64 bytes, `docs/MORPH.md` "Formats"), only with the morph flag |
 | size − 4 | CRC-32 of bytes [0, size − 4) |
 
-`dkpreset::Parse` checks, in order: `empty` (the first 4 bytes are 0xFF), `magic`, `version` (the version or an unknown flag), `size`, `crc`, then the embedded binaries with their own parsers (`model`, `ir`). A slot that does not parse is skipped. The gate block is not checked: each field is clamped into its range (`GetGate`), since the CRC already guards the bytes. New presets (the bank tool, an upload) carry the gate off at its defaults.
+`dkpreset::Parse` checks, in order: `empty` (the first 4 bytes are 0xFF), `magic`, `version` (the version or an unknown flag), `size`, `crc`, then the embedded binaries with their own parsers (`model`, `ir`) and the morph block (`morph`: a target slot, a permutation, scales in range, an invertible matrix). A slot that does not parse is skipped. The gate block is not checked: each field is clamped into its range (`GetGate`), since the CRC already guards the bytes. New presets (the bank tool, an upload) carry the gate off at its defaults and no morph block: only the link's MORPH adds one, to a stored preset (`SetMorph`).
+
+**Morph target:** a preset with a morph block morphs with the slot `ResolveMorph` finds: the block's target while that slot is ok, is not the preset's own and holds the model whose CRC the block stores; else the first other ok slot holding that model; else none (`docs/MORPH.md`).
 
 **State record:** 16 bytes at the start of each state sector: `DKST`, u32 seq, u32 slot (0–7), and the CRC-32 of the first 12 bytes. The valid record with the higher seq is the newest. A write erases and writes the other sector, then reads it back through the memory-mapped QSPI (`state slot N seq S T ms`, or `state write failed`), so a torn write leaves the previous record readable. At boot the pedal plays the saved slot if it parsed, else the first slot that did, else dry.
 
@@ -192,11 +198,11 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 - Errors write nothing: usage errors exit 2, and rejected files exit 1.
 - The bank replaces all 8 slots. dfu-util erases the whole range before writing it, so power pulled mid-download leaves every slot empty (or the first few written): the pedal boots, plays dry or what is left, and the bank can be flashed again. The firmware at `0x90040000` and the state sectors are outside the range.
 
-**Switching cost:** the load is `A2Lite::Load` (138 µs), plus `IrConvolver::Load` (about 860 µs) for a preset with an IR. The audible gap is the 5 ms fade out, the load, and the 5 ms fade in.
+**Switching cost:** the load is `A2Lite::Load` (138 µs), plus `IrConvolver::Load` (about 860 µs) for a preset with an IR, plus `dkmorph::Prepare` (about 830 µs) for one with a morph target. The audible gap is the 5 ms fade out, the load, and the 5 ms fade in.
 
-**Slot writes (M7):** UPLOAD COMMIT, ERASE, RENAME, SWAP and GATE (`docs/MIDI.md`) go through `writeSlot` in the main loop: erase the slot's 64 KB block, write the image, invalidate the D-cache over the slot, and compare it through the memory-mapped QSPI (an erase checks for 0xFF throughout), then re-parse the slot (`rescan`). COMMIT parses the staged image before it touches flash, so an invalid upload never erases a slot. RENAME, GATE and SWAP copy the slot images into SDRAM scratch first; SWAP writes a, then b. The audio callback reads no QSPI, so audio runs through every write; the main loop blocks for it (137–216 ms per slot, "Measured (M7)").
+**Slot writes (M7):** UPLOAD COMMIT, ERASE, RENAME, SWAP, GATE and MORPH (`docs/MIDI.md`) go through `writeSlot` in the main loop: erase the slot's 64 KB block, write the image, invalidate the D-cache over the slot, and compare it through the memory-mapped QSPI (an erase checks for 0xFF throughout), then re-parse the slot (`rescan`). COMMIT parses the staged image before it touches flash, so an invalid upload never erases a slot. RENAME, GATE, MORPH and SWAP copy the slot images into SDRAM scratch first (a rename and a gate change keep the morph block); SWAP writes a, then b. The audio callback reads no QSPI, so audio runs through every write; the main loop blocks for it (137–216 ms per slot, "Measured (M7)").
 - **libDaisy quirk:** `QSPIHandle::Erase` over a whole 64 KB block uses the block-erase command and leaves the QSPI in indirect mode, where the next read of the mapped region stopped the pedal (the first ERASE on hardware never answered). `Write` and `EraseSector` return to memory-mapped mode, so an erase without data ends with an `EraseSector` of the slot's first 4 KB.
-- **Playback after a slot change:** an upload into the target slot sets `gReload`, so it is reloaded through the usual switch (one fade); an upload while dry plays the new slot; a target slot that stops parsing (erase, failed write) moves to the next filled slot, with LED2's blinks, or to dry, which turns LED2 off. SWAP remaps the playing and target slot numbers without a switch, and the state record follows 2 s later. GATE on the playing slot hands the new gate to the callback without a reload. `docs/MIDI.md` "Slot changes and playback" is the host-facing summary.
+- **Playback after a slot change:** an upload into the target slot sets `gReload`, so it is reloaded through the usual switch (one fade); an upload while dry plays the new slot; a target slot that stops parsing (erase, failed write) moves to the next filled slot, with LED2's blinks, or to dry, which turns LED2 off. SWAP remaps the playing and target slot numbers without a switch, and the state record follows 2 s later. GATE on the playing slot hands the new gate to the callback without a reload. MORPH on the playing slot reloads it, and so does any slot change after which the playing preset's morph block resolves to another slot than the one it was loaded with (`servePresets`: an upload over, an erase or a swap of its target). `docs/MIDI.md` "Slot changes and playback" is the host-facing summary.
 
 ## Settings record
 
@@ -219,10 +225,13 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 - **At boot** the newest record sets the assignments and the values (`settings seq S`); with none, the controls take the factory layout (`kFactoryAssign`, `docs/MIDI.md` "Controls") and every parameter is at its default (`settings factory`). The first audio block then writes every parameter on a control from that control, so a saved value matters only for a parameter on no control.
 - **Decoding is defensive:** a stored value is clamped into its range, a choice rounded to an index, and a non-finite value replaced by the default; an assignment its slot does not accept (an unknown id, a continuous parameter on a switch) becomes none.
 - **Across firmware versions:** parameter ids are append-only within a version. A record with fewer parameters than the firmware leaves the later ones at their defaults; one with more has the extra values ignored. SAVE always writes the running firmware's count. A table whose ids change bumps the version, and a record of another version is ignored, so the first boot after such a change reads `settings factory`. Version 3 merged M11's `comp_enable` (id 16) and `comp_mode` (id 19) into `comp_mode` (id 16: off, blend, direct, one toggle's three positions), moving `comp_balance` and the loop's three down one (23 parameters). Version 2 was M10's EQ table (16 parameters), M11's compressor (ids 16–20 appended) and M12's loop (ids 21–23 appended, 24 parameters). Version 1 was M9's cuts and 515 Hz mid.
+- **Morph:** `morph` (id 23) is appended, 24 parameters; the version stays 3, so a 23-value record leaves it at its default, 0 %.
 
 ## Link protocol
 
 `daisy/src/link.h` is the reference: the command and result tables (`kCommands`, `kResults`) generate `docs/MIDI.md` (`make midi-doc`; `make test` fails when it is stale), which documents the framing, every command, the parameter table, the controls, the upload and the playback rules. Frames are `F0 7D 64 01 <cmd> … F7` (device byte `0x64`, version `0x01`). M0's HELLO, DFU, LOG and Identity are unchanged; M7 adds LIST, ERASE, RENAME, SWAP, WATCH, UPLOAD BEGIN/CHUNK/COMMIT, and the SLOT, RESULT and STATUS replies; M8 adds READ and its DATA reply (up to 160 bytes of an ok slot's image, copied from the mapped QSPI and sent by `serveReplies` before READ's RESULT); the noise gate adds GATE (rewrite a slot's gate block), GATE TRY (set the running gate only, for the editor's sliders) and STATUS's gate level and cut (30 bytes); M9 adds DUMP (the parameter table as PARAMs, then a VALUES), SET, ASSIGN, SAVE, and a VALUES after every STATUS under WATCH; M11 adds the compressor's parameters (ids 16–20) and STATUS's comp cut (32 bytes: the largest reduction of the compressor's low-frequency gain below Sustain's since the previous STATUS, tenths of a dB, 0 when off). Every request except HELLO and DFU gets exactly one RESULT, last.
+
+The preset morph adds MORPH (`0x19`: rewrite or remove a slot's morph block, `docs/MORPH.md`), the `morph` parameter (id 23) and the slot status `morph`.
 
 **CLI:** `bun tools/pedal.ts [--port BUS-PORT] COMMAND`, slots 1–8:
 
@@ -231,7 +240,8 @@ list                                     # one line per slot: N STATUS "NAME" mo
 upload N MODEL [--ir IR] [--name NAME]   # MODEL/IR as preset_bank.ts reads them; prints flash ms, retries, seconds
 erase N | rename N NAME | swap A B       # each prints the flash time
 gate N on|off [THRESHOLD_DB ATTACK_MS HOLD_MS RELEASE_MS RATIO]  # e.g. gate 1 on -55 0.5 20 100 4; on|off alone keeps the stored settings
-info N                                   # READs the preset's metadata: name; model, gear type/make/model, modeled by; loudness, input level; IR taps, source, gain; gate
+morph N M|none                           # slot N morphs with slot M: READs both models, analyses (docs/MORPH.md), MORPH; prints the fit and the flash time
+info N                                   # READs the preset's metadata: name; model, gear type/make/model, modeled by; loudness, input level; IR taps, source, gain; gate; morph target and fit
 param list | param get NAME              # each parameter: its name, value and controls (`low_cut_freq    106 Hz        K5`), ` (held)` on a control waiting to move
 param set NAME VALUE                     # VALUE in the parameter's unit (Hz, Q, dB), a choice's label or index, or `off`: `param set high_cut_freq 3000`, `param set bell2_gain -3`
 param assign CONTROL NAME|none           # CONTROL k3-k6 or sw1-sw3: `param assign k3 bell2_freq`; a switch takes only choice parameters
@@ -258,6 +268,7 @@ preset 1 "FNDR BFSR VB Edge WRM2 CAB FREE"                                      
 model loudness -15.9 dB level -2.1 dB input +15.0 dBu cal -10.5 dB "FNDR BFSR VB Edge WRM2 CAB FREE"  (boot / HELLO)
 ir taps 2048 src 48000 Hz gain -15.1 dB "YA FDMN 412 BLND Mix 01"                             (boot / HELLO)
 gate on thr -55 dBFS atk 0.5 ms hold 20 ms rel 100 ms ratio 4.0                              (boot / HELLO, after a switch)
+morph slot 2 fit 21 21 % "FNDR BFSR VB Edge WRM2 CAB FREE"                                   (boot / HELLO, after a switch)
 settings seq 5                                                                                (boot / HELLO)
 layout k3 bell2_freq k4 high_cut_freq k5 low_cut_freq k6 none sw1 low_cut_slope sw2 none sw3 eq_enable  (boot / HELLO)
 loop miso                                                                                     (boot / HELLO, when loop_mode changes)
@@ -267,6 +278,7 @@ upload slot 8 "A2" 167 ms                                                       
 erase slot 1 215 ms                                                                           (link: ERASE, then the slots line)
 rename slot 2 "Renamed" 156 ms                                                                (link: RENAME, then the slots line)
 gate slot 1 on 147 ms                                                                         (link: GATE, then the slots line)
+morph slot 5 -> 2 161 ms                                                                      (link: MORPH, then the slots line)
 swap slots 1 8 314 ms                                                                         (link: SWAP, then the slots line)
 assign k3 low_cut_slope                                                                       (link: ASSIGN)
 settings seq 6 81 ms                                                                          (link: SAVE)
@@ -279,12 +291,13 @@ load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS rin 
 - **`model` line:** the preset's model: `loudness` and `input_level_dbu` (`none` without them), the level-match and input-calibration gains, in tenths of a dB, then its name, last because log lines stop at 120 characters. `model none` when dry.
 - **`ir` line:** the preset's IR: tap count, source rate, the converter's normalisation gain (reference band at 0 dB, `docs/FILTERS.md` "Converter"), and its name. `ir none` without an IR or when dry. `ir fft` alone, every second, when the convolver's FFT does not initialise.
 - **`gate` line:** the preset's noise gate (`docs/FILTERS.md` "Noise gate"): threshold, attack, hold, release and ratio; `gate off` when it is off or dry.
+- **`morph` line:** the slot the preset morphs with (1-based), its block's fit and unaligned fit in percent (`docs/MORPH.md`), and that preset's name; `morph missing slot N` when no slot holds the model the block was analysed with (N: the block's target); `morph none` without a block or when dry.
 - **`settings` line:** at boot and on HELLO, the seq of the settings record the pedal started from, or `settings factory` with none; after SAVE, the seq written and the time the erase, write and readback took; `settings write failed` when the readback does not match.
 - **`layout` line:** the live assignments: each control slot (`k3`–`k6`, `sw1`–`sw3`) and its parameter's name, or `none`. One parameter per control fits the 120 characters; a layout with long names repeated on several controls is cut.
 - **`loop` line:** `loop_mode` as published: `miso`, `pre-model` or `post-model` (`docs/LOOP.md`). Logged at boot and on HELLO after the `layout` line, and by the main loop whenever the value changes, whichever control or SET changed it.
 - **`assign` line:** the control and the parameter (or `none`) an ASSIGN put on it. SET logs nothing.
 - **`state` line:** the slot and seq written to the state record and the time the erase and write took; `state write failed` when the readback does not match.
-- **Slot change lines** (`upload slot`, `erase slot`, `rename slot`, `swap slots`, `gate slot`): the slot(s), 1-based, the new name or the gate's on/off, and the time the flash erase, write and readback took; then the `slots` line. `slot write failed N` when a write or its readback failed (the command answers `flash`). GATE TRY logs nothing.
+- **Slot change lines** (`upload slot`, `erase slot`, `rename slot`, `swap slots`, `gate slot`, `morph slot`): the slot(s), 1-based, the new name, the gate's on/off or the morph's target (`-> M`, or `off`), and the time the flash erase, write and readback took; then the `slots` line. `slot write failed N` when a write or its readback failed (the command answers `flash`). GATE TRY logs nothing.
 - **`ctl` line:**
   - `k`: knobs 1–6, in percent.
   - `sw`: SW1–SW3 after the 30 ms filter, as 2 up, 1 middle, 0 down.
@@ -429,6 +442,21 @@ Slot with a model and no IR, compressor off, the send patched to the return (`do
 - **Memory:** DTCM 110,824 bytes of 128 KB (110,768 before); ITCM 19,392 bytes of 64 KB (17,800 before); image 170,756 bytes (168,076 before).
 - **Settings:** `param set loop_mode post-model` logged `loop post-model`; `param assign sw1 loop_mode` was accepted; after `param save` and a reflash the boot showed `loop post-model`, then SW1, in the middle, took over (`loop pre-model`), as a control does at boot.
 
+## Measured (preset morph, Seed 1.2 / PCM3060)
+
+Slot 5 (a model, no IR) morphing with slot 2, compressor in blend, MISO, while playing.
+
+| | Load avg | Load max |
+|---|---|---|
+| `morph` at rest (0 % and 76 %) | 464–471 | 468–475 |
+| `morph` swept end to end every 200 ms over the link (a blend on every block) | 502 | 515 |
+
+- **Underruns:** 0, sweeping for 12 s, and across MORPH, SWAP and UPLOAD reloads.
+- **Load:** a preset with a morph target loads in about 960 µs (`preset 5 … load 962 us`), one without in 134 µs.
+- **Flash:** MORPH took 158–174 ms.
+- **Reloads:** `swap 2 7` with slot 5 playing logged `preset 5 … load 962 us` and `morph slot 7 fit 21 21 %`; the swap back, `morph slot 2 …`. An upload of another model over the target logged `morph missing slot 7`.
+- **Memory:** DTCM 110,856 bytes of 128 KB; ITCM 20,192 bytes of 64 KB; SDRAM 207,844 bytes; image 180,984 bytes.
+
 ## Bench
 
 `APP=bench` (`daisy/src/bench.cpp`) has no audio. Its `chain` is MISO's: the loop modes add only two `GainRamp`s and a two-buffer fade, so their cost is measured live ("Measured (M12)"). It compiles in `tests/fixtures/nam/A2.bin`, `tests/fixtures/ir/decay.bin` and a slice of `input.wav` and `A2.input.ref.wav` (`.incbin`; the Makefile rebuilds `bench.o` when they change). It places the engine like the pedal does: the object in DTCM, its stages and the timed blocks in ITCM; the EQ and the compressor in DTCM and the pedal's convolver (`gIrAxi`) in AXI SRAM, with a second one (`gIrD2`) in D2 SRAM for comparison. The parameter values both read are one array, `gValues`; `eqValues` and `compValues` each write their own ids. Each pass:
@@ -438,6 +466,7 @@ Slot with a model and no IR, compressor off, the send patched to the return (`do
 3. **Model:** `A2Lite::Process` on `kBlockSize` blocks of uniform noise (±0.5), timed with the DWT cycle counter: 200 ms of warm-up blocks, then 2 s measured, interrupts masked inside each block. The M3 gate is the maximum against 450 permille of the block period.
 4. **Layers:** the same blocks, each stage (`BeginChunk`, `RunLayer` per layer, `EndChunk`) timed separately.
 5. **IR, EQ, noise gate, compressor, chain:** the same way, the convolver from D2 and from AXI SRAM; the EQ at its worst case: enabled, both cuts at mid-travel with the top resonance and their slopes flipping between 24 and 12 dB every 10 blocks (slope fades), every bell flipping between −12 dB at a quarter and +12 dB at three quarters of its frequency range every 10 blocks, so every glide and coefficient ramp runs on every block; the noise gate enabled with the longest hold (100 ms, the longest detector scan), fed each block's input peak; the compressor (`comp`) on in blend, Sustain 0.25 ↔ 1.0, Level −3 ↔ +3 dB and Balance 0.25 ↔ 0.75 flipping every 10 blocks, so every smoother, ramp and `powf` runs on every block, while the noise (0.92 V at the jack) keeps the side chain compressing and clipping; and the pedal's whole chain (the gate, compressor, input gain, engine, IR, EQ, output gain with the gate's gain, mute). The chain gate is its maximum against 850 permille, the load ceiling (`docs/ROADMAP.md` "Decisions"; 550 until the 24-sample blocks). M10's figures: `docs/EQ.md` "As built"; M11's: "Measured (M11)" below.
+6. **Morph:** `A2Lite::Blend` on every block, at positions 0 and 1 in turn, with the two `powf` of the pedal's morph step: a knob that never rests. Both weight sets are the model's own (`Prepare` with the identity), so the engine goes on computing it. The chain runs the same step before the compressor. After the chain the engine is loaded again: a blend leaves the head scale folded into the head, and the next pass's check wants the model as loaded.
 
 Passes repeat every 2 s; the DFU command works between stages, so `flash_when_ready.sh` returns to the pedal with no button presses.
 
@@ -463,7 +492,7 @@ bench gate chain max 496.4 permille limit 550 go
 bench pass 1 done
 ```
 
-The compressor (M11) adds `bench comp cycles avg … max … permille avg … max …` after the noise gate's line.
+The compressor (M11) adds `bench comp cycles avg … max … permille avg … max …` after the noise gate's line, and the morph `bench morph cycles …` after that.
 
 ### Measured (M3, Seed 1.2)
 
@@ -505,5 +534,21 @@ The compressor (M11) adds `bench comp cycles avg … max … permille avg … ma
 
 - **Gate:** go, 657.4 permille against 850 (626.9 before the compressor, `docs/FILTERS.md` "Measured").
 - **Image:** bench DTCM 110,600 bytes; SRAM 99.09 %.
+
+### Measured (preset morph, Seed 1.2, 24 samples)
+
+| Stage | Avg cycles | Max permille |
+|---|---|---|
+| Whole model (`a2lite`) | 87,190 | 366.3 |
+| IR convolver, AXI SRAM (`ir axi`) | 43,554 | 186.7 |
+| EQ (`eq`) | 15,561 | 64.9 |
+| Compressor (`comp`) | 7,105 | 29.9 |
+| Morph (`morph`: the blend and its two `powf`) | 7,417 | 31.4 |
+| Whole chain (`chain`, blending on every block) | 169,569 | 710.9 |
+
+- **Gate:** go, 710.9 permille against 850 (657.4 before the morph).
+- **In the chain** the morph costs 13.0 k cycles, 5.6 k more than alone. Not investigated; the blend reads its 15 KB of weights from AXI SRAM through the same 16 KB D-cache the convolver's spectra stream through. `gMorphW` fits DTCM (14,960 bytes, about 20 KB free) should the ceiling ever need it.
+- **Check:** 241e-9 on every pass, so reloading the engine after the chain restores the model exactly.
+- **Image:** bench DTCM 110,616 bytes; SRAM 95.52 %: the IR check's buffers and the morph's scratch moved to SDRAM (neither is timed), which SRAM no longer had room for.
 
 How the engine got here from 570 permille, the measured cost model behind it, and how to check an image for a regression: `docs/M7_PERFORMANCE.md`. Run the bench after any change to the engine, the compiler or its flags: the gate line is the only test that sees a slowdown.

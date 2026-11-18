@@ -199,6 +199,7 @@ Each chunk of up to `kBlockSize` (24) frames passes through every layer in turn.
 - **Block size:** `Process` takes any length and runs internally in chunks of `kBlockSize` (24; a multiple of the 6-frame tile); the output does not depend on how the input is split.
 - **Leaky ReLU** is `max(z, 0.01·z)`, which equals `z ≥ 0 ? z : 0.01·z` for every `z` and needs no branch.
 - **The last layer's residual** `x_23` is not computed.
+- **`ToEngine` and `Blend`** (not upstream's): `ToEngine` permutes a weight stream into the engine's tap-major layout, which `Load` uses; `Blend(a, d, t)` sets the weights to `a + t·d` without touching the histories, for the preset morph (`docs/MORPH.md`), whose two weight sets carry the head scale folded into the head.
 
 ```
 make render

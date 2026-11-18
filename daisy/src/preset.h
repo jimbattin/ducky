@@ -1,13 +1,14 @@
 // The preset store (docs/FIRMWARE.md "Preset store"): 8 slots of 64 KB in QSPI from 0x90400000, each a format-3
-// preset (a model binary, an optional IR binary, a name, a noise gate, a CRC), and a two-copy state record holding
-// the last slot. Host-portable (no libDaisy, no allocation), covered by tests/preset_test.cpp. The slot format is the
-// contract with editor/src/preset/bank.ts and editor/src/preset/gate.ts.
+// preset (a model binary, an optional IR binary, a name, a noise gate, an optional morph block, a CRC), and a
+// two-copy state record holding the last slot. Host-portable (no libDaisy, no allocation), covered by
+// tests/preset_test.cpp. The slot format is the contract with editor/src/preset/bank.ts, editor/src/preset/gate.ts
+// and editor/src/preset/morph.ts.
 //
-// Slot (format 3, little-endian): "DKPS", u16 version, u16 flags (bit 0 kFlagHasIr), u32 size (kSizeNoIr, or
-// kSizeWithIr with the IR flag), name[64] (NUL-terminated printable ASCII), the gate block (kGateSize: u8 flags with
+// Slot (format 3, little-endian): "DKPS", u16 version, u16 flags (bit 0 kFlagHasIr, bit 1 kFlagHasMorph), u32 size
+// (ImageSize of the two flags), name[64] (NUL-terminated printable ASCII), the gate block (kGateSize: u8 flags with
 // bit 0 enabled, u8 threshold, u8 attack, u8 hold, u16 release, u8 ratio, u8 0; units in dsp/noise_gate.h), the model
-// binary (dkmodel::kBinSize), the IR binary (dkir::kBinSize) when flagged, then the CRC-32 of bytes [0, size - 4).
-// Erased flash (0xFF) follows.
+// binary (dkmodel::kBinSize), the IR binary (dkir::kBinSize) when flagged, the morph block (dkmorph::kBlockBytes,
+// morph.h) when flagged, then the CRC-32 of bytes [0, size - 4). Erased flash (0xFF) follows.
 //
 // State record (16 bytes at the start of each 4 KB state sector): "DKST", u32 seq, u32 slot (0..7), u32 CRC-32 of the
 // first 12 bytes. Every write goes to the sector not holding the newest record, so a torn write leaves the previous
@@ -22,6 +23,7 @@
 #include "dsp/noise_gate.h"
 #include "ir.h"
 #include "model.h"
+#include "morph.h"
 
 namespace dkpreset {
 
@@ -35,21 +37,29 @@ constexpr uint32_t kStateSectorBytes = 0x1000;            // 4 KB sector, erased
 constexpr uint32_t kMpuBytes = 0x100000;                  // firmware.h region 4: 0x90400000-0x904FFFFF
 constexpr uint16_t kFormatVersion = 3;
 constexpr uint16_t kFlagHasIr = 0x0001;
+constexpr uint16_t kFlagHasMorph = 0x0002;
 constexpr size_t kNameSize = 64;
 constexpr size_t kGateSize = 8;
 constexpr size_t kHeaderSize = 84;
 constexpr size_t kSizeNoIr = kHeaderSize + dkmodel::kBinSize + 4;  // 7996
 constexpr size_t kSizeWithIr = kSizeNoIr + dkir::kBinSize;         // 16288
+constexpr size_t kSizeMax = kSizeWithIr + dkmorph::kBlockBytes;    // 16352
 constexpr size_t kStateBytes = 16;
 constexpr uint32_t kStateMagic = 0x54534B44;  // "DKST"
 
 static_assert(kBankOffset + kBankBytes <= kStateOffset[0], "the slots end before the state sectors");
 static_assert(kStateOffset[0] + kStateSectorBytes <= kStateOffset[1], "the state sectors do not overlap");
 static_assert(kStateOffset[1] + kStateSectorBytes <= kBankOffset + kMpuBytes, "the store lies inside MPU region 4");
-static_assert(kSizeWithIr <= kSlotBytes, "a preset fits its slot");
+static_assert(kSizeMax <= kSlotBytes, "a preset fits its slot");
 static_assert(kSizeNoIr == 7996 && kSizeWithIr == 16288, "the format-3 sizes");
+static_assert(dkmorph::kTargets == kSlots, "a morph block's target is a slot");
 
-enum class Status : uint8_t { kOk, kEmpty, kMagic, kVersion, kSize, kCrc, kModel, kIr };
+// A preset image's size.
+constexpr size_t ImageSize(bool has_ir, bool has_morph) {
+    return (has_ir ? kSizeWithIr : kSizeNoIr) + (has_morph ? dkmorph::kBlockBytes : 0);
+}
+
+enum class Status : uint8_t { kOk, kEmpty, kMagic, kVersion, kSize, kCrc, kModel, kIr, kMorph };
 
 inline const char* StatusName(Status s) {
     switch (s) {
@@ -61,6 +71,7 @@ inline const char* StatusName(Status s) {
         case Status::kCrc: return "crc";
         case Status::kModel: return "model";
         case Status::kIr: return "ir";
+        case Status::kMorph: return "morph";
     }
     return "?";
 }
@@ -72,6 +83,8 @@ struct Preset {
     dkmodel::Model model;
     dkir::Ir ir;  // valid only with has_ir
     dkdsp::GateSettings gate;
+    bool has_morph;
+    dkmorph::Block morph;  // valid only with has_morph
 };
 
 namespace detail {
@@ -114,14 +127,17 @@ inline Status Parse(const uint8_t* data, size_t n, Preset* out) {
     if (std::memcmp(data, "DKPS", 4) != 0) return Status::kMagic;
     if (n < kHeaderSize) return Status::kSize;
     const uint16_t flags = Le16(data + kOffFlags);
-    if (Le16(data + kOffVersion) != kFormatVersion || (flags & ~kFlagHasIr) != 0) return Status::kVersion;
-    const bool has_ir = (flags & kFlagHasIr) != 0;
+    if (Le16(data + kOffVersion) != kFormatVersion || (flags & ~(kFlagHasIr | kFlagHasMorph)) != 0)
+        return Status::kVersion;
+    const bool has_ir = (flags & kFlagHasIr) != 0, has_morph = (flags & kFlagHasMorph) != 0;
     const uint32_t size = Le32(data + kOffSize);
-    if (size != (has_ir ? kSizeWithIr : kSizeNoIr) || size > n) return Status::kSize;
+    if (size != ImageSize(has_ir, has_morph) || size > n) return Status::kSize;
     if (Le32(data + size - 4) != dkbin::Crc32(data, size - 4)) return Status::kCrc;
     if (dkmodel::Parse(data + kOffModel, dkmodel::kBinSize, &out->model) != dkmodel::Status::kOk) return Status::kModel;
     if (has_ir && dkir::Parse(data + kOffIr, dkir::kBinSize, &out->ir) != dkir::Status::kOk) return Status::kIr;
+    if (has_morph && !dkmorph::ParseBlock(data + size - 4 - dkmorph::kBlockBytes, &out->morph)) return Status::kMorph;
     out->has_ir = has_ir;
+    out->has_morph = has_morph;
     out->gate = GetGate(data + kOffGate);
     std::memcpy(out->name, data + kOffName, kNameSize);
     out->name[kNameSize - 1] = '\0';
@@ -174,6 +190,38 @@ inline void Rename(uint8_t* image, size_t size, const char* name, size_t len) {
 inline void SetGate(uint8_t* image, size_t size, const dkdsp::GateSettings& g) {
     PutGate(image + detail::kOffGate, g);
     detail::Reseal(image, size);
+}
+
+// The preset image[0, size) (a parsed slot, size its size field) with its morph block set to block[0,
+// dkmorph::kBlockBytes), or removed when block is null, written to out (kSizeMax bytes, not overlapping image): the
+// name, the gate, the model and the IR are kept, the flag and the size field follow the block, and the CRC is
+// rewritten. The new size.
+inline size_t SetMorph(const uint8_t* image, size_t size, const uint8_t* block, uint8_t* out) {
+    using namespace detail;
+    const uint16_t flags = dkbin::Le16(image + kOffFlags);
+    const size_t body = size - 4 - ((flags & kFlagHasMorph) != 0 ? dkmorph::kBlockBytes : 0);  // up to the old block
+    std::memcpy(out, image, body);
+    const uint16_t new_flags = block != nullptr ? flags | kFlagHasMorph : flags & ~kFlagHasMorph;
+    out[kOffFlags] = uint8_t(new_flags);
+    out[kOffFlags + 1] = uint8_t(new_flags >> 8);
+    if (block != nullptr) std::memcpy(out + body, block, dkmorph::kBlockBytes);
+    const size_t new_size = body + (block != nullptr ? dkmorph::kBlockBytes : 0) + 4;
+    dkbin::PutLe32(out + kOffSize, uint32_t(new_size));
+    Reseal(out, new_size);
+    return new_size;
+}
+
+// The slot preset a morphs with, -1 for none: presets[k] is slot k's preset, valid where filled[k]. The block's
+// target while it is filled, another slot and still holds the model the block was fitted to; else the first other
+// filled slot that holds that model (the target moved); else none.
+inline int ResolveMorph(const Preset* presets, const bool* filled, int a) {
+    if (!filled[a] || !presets[a].has_morph) return -1;
+    const dkmorph::Block& m = presets[a].morph;
+    const int t = m.target;
+    if (t != a && filled[t] && presets[t].model.crc == m.model_crc) return t;
+    for (int k = 0; k < kSlots; ++k)
+        if (k != a && filled[k] && presets[k].model.crc == m.model_crc) return k;
+    return -1;
 }
 
 // The next filled slot after from, wrapping: from itself when it is the only filled slot; -1 when none is filled.
