@@ -1,0 +1,282 @@
+// daisy/src/upload.h: UPLOAD BEGIN/CHUNK staging (ordering, resends, gaps, CRC, bounds) and COMMIT's validation;
+// FIRMWARE BEGIN/CHUNK staging and COMMIT's check.
+#include "upload.h"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <memory>
+#include <vector>
+
+#include "test_files.h"
+
+using namespace dklink;
+
+namespace {
+
+std::vector<uint8_t> BeginPayload(int slot, uint32_t size) {
+    std::vector<uint8_t> p(4);
+    p[0] = uint8_t(slot);
+    PutSeptets(p.data() + 1, size, 3);
+    return p;
+}
+
+std::vector<uint8_t> ChunkPayload(uint32_t offset, const std::vector<uint8_t>& data) {
+    std::vector<uint8_t> p(8 + Packed7Size(data.size()));
+    PutSeptets(p.data(), offset, 3);
+    PutSeptets(p.data() + 3, dkbin::Crc32(data.data(), data.size()), 5);
+    Pack7(data.data(), data.size(), p.data() + 8);
+    return p;
+}
+
+// The image's bytes: i & 0xFF.
+std::vector<uint8_t> Image(size_t n) {
+    std::vector<uint8_t> b(n);
+    for (size_t i = 0; i < n; ++i) b[i] = uint8_t(i & 0xFF);
+    return b;
+}
+
+std::vector<uint8_t> Slice(const std::vector<uint8_t>& b, size_t off, size_t n) {
+    return std::vector<uint8_t>(b.begin() + off, b.begin() + std::min(off + n, b.size()));
+}
+
+struct Fixture {
+    std::vector<uint8_t> buf = std::vector<uint8_t>(dkpreset::kSizeMax);
+    Upload up{buf.data()};
+    Result Begin(int slot, uint32_t size) {
+        const std::vector<uint8_t> p = BeginPayload(slot, size);
+        return up.Begin(p.data(), p.size());
+    }
+    Result Chunk(uint32_t offset, const std::vector<uint8_t>& data) {
+        const std::vector<uint8_t> p = ChunkPayload(offset, data);
+        return up.Chunk(p.data(), p.size());
+    }
+    // The whole image staged for the slot.
+    void Stage(int slot, const std::vector<uint8_t>& img) {
+        ASSERT_EQ(Begin(slot, uint32_t(img.size())), Result::kOk);
+        for (size_t off = 0; off < img.size(); off += kChunkBytes)
+            ASSERT_EQ(Chunk(uint32_t(off), Slice(img, off, kChunkBytes)), Result::kOk) << off;
+        ASSERT_EQ(up.Ready(), Result::kOk);
+    }
+};
+
+}  // namespace
+
+TEST(Upload, ChunkCrcVector) {
+    const std::vector<uint8_t> p = ChunkPayload(512, Image(256));
+    EXPECT_EQ(p.size(), 8 + Packed7Size(256));
+    EXPECT_EQ(std::vector<uint8_t>(p.begin(), p.begin() + 3), (std::vector<uint8_t>{0x00, 0x04, 0x00}));
+    EXPECT_EQ(std::vector<uint8_t>(p.begin() + 3, p.begin() + 8),
+              (std::vector<uint8_t>{0x02, 0x48, 0x16, 0x18, 0x73}));
+    const std::vector<uint8_t> img = Image(256);
+    EXPECT_EQ(dkbin::Crc32(img.data(), img.size()), 0x29058C73u);
+}
+
+TEST(Upload, BadBeginLeavesNoUpload) {
+    Fixture f;
+    ASSERT_EQ(f.Begin(0, dkpreset::kSizeWithIr), Result::kOk);
+    EXPECT_EQ(f.Begin(8, dkpreset::kSizeWithIr), Result::kBadRequest);
+    EXPECT_FALSE(f.up.active());
+    EXPECT_EQ(f.Begin(0, 1000), Result::kBadRequest);
+    EXPECT_FALSE(f.up.active());
+    const uint8_t shortPayload[] = {0, 0, 0x7D};
+    EXPECT_EQ(f.up.Begin(shortPayload, sizeof shortPayload), Result::kBadRequest);
+    EXPECT_FALSE(f.up.active());
+    EXPECT_EQ(f.up.Ready(), Result::kNoUpload);
+}
+
+// Every size a preset image has (no IR or an IR; no morph, a block, a block and 1-3 waypoints), and no other.
+TEST(Upload, BeginTakesImageSizesOnly) {
+    Fixture f;
+    for (uint32_t size : {7996u, 8060u, 15540u, 23020u, 30500u, 16288u, 16352u, 23832u, 31312u, 38792u}) {
+        EXPECT_EQ(f.Begin(2, size), Result::kOk) << size;
+        EXPECT_EQ(f.up.size(), size);
+    }
+    for (uint32_t size : {
+             7996u + 7480u,   // a waypoint without a morph block
+             16288u + 7480u,  // the same with an IR
+             8060u + 4 * 7480u,   // four waypoints
+             38792u + 7480u,
+             16352u + 4u, 16352u - 4u, 38792u + 1u, 0u,
+         }) {
+        EXPECT_EQ(f.Begin(2, size), Result::kBadRequest) << size;
+        EXPECT_FALSE(f.up.active());
+    }
+}
+
+TEST(Upload, LargestImageCompletes) {
+    Fixture f;
+    const std::vector<uint8_t> img = Image(dkpreset::kSizeMax);
+    f.Stage(7, img);
+    EXPECT_EQ(f.up.next(), 38792u);
+    EXPECT_EQ(f.buf, img);
+}
+
+// COMMIT's check: a preset must parse, and its morph block must not target the slot it goes to.
+TEST(Upload, ValidateRejectsAMorphOntoItself) {
+    const std::vector<uint8_t> plain = ReadFile(RepoPath("tests/fixtures/preset/A2_decay.bin"));
+    const std::vector<uint8_t> block = ReadFile(RepoPath("tests/fixtures/morph/A2_shuffled.morph"));
+    ASSERT_EQ(plain.size(), dkpreset::kSizeWithIr);
+    ASSERT_EQ(block.size(), dkmorph::kBlockBytes);
+    ASSERT_EQ(block[0], 0) << "the fixture block targets slot 0";
+    std::vector<uint8_t> img(dkpreset::kSizeMax);
+    img.resize(dkpreset::SetMorph(plain.data(), block.data(), img.data()));
+    auto p = std::make_unique<dkpreset::Preset>();
+
+    Fixture f;
+    f.Stage(0, img);
+    EXPECT_EQ(f.up.Validate(p.get()), dkpreset::Status::kMorph);
+    f.Stage(3, img);
+    EXPECT_EQ(f.up.Validate(p.get()), dkpreset::Status::kOk);
+    EXPECT_TRUE(p->has_morph);
+    f.Stage(0, plain);
+    EXPECT_EQ(f.up.Validate(p.get()), dkpreset::Status::kOk) << "without a morph block any slot will do";
+    img[100] ^= 0x01;
+    f.Stage(3, img);
+    EXPECT_EQ(f.up.Validate(p.get()), dkpreset::Status::kCrc);
+}
+
+TEST(Upload, InOrderCompletes) {
+    for (size_t size : {dkpreset::kSizeNoIr, dkpreset::kSizeWithIr}) {
+        Fixture f;
+        const std::vector<uint8_t> img = Image(size);
+        ASSERT_EQ(f.Begin(5, uint32_t(size)), Result::kOk);
+        EXPECT_EQ(f.up.slot(), 5);
+        for (size_t off = 0; off < size; off += kChunkBytes) {
+            EXPECT_EQ(f.up.Ready(), Result::kIncomplete);
+            ASSERT_EQ(f.Chunk(uint32_t(off), Slice(img, off, kChunkBytes)), Result::kOk) << off;
+            EXPECT_EQ(f.up.next(), std::min(off + kChunkBytes, size));
+        }
+        EXPECT_EQ(f.up.Ready(), Result::kOk);
+        EXPECT_EQ(Slice(f.buf, 0, size), img);
+    }
+}
+
+TEST(Upload, ResentChunkIsIdempotent) {
+    Fixture f;
+    const std::vector<uint8_t> img = Image(dkpreset::kSizeNoIr);
+    ASSERT_EQ(f.Begin(0, dkpreset::kSizeNoIr), Result::kOk);
+    ASSERT_EQ(f.Chunk(0, Slice(img, 0, 256)), Result::kOk);
+    ASSERT_EQ(f.Chunk(256, Slice(img, 256, 256)), Result::kOk);
+    EXPECT_EQ(f.Chunk(256, Slice(img, 256, 256)), Result::kOk);
+    EXPECT_EQ(f.up.next(), 512u);
+    EXPECT_EQ(f.Chunk(0, Slice(img, 0, 256)), Result::kOk);
+    EXPECT_EQ(f.up.next(), 512u);
+}
+
+TEST(Upload, GapIsOffset) {
+    Fixture f;
+    const std::vector<uint8_t> img = Image(dkpreset::kSizeNoIr);
+    ASSERT_EQ(f.Begin(0, dkpreset::kSizeNoIr), Result::kOk);
+    ASSERT_EQ(f.Chunk(0, Slice(img, 0, 256)), Result::kOk);
+    EXPECT_EQ(f.Chunk(512, Slice(img, 512, 256)), Result::kOffset);
+    EXPECT_EQ(f.up.next(), 256u);
+}
+
+TEST(Upload, FlippedCrcIsCrc) {
+    Fixture f;
+    ASSERT_EQ(f.Begin(0, dkpreset::kSizeNoIr), Result::kOk);
+    std::vector<uint8_t> p = ChunkPayload(0, Image(256));
+    p[7] ^= 0x01;
+    EXPECT_EQ(f.up.Chunk(p.data(), p.size()), Result::kCrc);
+    EXPECT_EQ(f.up.next(), 0u);
+}
+
+TEST(Upload, ChunkWithoutBegin) {
+    Fixture f;
+    EXPECT_EQ(f.Chunk(0, Image(256)), Result::kNoUpload);
+}
+
+TEST(Upload, ChunkPastSizeIsBadRequest) {
+    Fixture f;
+    const std::vector<uint8_t> img = Image(dkpreset::kSizeNoIr);
+    ASSERT_EQ(f.Begin(0, dkpreset::kSizeNoIr), Result::kOk);
+    uint32_t off = 0;
+    for (; off + 256 <= dkpreset::kSizeNoIr; off += 256) ASSERT_EQ(f.Chunk(off, Slice(img, off, 256)), Result::kOk);
+    EXPECT_EQ(f.Chunk(off, Image(256)), Result::kBadRequest);  // 7936 + 256 > 7996
+    EXPECT_EQ(f.up.next(), off);
+}
+
+TEST(Upload, MalformedChunkIsBadRequest) {
+    Fixture f;
+    ASSERT_EQ(f.Begin(0, dkpreset::kSizeNoIr), Result::kOk);
+    EXPECT_EQ(f.Chunk(0, {}), Result::kBadRequest);         // no data
+    EXPECT_EQ(f.Chunk(0, Image(257)), Result::kBadRequest);  // over kChunkBytes
+}
+
+namespace {
+
+std::vector<uint8_t> FwBeginPayload(uint32_t size, uint32_t crc) {
+    std::vector<uint8_t> p(8);
+    PutSeptets(p.data(), size, 3);
+    PutSeptets(p.data() + 3, crc, 5);
+    return p;
+}
+
+// A valid firmware image for board 1 (fw_image.h CheckImage).
+std::vector<uint8_t> FwImage(size_t n) {
+    std::vector<uint8_t> b = Image(n);
+    dkbin::PutLe32(b.data(), dkfwimg::kStackHi);
+    dkbin::PutLe32(b.data() + 4, dkfwimg::kSramBase + 0x201);
+    dkbin::PutLe32(b.data() + dkfwimg::kTagOffset, dkfwimg::kTagMagic);
+    dkbin::PutLe32(b.data() + dkfwimg::kTagOffset + 4, dkfwimg::kTagVersion);
+    dkbin::PutLe32(b.data() + dkfwimg::kTagOffset + 8, 1);
+    return b;
+}
+
+struct FwFixture {
+    std::vector<uint8_t> buf = std::vector<uint8_t>(dkfwimg::kMaxImageBytes);
+    FirmwareUpload up{buf.data()};
+    Result Begin(uint32_t size, uint32_t crc) {
+        const std::vector<uint8_t> p = FwBeginPayload(size, crc);
+        return up.Begin(p.data(), p.size());
+    }
+    Result Chunk(uint32_t offset, const std::vector<uint8_t>& data) {
+        const std::vector<uint8_t> p = ChunkPayload(offset, data);
+        return up.Chunk(p.data(), p.size());
+    }
+};
+
+}  // namespace
+
+TEST(FirmwareUpload, BeginBounds) {
+    FwFixture f;
+    EXPECT_EQ(f.Begin(dkfwimg::kMinImageBytes - 1, 0), Result::kBadRequest);
+    EXPECT_FALSE(f.up.active());
+    EXPECT_EQ(f.Begin(dkfwimg::kMaxImageBytes + 1, 0), Result::kBadRequest);
+    EXPECT_EQ(f.Begin(dkfwimg::kMaxImageBytes, 0), Result::kOk);
+    const std::vector<uint8_t> shortPayload = FwBeginPayload(dkfwimg::kMinImageBytes, 0);
+    EXPECT_EQ(f.up.Begin(shortPayload.data(), 4), Result::kBadRequest);
+    EXPECT_FALSE(f.up.active());
+}
+
+TEST(FirmwareUpload, InOrderCompletesAndValidates) {
+    FwFixture f;
+    const std::vector<uint8_t> img = FwImage(dkfwimg::kMinImageBytes);
+    ASSERT_EQ(f.Begin(uint32_t(img.size()), dkbin::Crc32(img.data(), img.size())), Result::kOk);
+    for (size_t off = 0; off < img.size(); off += kChunkBytes) {
+        EXPECT_EQ(f.up.Ready(), Result::kIncomplete);
+        ASSERT_EQ(f.Chunk(uint32_t(off), Slice(img, off, kChunkBytes)), Result::kOk) << off;
+    }
+    EXPECT_EQ(f.up.Ready(), Result::kOk);
+    EXPECT_EQ(Slice(f.buf, 0, img.size()), img);
+    EXPECT_EQ(f.up.Validate(1), dkfwimg::Check::kOk);
+    EXPECT_EQ(f.up.Validate(2), dkfwimg::Check::kBoard);
+}
+
+TEST(FirmwareUpload, MissingLastChunkIsIncomplete) {
+    FwFixture f;
+    const std::vector<uint8_t> img = FwImage(dkfwimg::kMinImageBytes);
+    ASSERT_EQ(f.Begin(uint32_t(img.size()), dkbin::Crc32(img.data(), img.size())), Result::kOk);
+    size_t off = 0;
+    for (; off + kChunkBytes < img.size(); off += kChunkBytes)
+        ASSERT_EQ(f.Chunk(uint32_t(off), Slice(img, off, kChunkBytes)), Result::kOk);
+    EXPECT_EQ(f.up.Ready(), Result::kIncomplete);
+    EXPECT_EQ(f.up.next(), off);
+}
+
+TEST(FirmwareUpload, ChunkWithoutBegin) {
+    FwFixture f;
+    EXPECT_EQ(f.Chunk(0, Image(256)), Result::kNoUpload);
+    EXPECT_EQ(f.up.Ready(), Result::kNoUpload);
+}

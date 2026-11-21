@@ -1,0 +1,11 @@
+[project]
+name = "ducky-tools"
+version = "0.1.0"
+description = "Python tools for the Ducky pedal (tools/)"
+requires-python = ">=3.11"
+dependencies = [
+    "pyusb",    # tools/usb_log.py
+]
+
+[tool.uv]
+package = false
