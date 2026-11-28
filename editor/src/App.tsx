@@ -236,6 +236,14 @@ export function App() {
         return `EXP channel: ${channel === OMNI ? "any" : channel}`;
       }),
     );
+  const onMidiInChannel = (channel: number) =>
+    void act("SETTING MIDI IN CHANNEL…", () =>
+      serial(async (session) => {
+        await session.midiInChannel(channel);
+        dispatch({ type: "settingsEdited", edited: true });
+        return `MIDI IN channel: ${channel === OMNI ? "any" : channel}`;
+      }),
+    );
   const onSaveSettings = () =>
     void act("SAVING SETTINGS…", () =>
       serial(async (session) => {
@@ -319,10 +327,12 @@ export function App() {
         return (
           <ControlsTab
             table={table}
+            board={s.identity?.board ?? null}
             enabled={ready}
             edited={s.settingsEdited}
             onAssign={onAssign}
             onExpChannel={onExpChannel}
+            onMidiInChannel={onMidiInChannel}
             onSave={onSaveSettings}
           />
         );

@@ -12,13 +12,16 @@
 // overrides /usr/bin/google-chrome-stable) and an empty slot. Each step prints one line; a failure prints
 // `firmware check: FAILED: <step>: <why>` and exits 1.
 //
-// Usage: bun tools/firmware_check.ts [--port BUS-PORT] [--headful] [--cycles N]
+// Usage: [BOARD=hothouse|burningbungalow] bun tools/firmware_check.ts [--port BUS-PORT] [--headful] [--cycles N]
+// BOARD (daisy/Makefile's) picks the images to build and flash: hothouse by default, burningbungalow for a
+// BurningBungalow.
 
 import { resolve } from "node:path";
 import { $ } from "bun";
 import { crc32 } from "../editor/src/crc32";
 import { firmwareKind, firmwareProblem } from "../editor/src/link/firmware";
 import {
+  BOARD,
   CHUNK_BYTES,
   CMD,
   CMD_NAMES,
@@ -35,15 +38,18 @@ import { launchChrome } from "./cdp";
 import { findSeeds, openRawMidi, type RawMidi, waitForDucky } from "./rawmidi";
 
 const ROOT = resolve(import.meta.dir, "..");
-const X = "daisy/build/hothouse-xfade/ducky_xfade.bin";
-const W = "daisy/build/hothouse-weight/ducky_weight.bin";
-const B = "daisy/build/hothouse-bench/ducky_bench.bin";
+const BOARD_NAME = process.env.BOARD ?? "hothouse";
+const X = `daisy/build/${BOARD_NAME}-xfade/ducky_xfade.bin`;
+const W = `daisy/build/${BOARD_NAME}-weight/ducky_weight.bin`;
+const B = `daisy/build/${BOARD_NAME}-bench/ducky_bench.bin`;
 
 function usage(problem: string): never {
   console.error(`firmware check: ${problem}`);
   console.error("usage: bun tools/firmware_check.ts [--port BUS-PORT] [--headful] [--cycles N]");
   process.exit(2);
 }
+if (BOARD_NAME !== "hothouse" && BOARD_NAME !== "burningbungalow")
+  usage(`BOARD=${BOARD_NAME}: must be hothouse or burningbungalow`);
 
 let port = process.env.DK_USB_PORT ?? null;
 let headful = false;
@@ -151,9 +157,9 @@ say(`pedal on ${usbPath}; scratch slot ${scratch + 1}`);
 // 2. Build.
 const images = await step("build", async () => {
   for (const cmd of [
-    $`make -C daisy -j`,
-    $`make -C daisy APP=weight -j`,
-    $`make -C daisy APP=bench -j`,
+    $`make -C daisy BOARD=${BOARD_NAME} -j`,
+    $`make -C daisy BOARD=${BOARD_NAME} APP=weight -j`,
+    $`make -C daisy BOARD=${BOARD_NAME} APP=bench -j`,
     $`make -C editor html`,
   ]) {
     const r = await cmd.nothrow().quiet();
@@ -222,8 +228,10 @@ await step("pedal refusals", async () => {
     const crc = crc32(x);
     const tag = x.slice();
     tag[0x400] = tag[0x400]! ^ 0xff;
+    // Another board's tag: the pedal's own board swapped for the other one.
     const board = x.slice();
-    new DataView(board.buffer).setUint32(0x408, 2, true);
+    const other = id.board === BOARD.hothouse ? BOARD.burningBungalow : BOARD.hothouse;
+    new DataView(board.buffer).setUint32(0x408, other, true);
     const cases: [string, () => Promise<ResultMessage>, number, number | null][] = [
       ["incomplete", () => rawUpdate(midi, x, crc, CHUNK_BYTES), RESULT.incomplete, null],
       ["crc", () => rawUpdate(midi, x, (crc ^ 1) >>> 0), RESULT.invalid, 1],

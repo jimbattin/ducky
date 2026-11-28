@@ -1,6 +1,6 @@
 // The parameter table and the control slots (docs/MIDI.md "Parameters", "Controls"). Knobs 1 and 2 are fixed (input
-// trim, output volume); Knobs 3-6, SW1-SW3 and the expression pedal are control slots 0-7, each driving one parameter
-// of kParams or none.
+// trim, output volume); Knobs 3-6, SW1-SW3, the expression pedal over MIDI (EXP) and a BurningBungalow's expression
+// pedal jack (PEDAL) are control slots 0-8, each driving one parameter of kParams or none.
 // Host-portable (no libDaisy, no allocation), covered by tests/params_test.cpp.
 //
 // A parameter's value:
@@ -54,12 +54,15 @@ enum class OffEnd : uint8_t { kNone = 0, kMin = 1, kMax = 2 };      // wire valu
 
 constexpr uint8_t kNoParam = 0x7F;  // a control slot driving nothing
 constexpr uint16_t kCodeMax = 16383;
-// Control slots 0-3 are Knobs 3-6 (board knob index slot + kFirstSlotKnob), 4-6 are SW1-SW3, 7 the expression pedal
-// (MIDI CC 11, midi.h).
-constexpr int kControlSlots = 8, kKnobSlots = 4, kSwitchSlots = 3, kFirstSlotKnob = 2, kExpressionSlot = 7;
+// Control slots 0-3 are Knobs 3-6 (board knob index slot + kFirstSlotKnob), 4-6 are SW1-SW3, 7 EXP, the expression
+// pedal over MIDI (CC 11, midi.h), 8 PEDAL, a BurningBungalow's expression pedal jack (board.h kHasPedal).
+constexpr int kControlSlots = 9, kKnobSlots = 4, kSwitchSlots = 3, kFirstSlotKnob = 2, kExpressionSlot = 7,
+              kPedalSlot = 8;
+constexpr float kNoPedal = -1.0f;  // Store's pedal position on a board without the jack (board.h kHasPedal)
 constexpr float kPickup = 0.03f;            // knob or pedal travel (0..1) that takes a parameter back from a hold
 constexpr float kChoiceHysteresis = 0.05f;  // in index units: a knob on a choice boundary does not chatter
-inline constexpr const char* kControlNames[kControlSlots] = {"k3", "k4", "k5", "k6", "sw1", "sw2", "sw3", "exp"};
+inline constexpr const char* kControlNames[kControlSlots] = {"k3",  "k4",  "k5",  "k6", "sw1",
+                                                             "sw2", "sw3", "exp", "pedal"};
 
 struct ParamDef {
     uint8_t id;
@@ -149,8 +152,9 @@ constexpr bool TableValid() {
 }
 static_assert(TableValid(), "kParams: ids in order, valid ranges");
 static_assert(kParamCount < kNoParam, "kNoParam is no parameter's id");
-static_assert(kKnobSlots + kSwitchSlots + 1 == kControlSlots && kExpressionSlot == kKnobSlots + kSwitchSlots,
-              "the knob slots, the switch slots, then the expression slot");
+static_assert(kKnobSlots + kSwitchSlots + 2 == kControlSlots && kExpressionSlot == kKnobSlots + kSwitchSlots &&
+                  kPedalSlot == kExpressionSlot + 1,
+              "the knob slots, the switch slots, EXP, then PEDAL");
 
 // A continuous value v of d in d's units: min (max / min)^v for a log taper, min + v (max - min) for a linear one.
 // Not for a choice.
@@ -159,15 +163,16 @@ inline float Units(const ParamDef& d, float v) {
     return d.min * std::pow(d.max / d.min, v);
 }
 
-// Control slot `slot` may drive parameter id: any slot takes kNoParam, a knob or the expression slot any parameter, a
-// switch a choice.
+// Control slot `slot` may drive parameter id: any slot takes kNoParam, a knob, EXP or PEDAL any parameter, a switch a
+// choice.
 constexpr bool Accepts(int slot, uint8_t id) {
     if (slot < 0 || slot >= kControlSlots) return false;
     if (id == kNoParam) return true;
-    return id < kParamCount && (slot < kKnobSlots || slot == kExpressionSlot || kParams[id].taper == Taper::kChoice);
+    return id < kParamCount && (slot < kKnobSlots || slot == kExpressionSlot || slot == kPedalSlot ||
+                                kParams[id].taper == Taper::kChoice);
 }
 
-// The factory layout, by control slot: what Knobs 3-6, SW1-SW3 and the expression pedal drive with no settings record.
+// The factory layout, by control slot: what Knobs 3-6, SW1-SW3, EXP and PEDAL drive with no settings record.
 inline constexpr uint8_t kFactoryAssign[kControlSlots] = {
     kBell2Gain,    // K3
     kLowCutFreq,   // K4
@@ -177,6 +182,7 @@ inline constexpr uint8_t kFactoryAssign[kControlSlots] = {
     kCompMode,     // SW2: down Off, middle Blend, up Direct
     kCompLevel,    // SW3
     kNoParam,      // EXP
+    kNoParam,      // PEDAL
 };
 constexpr bool FactoryValid() {
     for (int c = 0; c < kControlSlots; ++c)

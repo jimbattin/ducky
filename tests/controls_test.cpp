@@ -1,4 +1,4 @@
-// daisy/src/controls.h: the toggle hysteresis and LED2's blink pattern.
+// daisy/src/controls.h: the toggle hysteresis, LED2's blink pattern and the expression jack's scaling.
 #include "controls.h"
 
 #include <gtest/gtest.h>
@@ -83,4 +83,12 @@ TEST(Blinker, ZeroStopsRepeats) {
     b.Tick();
     b.Start(0);
     for (int i = 0; i < 2 * (kBlinkOnBlocks + kBlinkOffBlocks + kBlinkPauseBlocks); ++i) EXPECT_FALSE(b.Tick());
+}
+
+TEST(PedalTravel, HeelToeAndClamp) {
+    EXPECT_EQ(PedalTravel(0.0f), 0.0f);
+    EXPECT_EQ(PedalTravel(kPedalHeel), 0.0f);
+    EXPECT_FLOAT_EQ(PedalTravel(kPedalToe), 1.0f);
+    EXPECT_EQ(PedalTravel(1.0f), 1.0f);
+    EXPECT_NEAR(PedalTravel((kPedalHeel + kPedalToe) / 2), 0.5f, 1e-6f);
 }

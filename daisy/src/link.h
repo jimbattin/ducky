@@ -20,7 +20,8 @@ constexpr uint8_t kManufacturer = 0x7D, kDevice = 0x64, kVersion = 0x01;
 constexpr uint8_t kHello = 0x01, kList = 0x02, kErase = 0x03, kRename = 0x04, kSwap = 0x05, kDfu = 0x06,
                   kWatch = 0x07, kUploadBegin = 0x08, kUploadChunk = 0x09, kUploadCommit = 0x0A, kRead = 0x0B,
                   kGate = 0x0C, kGateTry = 0x0D, kDump = 0x0E, kSet = 0x0F, kAssign = 0x10, kSave = 0x11,
-                  kMorph = 0x19, kExpChannel = 0x1A, kFwBegin = 0x1B, kFwChunk = 0x1C, kFwCommit = 0x1D;
+                  kMorph = 0x19, kExpChannel = 0x1A, kFwBegin = 0x1B, kFwChunk = 0x1C, kFwCommit = 0x1D,
+                  kMidiInChannel = 0x1E;
 // Pedal -> host.
 constexpr uint8_t kLog = 0x12, kSlot = 0x13, kResult = 0x14, kStatus = 0x15, kData = 0x16, kParam = 0x17,
                   kValues = 0x18;
@@ -32,7 +33,7 @@ constexpr size_t kMaxName = 63;       // a SLOT name or a RENAME name
 constexpr size_t kChunkBytes = 256;   // an UPLOAD CHUNK's data, unpacked
 constexpr size_t kReadBytes = 160;    // a DATA's data, unpacked
 constexpr size_t kMaxPayload = 200;   // a pedal -> host payload (LOG, SLOT, RESULT, STATUS, DATA, PARAM, VALUES)
-constexpr size_t kStatusBytes = 32;   // a STATUS payload
+constexpr size_t kStatusBytes = 34;   // a STATUS payload
 constexpr size_t kGatePayload = 8;    // a GATE or GATE TRY payload: the slot, then ParseGate's 7 bytes
 constexpr uint32_t kWatchPeriodMs = 100;
 constexpr size_t kParamHead = 15;     // a PARAM payload before its text
@@ -46,8 +47,8 @@ constexpr size_t kMaxHostFrame = 5 + 3 + 5 + Packed7Size(kChunkBytes) + 1;
 static_assert(kMaxHostFrame == 307, "an UPLOAD CHUNK frame of 256 bytes");
 static_assert(3 + 3 * kMaxName + 2 <= kMaxPayload, "a SLOT fits");
 static_assert(1 + 3 + 5 + Packed7Size(kReadBytes) <= kMaxPayload, "a DATA fits");
-// VALUES before its codes: the assignments, held u14, the channel, N.
-constexpr size_t kValuesHead = dkparam::kControlSlots + 4;
+// VALUES before its codes: the assignments, held u14, the expression channel, the MIDI IN channel, N.
+constexpr size_t kValuesHead = dkparam::kControlSlots + 5;
 static_assert(kValuesHead + 2 * size_t(dkparam::kParamCount) <= kMaxPayload, "a VALUES fits");
 static_assert(dkmidi::kExpressionCc == 0x0B, "kCommands' Control Change row: Bn 0B");
 static_assert(dkmidi::kPresetCc == 0x66, "kCommands' Control Change row: Bn 66");
@@ -125,13 +126,15 @@ struct StatusFrame {
     uint16_t gate_level;          // the gate detector's level, tenths of a dB below full scale, 0..1200
     uint16_t gate_cut;            // the gate's gain reduction, tenths of a dB, 0..1200 (1200: closed)
     uint16_t comp_cut;            // the compressor's largest gain reduction, tenths of a dB, 0..1200
+    uint16_t pedal;               // permille, the expression jack's travel (PedalTravel); 0 on a board without one
 };
 
 // VALUES's fields.
 struct ValuesFrame {
     uint8_t assign[dkparam::kControlSlots];  // a parameter id or dkparam::kNoParam per control slot
-    uint8_t held;                            // bit c: control slot c is held
+    uint16_t held;                           // bit c: control slot c is held
     uint8_t exp_channel;                     // dkmidi::kOmni or 1-16
+    uint8_t midi_in_channel;                 // dkmidi::kOmni or 1-16
     uint16_t code[dkparam::kParamCount];     // each parameter's value (dkparam::ToCode)
 };
 
@@ -191,6 +194,7 @@ public:
         PutSeptets(p + 26, s.gate_level, 2);
         PutSeptets(p + 28, s.gate_cut, 2);
         PutSeptets(p + 30, s.comp_cut, 2);
+        PutSeptets(p + 32, s.pedal, 2);
         return AppendSysEx(kStatus, p, sizeof p);
     }
     // DATA: the slot, the image offset (u21), the CRC-32 of data[0, n) (u32), then the data Pack7'd; n 1..kReadBytes.
@@ -224,14 +228,15 @@ public:
         }
         return AppendSysEx(kParam, p, n);
     }
-    // VALUES: the assignments, the held bits (u14), the expression channel, the parameter count, then each
-    // parameter's code (u14).
+    // VALUES: the assignments, the held bits (u14), the expression channel, the MIDI IN channel, the parameter
+    // count, then each parameter's code (u14).
     bool AppendValues(const ValuesFrame& v) {
         uint8_t p[kValuesHead + 2 * dkparam::kParamCount];
         for (int c = 0; c < dkparam::kControlSlots; ++c) p[c] = v.assign[c] & 0x7F;
         PutSeptets(p + dkparam::kControlSlots, v.held, 2);
         p[dkparam::kControlSlots + 2] = v.exp_channel & 0x7F;
-        p[dkparam::kControlSlots + 3] = dkparam::kParamCount;
+        p[dkparam::kControlSlots + 3] = v.midi_in_channel & 0x7F;
+        p[dkparam::kControlSlots + 4] = dkparam::kParamCount;
         for (int i = 0; i < dkparam::kParamCount; ++i) PutSeptets(p + kValuesHead + 2 * i, v.code[i], 2);
         return AppendSysEx(kValues, p, sizeof p);
     }
@@ -343,24 +348,27 @@ inline constexpr CommandDoc kCommands[] = {
      "The pedal answers the Identity Reply."},
     {0, Dir::kToHost, "Identity Reply",
      "`F0 7E 7F 06 02 7D 64 00 <board> 00 <flags> 00 00 00 <build id> F7`",
-     "Manufacturer 7D, family 64 00 (the device byte 64, then 00), member `<board>` 00 (1 HotHouse), version "
+     "Manufacturer 7D, family 64 00 (the device byte 64, then 00), member `<board>` 00 (1 HotHouse, 2 "
+     "BurningBungalow), version "
      "`<flags>` 00 00 00: bit 0 set when the image plays the weight morph (the weight build, `APP=weight`), clear "
      "for the xfade build (the default) and the images without a morph; then the build id: 1-32 printable ASCII bytes, "
      "the short git commit with `+dirty` when tracked files differ (e.g. `711fa7c+dirty`), or `unknown` outside git."},
     {0, Dir::kToPedal, "Control Change 11 (Expression)",
      "`Bn 0B <value 0-127>` (n: the channel - 1; running status accepted)",
-     "Moves EXP, the expression pedal control, to value / 127 when the channel matches EXP CHANNEL's (Controls). "
+     "Moves EXP, the expression pedal control, to value / 127 when the channel matches EXP CHANNEL's (the Seed's USB "
+     "MIDI port) or, on a BurningBungalow, MIDI IN CHANNEL's (its MIDI IN jack) (Controls). "
      "Other CCs (but CC 102), notes and other channel messages are ignored. No RESULT, no log line."},
     {0, Dir::kToPedal, "Control Change 102 (Preset)",
      "`Bn 66 <value 0-7>` (n: the channel - 1; running status accepted)",
-     "Switches to slot value + 1 when the channel matches EXP CHANNEL's: the switch FS2 makes (fade out, load, fade "
+     "Switches to slot value + 1 when the channel matches EXP CHANNEL's (the Seed's USB MIDI port) or, on a "
+     "BurningBungalow, MIDI IN CHANNEL's (its MIDI IN jack): the switch FS2 makes (fade out, load, fade "
      "in; LED2 blinks the slot; the state record 2 s later), and the `preset` line. The playing slot restarts LED2's "
      "blinks only. A value of 8 or more, or a slot that is not ok, is ignored and logged: `preset cc V ignored`, "
      "`preset cc V ignored: slot N STATUS`. No RESULT."},
     {kHello, Dir::kToPedal, "HELLO", "none",
      "The pedal answers with LOG lines: the boot line `ducky <board> seed <version> sysclk N MHz audio N Hz N bit "
      "block N <build id>`, then the `slots`, `preset`, `model`, `ir`, `gate`, `morph`, `settings`, `layout`, "
-     "`exp` and `loop` lines (docs/FIRMWARE.md \"Log lines\"). No RESULT."},
+     "`exp`, `pedal` (a BurningBungalow only) and `loop` lines (docs/FIRMWARE.md \"Log lines\"). No RESULT."},
     {kList, Dir::kToPedal, "LIST", "none",
      "8 SLOT messages (slots 0-7), then RESULT `02` ok with value 8."},
     {kErase, Dir::kToPedal, "ERASE", "`<slot 0-7>`",
@@ -423,12 +431,14 @@ inline constexpr CommandDoc kCommands[] = {
      "index). Every control on it is held until it moves (a knob more than 3 % of its travel, a switch to another "
      "position). RESULT ok with the code taken (clamped). `bad-request` for a payload other than 3 bytes or an "
      "unknown id. No log line."},
-    {kAssign, Dir::kToPedal, "ASSIGN", "`<control 0-7> <id, or 7F none>`",
-     "Puts the parameter on the control (0-3 Knobs 3-6, 4-6 SW1-SW3, 7 EXP, the expression pedal); it keeps its "
-     "value until the control moves. Logs `assign CONTROL NAME`. RESULT ok (value 0). `bad-request` for a payload "
-     "other than 2 bytes, a control past 7, an unknown id, or a continuous parameter on a switch."},
+    {kAssign, Dir::kToPedal, "ASSIGN", "`<control 0-8> <id, or 7F none>`",
+     "Puts the parameter on the control (0-3 Knobs 3-6, 4-6 SW1-SW3, 7 EXP, the expression pedal over MIDI, 8 PEDAL, "
+     "a BurningBungalow's expression pedal jack); it keeps its value until the control moves. Logs `assign CONTROL "
+     "NAME`. RESULT ok (value 0). `bad-request` for a payload other than 2 bytes, a control past 8, an unknown id, a "
+     "continuous parameter on a switch, or control 8 on a HotHouse."},
     {kSave, Dir::kToPedal, "SAVE", "none",
-     "Writes the assignments, the expression channel and every parameter's value to the settings record, used at "
+     "Writes the assignments, the expression and MIDI IN channels and every parameter's value to the settings "
+     "record, used at "
      "the next power-up. Logs `settings seq N T ms`. RESULT ok with the flash time in ms; `flash` when the write "
      "fails (`settings write failed`)."},
     {kMorph, Dir::kToPedal, "MORPH",
@@ -441,9 +451,14 @@ inline constexpr CommandDoc kCommands[] = {
      "scales, matrix, fits) or one that targets its own slot; `slot-state` when the slot or the target is not ok, "
      "or the target's model is not the block's."},
     {kExpChannel, Dir::kToPedal, "EXP CHANNEL", "`<channel 0-16>`",
-     "Sets the MIDI channel EXP's CC 11 and the preset CC 102 are taken from: 0 any channel (omni, the factory "
-     "setting), 1-16 that channel. Acts at once; SAVE keeps it. Logs `exp channel omni|N`. RESULT ok (value 0). "
-     "`bad-request` for a payload other than 1 byte or a channel past 16."},
+     "Sets the MIDI channel EXP's CC 11 and the preset CC 102 are taken from on the Seed's USB MIDI port: 0 any "
+     "channel (omni, the factory setting), 1-16 that channel. Acts at once; SAVE keeps it. Logs `exp channel "
+     "omni|N`. RESULT ok (value 0). `bad-request` for a payload other than 1 byte or a channel past 16."},
+    {kMidiInChannel, Dir::kToPedal, "MIDI IN CHANNEL", "`<channel 0-16>`",
+     "A BurningBungalow's MIDI IN jack: sets the MIDI channel CC 11 (EXP) and CC 102 (preset) are taken from on it: "
+     "0 any channel (omni, the factory setting), 1-16 that channel. Acts at once; SAVE keeps it. Logs `midi in "
+     "channel omni|N`. RESULT ok (value 0). `bad-request` for a payload other than 1 byte, a channel past 16, or on "
+     "a HotHouse."},
     {kLog, Dir::kToHost, "LOG", "`<printable ASCII, at most 120 bytes>`",
      "One log line (boot, HELLO, slot and control changes, the controls and status lines once a second)."},
     {kSlot, Dir::kToHost, "SLOT",
@@ -456,7 +471,7 @@ inline constexpr CommandDoc kCommands[] = {
      "last."},
     {kStatus, Dir::kToHost, "STATUS",
      "`<load avg u14> <load max u14> <underruns u28> <slot> <mute> <knob 1-6: 6 x u14> <SW1> <SW2> <SW3> "
-     "<footswitches> <gate level u14> <gate cut u14> <comp cut u14>` (32 bytes)",
+     "<footswitches> <gate level u14> <gate cut u14> <comp cut u14> <pedal u14>` (34 bytes)",
      "Sent every 100 ms while WATCH is on. Load in permille, as the last once-a-second `load` line reported it (0 "
      "before the first); underruns since boot, clamped at 2^28 - 1; slot 0-7, or 7F when dry; mute 0/1; knobs in "
      "permille (0-1000); SW1-SW3 0 down, 1 middle, 2 up; footswitches held: bit 0 FS1, bit 1 FS2. Gate level: the "
@@ -464,7 +479,8 @@ inline constexpr CommandDoc kCommands[] = {
      "STATUS, in tenths of a dB below full scale (0-1200, 1200 for silence); gate cut: the largest gain reduction "
      "the gate applied since the previous STATUS, in tenths of a dB (0-1200, 1200 closed); comp cut: the largest "
      "reduction of the compressor's low-frequency gain below Sustain's since the previous STATUS, in tenths of a dB "
-     "(0-1200; 0 when the compressor is off)."},
+     "(0-1200; 0 when the compressor is off); pedal: the expression jack's travel in permille (0-1000), 0 on a "
+     "HotHouse."},
     {kData, Dir::kToHost, "DATA", "`<slot 0-7> <offset u21> <crc32 u32> <Pack7 data>` (1-160 bytes unpacked)",
      "Answers READ: the image bytes at offset and the CRC-32 of the unpacked bytes. Comes before READ's RESULT."},
     {kParam, Dir::kToHost, "PARAM",
@@ -477,9 +493,10 @@ inline constexpr CommandDoc kCommands[] = {
      "strings are printable ASCII: the name is the log's and `tools/pedal.ts`'s, the label the editor's; a choice's "
      "unit is its labels, comma-separated, in index order."},
     {kValues, Dir::kToHost, "VALUES",
-     "`<control 0-7 assignments: 8 bytes> <held bits u14> <exp channel> <N> <code u14 x N>`",
-     "The live assignments (7F none), bit s of held set while control s is held, the expression channel (0 any, "
-     "1-16), and each parameter's code. After DUMP's PARAMs, and with every STATUS while WATCH is on."},
+     "`<control 0-8 assignments: 9 bytes> <held bits u14> <exp channel> <midi in channel> <N> <code u14 x N>`",
+     "The live assignments (7F none), bit s of held set while control s is held, the expression channel and the MIDI "
+     "IN channel (0 any, 1-16), and each parameter's code. After DUMP's PARAMs, and with every STATUS while WATCH is "
+     "on."},
 };
 
 struct ResultDoc {
@@ -492,7 +509,8 @@ inline constexpr ResultDoc kResults[] = {
     {Result::kOk, "ok", "Done."},
     {Result::kBadRequest, "bad-request",
      "Wrong payload length or a field out of range (slot, size, a firmware size, name, a == b, chunk data past the "
-     "image, bad Pack7, a gate field, a parameter or control field, a morph block, an EXP CHANNEL channel)."},
+     "image, bad Pack7, a gate field, a parameter or control field, a morph block, an EXP CHANNEL or MIDI IN CHANNEL "
+     "channel, ASSIGN of PEDAL or MIDI IN CHANNEL on a HotHouse)."},
     {Result::kNoUpload, "no-upload",
      "UPLOAD or FIRMWARE CHUNK or COMMIT without its BEGIN (or after a COMMIT that cleared it)."},
     {Result::kOffset, "offset", "The chunk's offset is past the next expected offset (the value); resend from there."},

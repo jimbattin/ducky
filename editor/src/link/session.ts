@@ -40,6 +40,7 @@ import {
   isImageSize,
   listMsg,
   MAX_CHANNEL,
+  midiInChannelMsg,
   morphMsg,
   OMNI,
   type ParamInfo,
@@ -286,21 +287,31 @@ export class PedalSession {
     return (await this.request(setMsg(id, code), CMD.set, this.replyTimeoutMs)).value;
   }
 
-  /** Puts a parameter (null: none) on control 0-7; it keeps its value until the control moves. */
+  /** Puts a parameter (null: none) on control 0-8; it keeps its value until the control moves. */
   async assign(control: number, id: number | null): Promise<void> {
     if (!Number.isInteger(control) || control < 0 || control >= CONTROLS.length)
       throw new LinkError(`ASSIGN: control ${control}: must be 0-${CONTROLS.length - 1}`);
     await this.request(assignMsg(control, id), CMD.assign, this.replyTimeoutMs);
   }
 
-  /** The MIDI channel EXP's CC 11 and the preset CC 102 are taken from: 0 any (omni), 1-16. Kept by save(). */
+  /** The MIDI channel EXP's CC 11 and the preset CC 102 are taken from on USB: 0 any (omni), 1-16. Kept by save(). */
   async expChannel(channel: number): Promise<void> {
     if (!Number.isInteger(channel) || channel < OMNI || channel > MAX_CHANNEL)
       throw new LinkError(`EXP CHANNEL: channel ${channel}: must be 0-${MAX_CHANNEL}`);
     await this.request(expChannelMsg(channel), CMD.expChannel, this.replyTimeoutMs);
   }
 
-  /** Writes the assignments, the expression channel and the values to the settings record; the flash time in ms. */
+  /** The same on a BurningBungalow's MIDI IN jack: 0 any (omni), 1-16. Kept by save(). */
+  async midiInChannel(channel: number): Promise<void> {
+    if (!Number.isInteger(channel) || channel < OMNI || channel > MAX_CHANNEL)
+      throw new LinkError(`MIDI IN CHANNEL: channel ${channel}: must be 0-${MAX_CHANNEL}`);
+    await this.request(midiInChannelMsg(channel), CMD.midiInChannel, this.replyTimeoutMs);
+  }
+
+  /**
+   * Writes the assignments, the expression and MIDI IN channels and the values to the settings record; the flash time
+   * in ms.
+   */
   async save(): Promise<number> {
     return (await this.request(saveMsg(), CMD.save, this.flashTimeoutMs)).value;
   }

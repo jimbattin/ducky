@@ -1,5 +1,6 @@
-# ducky: the Ducky NAM player pedal on the Daisy Seed in a Cleveland Music Co. HotHouse (src/board.h). Each APP builds
-# one image, build/<BOARD>-<APP>/ducky_<APP>.bin (build/hothouse-xfade/ducky_xfade.bin by default):
+# ducky: the Ducky NAM player pedal on the Daisy Seed in a Cleveland Music Co. HotHouse or a BurningBungalow
+# (src/board.h). Each APP builds one image for the BOARD, build/<BOARD>-<APP>/ducky_<APP>.bin
+# (build/hothouse-xfade/ducky_xfade.bin by default):
 # - xfade (the default): the pedal, the xfade build: the morph crossfades two models (src/ducky.cpp, DK_MORPH_XFADE=1);
 # - weight: the pedal, the weight build: the morph blends one model's weights (src/ducky.cpp, DK_MORPH_XFADE=0);
 # - bench: the A2-Lite, IR, EQ and compressors' benchmark and device check, no audio (src/bench.cpp);
@@ -13,12 +14,15 @@
 # The app runs from SRAM, loaded from QSPI by the Daisy bootloader.
 export APP_TYPE = BOOT_SRAM
 
-# BOARD: hothouse (default, Cleveland Music Co. HotHouse). Other hosts are added here and in src/board.h.
+# BOARD: hothouse (default, Cleveland Music Co. HotHouse) or burningbungalow (the HotHouse fork with an expression
+# pedal jack and MIDI IN). Other hosts are added here and in src/board.h.
 BOARD ?= hothouse
 ifeq ($(BOARD),hothouse)
 BOARD_DEF = -DDUCKY_BOARD_HOTHOUSE=1
+else ifeq ($(BOARD),burningbungalow)
+BOARD_DEF = -DDUCKY_BOARD_BURNINGBUNGALOW=1
 else
-$(error BOARD must be hothouse, not '$(BOARD)')
+$(error BOARD must be hothouse or burningbungalow, not '$(BOARD)')
 endif
 
 # Source lists must be set before including the core Makefile: it evaluates vpath directives at parse time.
@@ -36,7 +40,8 @@ MAIN_SRC = src/bench.cpp
 else ifeq ($(APP),latency)
 MAIN_SRC = src/latency.cpp
 endif
-CPP_SOURCES = $(MAIN_SRC) src/usb_link.cpp src/memory.cpp
+# src/midi_in.cpp is a BurningBungalow's MIDI IN: built for every board and app, dropped by the linker where unused.
+CPP_SOURCES = $(MAIN_SRC) src/usb_link.cpp src/memory.cpp src/midi_in.cpp
 override BUILD_DIR = build/$(BOARD)-$(APP)
 $(shell mkdir -p $(BUILD_DIR))
 

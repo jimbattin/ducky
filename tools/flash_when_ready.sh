@@ -11,7 +11,8 @@
 # Usage: [DK_USB_PORT=BUS-PORT] tools/flash_when_ready.sh [FILE.bin [ADDR]]
 #   FILE.bin defaults to the HotHouse build daisy/build/hothouse-xfade/ducky_xfade.bin
 #   (the weight morph: daisy/build/hothouse-weight/ducky_weight.bin; the bench:
-#   daisy/build/hothouse-bench/ducky_bench.bin),
+#   daisy/build/hothouse-bench/ducky_bench.bin; a BurningBungalow's:
+#   daisy/build/burningbungalow-xfade/ducky_xfade.bin and its siblings),
 #   resolved relative to this script (so it works from any working directory).
 #   ADDR is 0x90040000 (firmware, the default) or 0x90400000 (a preset bank
 #   from tools/preset_bank.ts; docs/FIRMWARE.md "Preset store").

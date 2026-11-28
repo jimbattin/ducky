@@ -42,9 +42,10 @@ In an existing clone, `git submodule update --init --recursive` fetches libDaisy
 
 ```sh
 make -C daisy -j   # daisy/build/hothouse-xfade/ducky_xfade.bin; the link prints the memory table
+make -C daisy BOARD=burningbungalow -j   # a BurningBungalow's: daisy/build/burningbungalow-xfade/ducky_xfade.bin
 ```
 
-| `APP=` | Image | `.bin` | More |
+| `APP=` | Image | `.bin` (HotHouse; `burningbungalow-` for `BOARD=burningbungalow`) | More |
 |---|---|---|---|
 | `xfade` (the default) | the pedal, the xfade build: a morph preset's two models crossfaded | `daisy/build/hothouse-xfade/ducky_xfade.bin` | `docs/MORPH.md` |
 | `weight` | the pedal, the weight build: the weight morph | `daisy/build/hothouse-weight/ducky_weight.bin` | `docs/MORPH.md` "On the pedal: the weight morph" |
@@ -86,11 +87,12 @@ It prints the Identity Reply (`device 64` is Ducky), then the boot lines (`ducky
 make test                        # host GoogleTest: build/host/tests (tests/*.cpp); also builds build/host/render and fails when docs/MIDI.md is stale
 make midi-doc                    # regenerates docs/MIDI.md (tools/gen_midi_doc.cpp)
 make morph-check                 # the morph path trainer (tools/morph_train.py, under uv) against tests/fixtures: its network and its fit
-DK_USB_PORT=3-4 make firmware-check   # the firmware update over USB-MIDI, unattended on the attached pedal (tools/firmware_check.ts, "Firmware update")
+DK_USB_PORT=3-4 make firmware-check   # the firmware update over USB-MIDI, unattended on the attached pedal (tools/firmware_check.ts, "Firmware update"); BOARD=burningbungalow on a BurningBungalow
 make -C daisy -j                 # daisy/build/hothouse-xfade/ducky_xfade.bin: the xfade build
 make -C daisy APP=weight -j      # daisy/build/hothouse-weight/ducky_weight.bin: the weight build (docs/MORPH.md)
 make -C daisy APP=bench -j       # daisy/build/hothouse-bench/ducky_bench.bin ("Bench" below)
 make -C daisy APP=latency -j     # daisy/build/hothouse-latency/ducky_latency.bin: the FX loop's round trip (docs/LOOP.md)
+make -C daisy BOARD=burningbungalow APP=… -j   # the same images for a BurningBungalow, in daisy/build/burningbungalow-*/
 tools/flash_when_ready.sh [FILE.bin [ADDR]]   # sends DFU over USB-MIDI, waits for 0483:df11, flashes ADDR (default 0x90040000)
 mkdir -p build && bun tools/preset_bank.ts -o build/bank.bin --slot 1 MODEL.nam --ir IR.wav --slot 2 …   # preset bank ("Preset store")
 tools/flash_when_ready.sh build/bank.bin 0x90400000                                   # writes all 8 slots
@@ -105,7 +107,7 @@ bun tools/ir_convert.ts IR.wav...       # .wav -> IR .bin next to each input (do
 tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Reference renders")
 ```
 
-- **Build options:** `daisy/Makefile` takes `BOARD=hothouse` (the only board) and `APP=xfade` (default), `APP=weight`, `APP=bench` or `APP=latency`. The pedal has two builds: the **xfade build** (`APP=xfade`, the default) and the **weight build** (`APP=weight`). Each app has its own build directory, `daisy/build/<BOARD>-<APP>`, so no object is shared between apps, and its own image name, `ducky_<APP>.bin`, so the two pedal builds can be copied side by side into a release.
+- **Build options:** `daisy/Makefile` takes `BOARD=hothouse` (the default, Cleveland Music Co. HotHouse) or `BOARD=burningbungalow` (the HotHouse fork with an expression pedal jack and a TRS MIDI IN), and `APP=xfade` (default), `APP=weight`, `APP=bench` or `APP=latency`. Each board's image refuses to install on the other (the firmware tag's board, "Firmware update"); presets and settings records are the same on both. The pedal has two builds: the **xfade build** (`APP=xfade`, the default) and the **weight build** (`APP=weight`). Each board and app has its own build directory, `daisy/build/<BOARD>-<APP>`, so no object is shared between them, and its own image name, `ducky_<APP>.bin`, so the two pedal builds can be copied side by side into a release.
 - **The morph:** the xfade build (`DK_MORPH_XFADE=1`, `daisy/src/ducky.cpp`'s default) runs a morph preset's model and its target's and `morph` crossfades their outputs (`docs/MORPH.md`; "The xfade build" under "Threads"; `docs/MEASUREMENTS.md` "Live load", "Morph"). The weight build is the same sources built with `-DDK_MORPH_XFADE=0`: one model runs, its weights blended into the target's, straight or along a trained path (`docs/MORPH.md` "On the pedal: the weight morph"). Flash it with `tools/flash_when_ready.sh daisy/build/hothouse-weight/ducky_weight.bin`; `make -C daisy -j && tools/flash_when_ready.sh` returns to the xfade build. Both read the same presets and settings and write nothing the other does not, so the two can be swapped freely. The weight build sets bit 0 of the Identity Reply's flags (`dklink::kIdentityWeightMorph`, `docs/MIDI.md`), so hosts know which morph plays: `usb_log.py --identity` prints `morph weight` or `morph crossfade`, the editor shows the fit and trained paths only for the weight build (`docs/EDITOR.md`), and `pedal.ts morph … --train`/`--path` warns that the xfade build does not play the path. Its boot line ends ` weight` ("Log lines").
 - **Presets** are not part of the build: they live in QSPI and are written with a bank image, or slot by slot over the link with `tools/pedal.ts` ("Preset store"). An empty bank plays dry.
 - **CMSIS-DSP:** `libdaisy.a` has no CMSIS-DSP, so every build compiles the FFT sources `daisy/cmsis_fft.mk` lists, with its table defines.
@@ -123,9 +125,10 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `daisy/src/ducky.cpp` | The pedal: the image tag (`kImageTag`), the boot slot scan, `AudioCallback`, the parameter step (`stepParams`), the preset switch (`servePresets`), the state record (`writeState`), the settings record (`saveSettings`), the link's slot, parameter and firmware commands (`onCommand` and a function per long command) and replies (`serveReplies`), the QSPI writes (`writeFlash`, behind `writeSlot` and `writeFirmware`), the main loop, the log lines. `DK_MORPH_XFADE` picks the morph: 1 (the default, the xfade build) runs both models and crossfades them (`runXfade`, a second engine `gEngineB`), 0 (`APP=weight`, the weight build) the weight morph (`dkmorph::Prepare`, `A2Lite::Blend`). | no |
 | `daisy/src/bench.cpp` | `APP=bench`: the A2-Lite and IR device checks and the cycle timing of the engine, the IR, the EQ, the noise gate, the two compressors, the morph's blend and the whole chain ("Bench"). | no |
 | `daisy/src/latency.cpp` | `APP=latency`: the FX loop's round trip and the crosstalk between the channels, from clicks on each output captured on both inputs (`docs/LOOP.md` "Measuring the loop"). | no |
-| `daisy/src/board.h` | `dkboard::Board`: the HotHouse pins, knobs, toggles, footswitches. `kBoardId` 1, `kKnobs` 6, `kToggles` 3. | no |
+| `daisy/src/board.h` | `dkboard::Board`: the HotHouse pins, knobs, toggles, footswitches, and on a BurningBungalow the expression jack (`Pedal()`, the ADC channel after the knobs). `kBoardId` 1 (HotHouse) or 2 (BurningBungalow), `kHasPedal`, `kHasMidiIn`, `kKnobs` 6, `kToggles` 3. | no |
 | `daisy/src/firmware.h` | `dkfw::Start` (flush-to-zero, board init, MPU), `kBuildId` and `SeedName` (the Seed's revision and codec for the boot lines). | no |
 | `daisy/src/usb_link.h/.cpp` | `dkusb`: USB-MIDI transport, a non-blocking double-buffered send, `Serve` (Identity, HELLO, DFU restart, other commands to `onCommand`, Control Changes to `onControlChange`), `ServeFor` (`Serve`, repeatedly, for a time), `Restart` (into the bootloader without its DFU wait, after a firmware update). Also `__wrap_USBD_LL_SetupStage` (linked with `-Wl,--wrap`), which flushes EP0's TxFIFO when a SETUP arrives while an IN packet is still pending ("USB enumeration"). | no |
+| `daisy/src/midi_in.h/.cpp` | `dkmidiin`: a BurningBungalow's TRS MIDI IN, libDaisy's `MidiUartTransport` on USART1 (RX D14), bytes through an IRQ ring to `Serve`, which passes Control Changes to `onControlChange`. | no |
 | `daisy/src/midi.h` | `dkmidi`: the Control Change parser (`CcParser`, running status included), `kExpressionCc` (11), `ChannelMatches` for EXP's channel. | yes |
 | `daisy/src/link.h` | `dklink`: the SysEx wire format, the septet and Pack7 codecs, `TxBuffer` (LOG, SLOT, RESULT, STATUS, DATA, PARAM, VALUES, Identity), `SysExAssembler`, `PedalCommand`, and the protocol tables `kCommands`/`kResults` that `docs/MIDI.md` is generated from. The protocol reference. | yes |
 | `daisy/src/upload.h` | `dklink::Upload` and `dklink::FirmwareUpload`, on their shared `Staging`: UPLOAD and FIRMWARE BEGIN/CHUNK staging (`StageChunk`: CRC per chunk, resends, gaps). | yes |
@@ -176,16 +179,16 @@ tools/nam_reference.sh           # NAM reference renders (docs/NAM_FORMAT.md "Re
 | `tests/fixtures/comp/` | The compressor's reference fixtures from `tools/comp_reference.py`: inputs `step_30_300.in.wav`, `step_10_1000.in.wav`, `di.in.wav` (synthetic plucked notes, 1.5 s); outputs `step_30_300.s100.ref.wav`, `step_30_300.s50.ref.wav`, `step_10_1000.s100.ref.wav`, `di.ref.wav`; the static curve `static.csv`. `tests/compressor_test.cpp` checks the kernel against them and against the spec's SPICE tables. | |
 | `tests/fixtures/ota/` | The OTA compressor's reference fixtures from `tools/ota_reference.py`, on `tests/fixtures/comp/`'s inputs: `step_30_300.s100.ref.wav`, `step_30_300.s50.ref.wav`, `step_10_1000.s100.ref.wav`, `di.ref.wav` and `static.csv`. `tests/ota_compressor_test.cpp` checks the kernel against them and against the spec's SPICE tables. | |
 
-- **Naming:** namespaces are `dkboard`, `dkfw`, `dkusb`, `dklink`, `dkctl`, `dkparam`, `dkdsp`, `dkbin`, `dkmodel`, `dkir`, `dkmorph`, `dkpreset` and (host only) `dkwav`. Macros use the `DK_` prefix, and the board define is `DUCKY_BOARD_HOTHOUSE`.
+- **Naming:** namespaces are `dkboard`, `dkfw`, `dkusb`, `dkmidiin`, `dklink`, `dkctl`, `dkparam`, `dkdsp`, `dkbin`, `dkmodel`, `dkir`, `dkmorph`, `dkpreset` and (host only) `dkwav`. Macros use the `DK_` prefix, and the board defines are `DUCKY_BOARD_HOTHOUSE` and `DUCKY_BOARD_BURNINGBUNGALOW`.
 - **DSP code** goes under `daisy/src/dsp/`, host-portable and covered by `tests/`. The top-level `Makefile` rebuilds the tests and `render` whenever any `daisy/src/*.h`, `daisy/src/dsp/*.h`, `tests/*.h` or `tools/*.h` changes. Tests find fixtures through `DK_REPO_ROOT`, so `build/host/tests` runs from any directory.
 - **Before writing or optimising a DSP kernel,** read `docs/M7_PERFORMANCE.md`: what float code costs on this core, measured, and the rules that follow. Host tests cannot see performance; the bench can.
 
 ## Threads
 
 - **`AudioCallback`** is the audio DMA interrupt at 48 kHz, in 24-sample blocks (0.5 ms). It runs from ITCM, and its state, the engines with their rings, the EQ, the compressor and the IR convolver included, lives in DTCM; the convolver's tail spectra live in AXI SRAM, and in the xfade build so do each engine's three largest rings (the weight build keeps its engine's rings in DTCM, "Memory"). Control timings (toggle hysteresis, LED2's blinks) are set in milliseconds and counted in blocks (`dkctl::BlocksForMs`). In order, it:
-  1. reads the controls;
+  1. reads the controls (on a BurningBungalow the expression jack too, scaled to its travel by `dkctl::PedalTravel`);
   2. toggles the mute on FS1 and counts FS2 presses;
-  3. applies the link's queued SETs and ASSIGNs and the expression pedal's CC 11s, lets the control slots (Knobs 3–6, SW1–SW3) write their parameters (`dkparam::Store::Update`: pickup and holds, `docs/MIDI.md` "Controls"; EXP writes its parameter as each CC is applied), and publishes the values, the assignments and the held controls;
+  3. applies the link's queued SETs and ASSIGNs and the expression pedal's CC 11s (USB or MIDI IN), lets the control slots (Knobs 3–6, SW1–SW3, PEDAL) write their parameters (`dkparam::Store::Update`: pickup and holds, `docs/MIDI.md` "Controls"; EXP writes its parameter as each CC is applied), and publishes the values, the assignments and the held controls;
   4. steps the preset switch's handshake ("Preset switch" below), then the loop mode (`stepLoop`): when `loop_mode` differs from the routing in use (`gLoop`), both outputs fade out over 5 ms (`gModeFade`), the routing follows at silence, and they fade back in;
   5. measures the input peak (the raw jack, before the compressor), takes new gate settings (`gGateWord`, published by the main loop) and runs the gate's detector on that peak (`NoiseGate::Process`, every block, dry and parked included);
   6. steps the morph (`stepMorph`, `docs/MORPH.md`): the `morph` parameter is smoothed every block, and for a preset with a morph target the blend position sets the two models' crossfade gains ("The xfade build" below); then runs the chain, routed by `gLoop` (`docs/LOOP.md`). The send and return levels (`loop_send`, `loop_return`) are smoothed every block in every mode and ramped like the knobs. In MISO, on the left input, into the left output buffer, then in place:
@@ -299,19 +302,20 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 
 ## Settings record
 
-`daisy/src/settings.h` is the reference; tests: `tests/settings_test.cpp`. The record holds what is global to the pedal and not part of a preset: which parameter each control slot (Knobs 3–6, SW1–SW3, EXP) drives, the MIDI channel EXP's CC 11 is taken from, and every parameter's value (`docs/MIDI.md` "Parameters", "Controls").
+`daisy/src/settings.h` is the reference; tests: `tests/settings_test.cpp`. The record holds what is global to the pedal and not part of a preset: which parameter each control slot (Knobs 3–6, SW1–SW3, EXP, PEDAL) drives, the MIDI channels EXP's CC 11 and the preset CC 102 are taken from on USB and on a BurningBungalow's MIDI IN, and every parameter's value (`docs/MIDI.md` "Parameters", "Controls").
 
 | Offset | Field |
 |---|---|
 | 0 | magic `DKSG` |
 | 4 | u32 seq |
-| 8 | u8 version (3) |
-| 9 | u8 control slots (8; 7 in records written before EXP) |
+| 8 | u8 version (4) |
+| 9 | u8 control slots (9) |
 | 10 | u8 parameter count N |
-| 11 | u8 expression channel: 0 omni, 1–16 (0 in 7-slot records) |
-| 12 | assign[8]: a parameter id per control slot, or `7F` for none (a 7-slot record's byte 19 is a reserved 0, not read) |
-| 20 | f32 value[N], by parameter id: a continuous parameter's position 0..1 along its taper, a choice's index |
-| 20 + 4N | CRC-32 of bytes [0, 20 + 4N) |
+| 11 | u8 expression channel (USB): 0 omni, 1–16 |
+| 12 | u8 MIDI IN channel (a BurningBungalow's): 0 omni, 1–16 |
+| 13 | assign[9]: a parameter id per control slot, or `7F` for none |
+| 22 | f32 value[N], by parameter id: a continuous parameter's position 0..1 along its taper, a choice's index |
+| 22 + 4N | CRC-32 of bytes [0, 22 + 4N) |
 
 - **Two copies,** as for the state record: each of the two 4 KB sectors holds one record at its start. The valid record with the higher seq is the newest. SAVE (the link's command) erases and writes the other sector, then reads it back through the memory-mapped QSPI (`settings seq S T ms`, or `settings write failed` and RESULT `flash`), so a torn write leaves the previous record readable. Nothing else writes it: ASSIGN and SET change only the running pedal.
 - **At boot** the newest record sets the assignments and the values (`settings seq S`); with none, the controls take the factory layout (`kFactoryAssign`, `docs/MIDI.md` "Controls") and every parameter is at its default (`settings factory`). The first audio block then writes every parameter on a control from that control, so a saved value matters only for a parameter on no control.
@@ -319,7 +323,8 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 - **Across firmware versions:** parameter ids are append-only within a version. A record with fewer parameters than the firmware leaves the later ones at their defaults; one with more has the extra values ignored. SAVE always writes the running firmware's count. A table whose ids change bumps the version, and a record of another version is ignored, so the first boot after such a change reads `settings factory`. Version 3 merged `comp_enable` (id 16) and `comp_mode` (id 19) into `comp_mode` (id 16: off, blend, direct, one toggle's three positions), moving `comp_balance` and the loop's three down one (23 parameters). Earlier versions: `docs/HISTORY.md`.
 - **Morph:** `morph` (id 23) is appended, 24 parameters; the version stays 3, so a 23-value record leaves it at its default, 0 %.
 - **Compressor type:** `comp_type` (id 24) is appended, 25 parameters; the version stays 3, so a 24-value record leaves it at its default, OTC.
-- **EXP:** the eighth control slot (the expression pedal, MIDI CC 11) takes the header's spare bytes: byte 11 holds its channel and byte 19 its assignment, and byte 9 reads 8. The version stays 3: a 7-slot record still decodes, with EXP at the factory layout's (none) and the channel omni. A channel past 16 decodes as omni.
+- **EXP:** the eighth control slot (the expression pedal over MIDI, CC 11) took version 3's spare header bytes: byte 11 its channel, byte 19 its assignment, byte 9 reading 8; a 7-slot version-3 record still decodes, with EXP at the factory layout's (none) and the channel omni. A channel past 16 decodes as omni.
+- **PEDAL and MIDI IN (version 4):** the ninth control slot (a BurningBungalow's expression pedal jack) and MIDI IN's channel grow the header to 22 bytes. A version-3 record (7 or 8 slots: magic, seq, version, slots, N, the expression channel at 11, assign[slots] from 12, values from 20) still decodes, with PEDAL at the factory layout's (none) and MIDI IN omni; the first SAVE after the update writes version 4. The same record serves both boards: a HotHouse drops a saved PEDAL assignment at boot (`main`), so its SAVE writes PEDAL as none, and keeps MIDI IN's channel as it read it.
 
 ## Link protocol
 
@@ -328,11 +333,12 @@ The Daisy bootloader's DFU layout lists `0x90400000/60*64Kg`, so dfu-util writes
 - **Boot and log:** HELLO, DFU, LOG and Identity.
 - **Firmware:** FIRMWARE BEGIN/CHUNK/COMMIT (`0x1B`–`0x1D`): a new image staged in SDRAM, checked, written to `0x90040000`, then a restart into it ("Firmware update").
 - **Slots:** LIST, ERASE, RENAME, SWAP and UPLOAD BEGIN/CHUNK/COMMIT, with the SLOT and RESULT replies; READ and its DATA reply (up to 160 bytes of an ok slot's image, copied from the mapped QSPI and sent by `serveReplies` before READ's RESULT).
-- **Status:** WATCH and the STATUS reply (32 bytes), which carries the gate's level and cut and the comp cut (the largest reduction since the previous STATUS of the OTC's low-frequency gain below Sustain's, or of the OTA's bias current below its value at rest, tenths of a dB, 0 when off).
+- **Status:** WATCH and the STATUS reply (34 bytes), which carries the gate's level and cut, the comp cut (the largest reduction since the previous STATUS of the OTC's low-frequency gain below Sustain's, or of the OTA's bias current below its value at rest, tenths of a dB, 0 when off) and a BurningBungalow's expression jack position (permille of travel, 0 on a HotHouse).
 - **Noise gate:** GATE (rewrite a slot's gate block) and GATE TRY (set the running gate only, for the editor's sliders).
 - **Parameters:** DUMP (the parameter table as PARAMs, then a VALUES), SET, ASSIGN, SAVE, and a VALUES after every STATUS under WATCH.
 - **Morph:** MORPH (`0x19`: rewrite or remove a slot's morph block, `docs/MORPH.md`), the `morph` parameter (id 23) and the slot status `morph`.
-- **Expression pedal and presets:** EXP CHANNEL (`0x1A`), control 7 (`exp`) in ASSIGN, the channel and an eighth assignment in VALUES (whose held bits are a u14), and two MIDI messages besides SysEx, both on EXP CHANNEL's channel: Control Change 11 on the Seed's USB MIDI port moves EXP, and Control Change 102 with value 0–7 switches to slot 1–8 (`daisy/src/midi.h` `CcParser` takes every byte `dkusb::Serve` reads, alongside the SysEx assembler; `onControlChange` queues EXP's position for the callback, or retargets the preset switch as FS2 does).
+- **Expression pedal and presets:** EXP CHANNEL (`0x1A`), control 7 (`exp`) in ASSIGN, the channel and an eighth assignment in VALUES (whose held bits are a u14), and two MIDI messages besides SysEx, both on EXP CHANNEL's channel: Control Change 11 on the Seed's USB MIDI port moves EXP, and Control Change 102 with value 0–7 switches to slot 1–8 (`daisy/src/midi.h` `CcParser` takes every byte `dkusb::Serve` reads, alongside the SysEx assembler; `onUsbControlChange` queues EXP's position for the callback, or retargets the preset switch as FS2 does).
+- **BurningBungalow:** control 8 (`pedal`, PEDAL, the expression pedal jack) in ASSIGN and a ninth assignment in VALUES; MIDI IN CHANNEL (`0x1E`) and its channel in VALUES. The TRS MIDI IN takes the same two Control Changes on MIDI IN CHANNEL's channel (`daisy/src/midi_in.cpp`: libDaisy's `MidiUartTransport` on USART1 RX D14 at 31250 baud, its DMA bytes through a ring to `dkmidiin::Serve` in the main loop, after `dkusb::Serve`; a UART error restarts reception). On a HotHouse, ASSIGN of control 8 and MIDI IN CHANNEL answer `bad-request`.
 
 The Identity Reply's first version byte carries flags: bit 0 set by the weight build (`APP=weight`), clear in the xfade build. Firmware from before it sends 0, so a host reads it as the crossfade.
 
@@ -349,9 +355,10 @@ morph N M|none                           # slot N morphs with slot M: READs both
 info N                                   # READs the preset's metadata: name; model, gear type/make/model, modeled by; loudness, input level; IR taps, source, gain; gate; morph target and fit
 param list | param get NAME              # each parameter: its name, value and controls (`low_cut_freq    106 Hz        K5`), ` (held)` on a control waiting to move
 param set NAME VALUE                     # VALUE in the parameter's unit (Hz, Q, dB; comp_sustain in % while comp_type is OTA), a choice's label or index, or `off`: `param set high_cut_freq 3000`, `param set bell2_gain -3`
-param assign CONTROL NAME|none           # CONTROL k3-k6, sw1-sw3 or exp: `param assign k3 bell2_freq`; a switch takes only choice parameters
-param channel omni|1-16                  # EXP CHANNEL: the MIDI channel exp's CC 11 and the preset CC 102 are taken from (omni: any)
-param save                               # SAVE: the assignments, the expression channel and the values for the next power-up; prints the flash time
+param assign CONTROL NAME|none           # CONTROL k3-k6, sw1-sw3, exp or pedal (a BurningBungalow's): `param assign k3 bell2_freq`; a switch takes only choice parameters
+param channel omni|1-16                  # EXP CHANNEL: the MIDI channel exp's CC 11 and the preset CC 102 are taken from on USB (omni: any)
+param midi-in omni|1-16                  # MIDI IN CHANNEL: the same for a BurningBungalow's MIDI IN jack
+param save                               # SAVE: the assignments, the expression and MIDI IN channels and the values for the next power-up; prints the flash time
 status [SECONDS]                         # WATCH: a STATUS line every 100 ms (with `gate in … dBFS cut … dB`, ending `comp cut … dB`) and the LOG lines, for SECONDS (5) or until Ctrl-C
 firmware FILE.bin                        # FIRMWARE: writes the image and restarts the pedal into it; prints the flash time, retries and seconds until it is back, with its build and morph
 ```
@@ -386,6 +393,7 @@ morph slot 2 xfade "FNDR BFSR VB Edge WRM2 CAB FREE"                            
 settings seq 5                                                                                (boot / HELLO)
 layout k3 bell2_gain k4 low_cut_freq k5 high_cut_freq k6 comp_balance sw1 low_cut_slope sw2 comp_mode sw3 comp_level  (boot / HELLO)
 exp none channel omni                                                                         (boot / HELLO)
+pedal none midi in channel omni                                                               (boot / HELLO, a BurningBungalow only)
 loop miso                                                                                     (boot / HELLO, when loop_mode changes)
 preset 4 "A2" load 138 us                                                                     (after a switch, with model and ir)
 state slot 4 seq 12 85 ms                                                                     (2 s after a switch)
@@ -397,10 +405,11 @@ morph slot 5 -> 2 161 ms                                                        
 swap slots 1 8 314 ms                                                                         (link: SWAP, then the slots line)
 assign k3 low_cut_slope                                                                       (link: ASSIGN)
 exp channel 2                                                                                 (link: EXP CHANNEL)
+midi in channel 2                                                                             (link: MIDI IN CHANNEL)
 settings seq 6 81 ms                                                                          (link: SAVE)
 firmware written 198232 bytes 747 ms                                                          (link: FIRMWARE COMMIT)
 firmware restart                                                                              (after FIRMWARE COMMIT's RESULT)
-ctl k 31 22 33 58 25 34 sw 2 0 1 fs 0 0 exp 64                                                (every second)
+ctl k 31 22 33 58 25 34 sw 2 0 1 fs 0 0 exp 64 pedal 41                                       (every second)
 load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS rin -110 dBFS rout -31 dBFS  (every second)
 ```
 
@@ -413,8 +422,9 @@ load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS rin 
 - **The weight build** (`APP=weight`): the boot line ends ` weight`, after the build id; the `morph` line for a target reads `morph slot 2 fit 21 21 % waypoints 0 "FNDR BFSR VB Edge WRM2 CAB FREE"`: its block's fit and unaligned fit in percent (`docs/MORPH.md`) and its path's waypoint count (0: a straight blend) before the name; no `morph shed`.
 - **`settings` line:** at boot and on HELLO, the seq of the settings record the pedal started from, or `settings factory` with none; after SAVE, the seq written and the time the erase, write and readback took; `settings write failed` when the readback does not match.
 - **`layout` line:** the live assignments: each knob and switch slot (`k3`–`k6`, `sw1`–`sw3`) and its parameter's name, or `none`. One parameter per control fits the 120 characters; a layout with long names repeated on several controls is cut.
-- **`exp` line:** after the `layout` line, EXP's parameter (or `none`) and the channel its CC 11 (and the preset CC 102) is taken from (`omni` or 1–16). EXP CHANNEL logs `exp channel omni|N`.
-- **`loop` line:** `loop_mode` as published: `miso`, `pre-model` or `post-model` (`docs/LOOP.md`). Logged at boot and on HELLO after the `exp` line, and by the main loop whenever the value changes, whichever control or SET changed it.
+- **`exp` line:** after the `layout` line, EXP's parameter (or `none`) and the channel its CC 11 (and the preset CC 102) is taken from on USB (`omni` or 1–16). EXP CHANNEL logs `exp channel omni|N`.
+- **`pedal` line:** a BurningBungalow only, after the `exp` line: PEDAL's parameter (or `none`) and MIDI IN's channel (`omni` or 1–16). MIDI IN CHANNEL logs `midi in channel omni|N`.
+- **`loop` line:** `loop_mode` as published: `miso`, `pre-model` or `post-model` (`docs/LOOP.md`). Logged at boot and on HELLO after the `exp` (or `pedal`) line, and by the main loop whenever the value changes, whichever control or SET changed it.
 - **`assign` line:** the control and the parameter (or `none`) an ASSIGN put on it. SET logs nothing.
 - **`state` line:** the slot and seq written to the state record and the time the erase and write took; `state write failed` when the readback does not match.
 - **`preset cc` line:** a CC 102 that selects nothing: `preset cc V ignored` for a value of 8 or more, `preset cc V ignored: slot N STATUS` for a slot that is not ok. One that selects a slot logs the switch's `preset` line.
@@ -424,7 +434,8 @@ load avg 361 max 363 permille underruns 0 mute off in -84 dBFS out -31 dBFS rin 
   - `k`: knobs 1–6, in percent.
   - `sw`: SW1–SW3 after the 30 ms filter, as 2 up, 1 middle, 0 down.
   - `fs`: FS1 and FS2 held.
-  - `exp`: the last CC 11 value taken (0–127), `-` before the first since boot.
+  - `exp`: the last CC 11 value taken (0–127, from USB or MIDI IN), `-` before the first since boot.
+  - `pedal`: a BurningBungalow's expression jack, in percent of its travel (`controls.h` `PedalTravel`); `-` on a HotHouse.
 - **`load` line:**
   - `avg` and `max`: libDaisy's `CpuLoadMeter`, in permille of the block period, measured over the last second.
   - `underruns`: the count since boot.

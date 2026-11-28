@@ -41,6 +41,7 @@ export const CMD = {
   fwBegin: 0x1b,
   fwChunk: 0x1c,
   fwCommit: 0x1d,
+  midiInChannel: 0x1e,
 } as const;
 
 /** docs/MIDI.md's command names, by code. */
@@ -74,6 +75,7 @@ export const CMD_NAMES: Readonly<Record<number, string>> = {
   [CMD.fwBegin]: "FIRMWARE BEGIN",
   [CMD.fwChunk]: "FIRMWARE CHUNK",
   [CMD.fwCommit]: "FIRMWARE COMMIT",
+  [CMD.midiInChannel]: "MIDI IN CHANNEL",
 };
 
 /** RESULT codes (link.h Result); the index is the code. */
@@ -112,9 +114,11 @@ export const CHUNK_BYTES = 256;
 export const READ_BYTES = 160;
 /** ASSIGN's and VALUES's "no parameter" (params.h kNoParam). */
 export const NO_PARAM = 0x7f;
-/** EXP CHANNEL's and VALUES's "any channel", and the highest channel (midi.h kOmni, kChannels). */
+/** EXP CHANNEL's, MIDI IN CHANNEL's and VALUES's "any channel", and the highest channel (midi.h kOmni, kChannels). */
 export const OMNI = 0;
 export const MAX_CHANNEL = 16;
+/** The Identity Reply's board byte (daisy/src/board.h kBoardId). */
+export const BOARD = { hothouse: 1, burningBungalow: 2 } as const;
 
 /**
  * `size` is a preset image's (UPLOAD BEGIN takes no other): with or without an IR, and without a morph or with one
@@ -217,12 +221,14 @@ export const gateTryMsg = (slot: number, g: GateSettings): Uint8Array => pedalMs
 export const dumpMsg = (): Uint8Array => pedalMsg(CMD.dump);
 /** code: the value as a u14 (link/params.ts codeOf). */
 export const setMsg = (id: number, code: number): Uint8Array => pedalMsg(CMD.set, [id, ...septets(code, 2)]);
-/** control 0-7 (Knobs 3-6, SW1-SW3, EXP); id null: none. */
+/** control 0-8 (Knobs 3-6, SW1-SW3, EXP, PEDAL); id null: none. */
 export const assignMsg = (control: number, id: number | null): Uint8Array =>
   pedalMsg(CMD.assign, [control, id ?? NO_PARAM]);
 export const saveMsg = (): Uint8Array => pedalMsg(CMD.save);
 /** channel: OMNI (any) or 1-16. */
 export const expChannelMsg = (channel: number): Uint8Array => pedalMsg(CMD.expChannel, [channel]);
+/** channel: OMNI (any) or 1-16; a BurningBungalow's MIDI IN. */
+export const midiInChannelMsg = (channel: number): Uint8Array => pedalMsg(CMD.midiInChannel, [channel]);
 /** block: the preset's 64-byte morph block (preset/morph.ts); null removes it. */
 export const morphMsg = (slot: number, block: Uint8Array | null): Uint8Array =>
   pedalMsg(CMD.morph, block ? [slot, ...pack7(block)] : [slot]);
@@ -304,6 +310,8 @@ export interface StatusMessage {
   gateCutDb: number;
   /** The compressor's largest gain reduction since the previous STATUS, dB (>= 0). */
   compCutDb: number;
+  /** The expression jack's travel in permille; 0 on a HotHouse. */
+  pedal: number;
 }
 /** The morph the firmware plays: both models crossfaded (the default image), or their weights blended (APP=weight). */
 export type MorphKind = "crossfade" | "weight";
@@ -350,12 +358,14 @@ export interface ParamMessage {
 }
 export interface ValuesMessage {
   type: "values";
-  /** Per control 0-7 (Knobs 3-6, SW1-SW3, EXP): its parameter's id, or null. */
+  /** Per control 0-8 (Knobs 3-6, SW1-SW3, EXP, PEDAL): its parameter's id, or null. */
   assign: (number | null)[];
-  /** Per control 0-7: held, its parameter waits for the control to move. */
+  /** Per control 0-8: held, its parameter waits for the control to move. */
   held: boolean[];
-  /** The MIDI channel EXP's CC 11 and the preset CC 102 are taken from: 0 any (omni), 1-16. */
+  /** The MIDI channel EXP's CC 11 and the preset CC 102 are taken from on USB: 0 any (omni), 1-16. */
   expChannel: number;
+  /** The same on a BurningBungalow's MIDI IN jack: 0 any (omni), 1-16. */
+  midiInChannel: number;
   /** Per parameter id: its value's code. */
   codes: number[];
 }
@@ -369,7 +379,7 @@ export type PedalMessage =
   | ParamMessage
   | ValuesMessage;
 
-const CONTROL_COUNT = 8;
+const CONTROL_COUNT = 9;
 const PARAM_HEAD = 15;
 const TAPERS = ["log", "choice", "linear"] as const;
 const OFF_ENDS = ["none", "min", "max"] as const;
@@ -418,7 +428,7 @@ export function parseMessage(msg: Uint8Array): PedalMessage | null {
       if (p.length !== 5) return null;
       return { type: "result", cmd: p[0]!, code: p[1]!, value: fromSeptets(p, 2, 3) };
     case CMD.status:
-      if (p.length !== 32) return null;
+      if (p.length !== 34) return null;
       return {
         type: "status",
         loadAvg: fromSeptets(p, 0, 2),
@@ -433,6 +443,7 @@ export function parseMessage(msg: Uint8Array): PedalMessage | null {
         gateLevelDb: -fromSeptets(p, 26, 2) / 10,
         gateCutDb: fromSeptets(p, 28, 2) / 10,
         compCutDb: fromSeptets(p, 30, 2) / 10,
+        pedal: fromSeptets(p, 32, 2),
       };
     case CMD.data: {
       // A corrupt DATA reads as missing, so the session resends its READ.
@@ -465,15 +476,22 @@ export function parseMessage(msg: Uint8Array): PedalMessage | null {
       };
     }
     case CMD.values: {
-      // The assignments, held u14, the channel, N, then the codes (link.h kValuesHead).
-      const head = CONTROL_COUNT + 4;
-      if (p.length < head || p.length !== head + 2 * p[head - 1]! || p[CONTROL_COUNT + 2]! > MAX_CHANNEL) return null;
+      // The assignments, held u14, the expression channel, the MIDI IN channel, N, then the codes (link.h kValuesHead).
+      const head = CONTROL_COUNT + 5;
+      if (
+        p.length < head ||
+        p.length !== head + 2 * p[head - 1]! ||
+        p[CONTROL_COUNT + 2]! > MAX_CHANNEL ||
+        p[CONTROL_COUNT + 3]! > MAX_CHANNEL
+      )
+        return null;
       const held = fromSeptets(p, CONTROL_COUNT, 2);
       return {
         type: "values",
         assign: Array.from(p.subarray(0, CONTROL_COUNT), (id) => (id === NO_PARAM ? null : id)),
         held: Array.from({ length: CONTROL_COUNT }, (_, c) => ((held >> c) & 1) !== 0),
         expChannel: p[CONTROL_COUNT + 2]!,
+        midiInChannel: p[CONTROL_COUNT + 3]!,
         codes: Array.from({ length: p[head - 1]! }, (_, i) => fromSeptets(p, head + 2 * i, 2)),
       };
     }

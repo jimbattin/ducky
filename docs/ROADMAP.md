@@ -44,20 +44,20 @@ The decisions in force. Each names the doc that specifies it.
 
 ### Controls and presets
 
-- **Controls:** Knobs 1 and 2 are fixed. Knobs 3–6, SW1–SW3 and EXP (an expression pedal: MIDI CC 11 on the Seed's USB MIDI port, on one channel or any) each drive one parameter of the table (`daisy/src/params.h`) or none. `docs/MIDI.md` "Parameters", "Controls".
-  - **Factory layout** (`kFactoryAssign`, with no saved settings): K3 `bell2_gain`, K4 `low_cut_freq`, K5 `high_cut_freq`, K6 `comp_balance`, SW1 `low_cut_slope`, SW2 `comp_mode`, SW3 `comp_level`, EXP none.
-  - **Switches** take only on/off and three-value parameters (on/off: middle off, up and down on; three values: down, middle, up); EXP takes any, as a knob does.
-  - **Global and saved:** the assignments, EXP's channel and the values are global, not per preset, and are kept by an explicit SAVE.
-  - **Pickup:** a value set from the editor holds until its control moves (a knob or EXP more than 3 % of its travel).
-- **Preset switching:** FS2 steps forward through filled slots only and wraps; MIDI CC 102 (value 0–7, on EXP CHANNEL's channel) goes to a given filled slot. Audio fades out, the model is swapped and reset, then audio fades back in (5 ms each way, a gap of about 11 ms, no crossfade). LED2 blinks N times for slot N, repeating after 5 s dark; off while dry. The last slot is remembered across power cycles.
+- **Controls:** Knobs 1 and 2 are fixed. Knobs 3–6, SW1–SW3, EXP (an expression pedal: MIDI CC 11 on the Seed's USB MIDI port or a BurningBungalow's MIDI IN jack, each on one channel or any) and, on a BurningBungalow, PEDAL (its expression pedal jack, scaled from fixed heel and toe ends, not calibrated per pedal) each drive one parameter of the table (`daisy/src/params.h`) or none. `docs/MIDI.md` "Parameters", "Controls".
+  - **Factory layout** (`kFactoryAssign`, with no saved settings): K3 `bell2_gain`, K4 `low_cut_freq`, K5 `high_cut_freq`, K6 `comp_balance`, SW1 `low_cut_slope`, SW2 `comp_mode`, SW3 `comp_level`, EXP none, PEDAL none.
+  - **Switches** take only on/off and three-value parameters (on/off: middle off, up and down on; three values: down, middle, up); EXP and PEDAL take any, as a knob does.
+  - **Global and saved:** the assignments, the EXP and MIDI IN channels and the values are global, not per preset, and are kept by an explicit SAVE.
+  - **Pickup:** a value set from the editor holds until its control moves (a knob, EXP or PEDAL more than 3 % of its travel).
+- **Preset switching:** FS2 steps forward through filled slots only and wraps; MIDI CC 102 (value 0–7, on EXP CHANNEL's channel over USB or MIDI IN CHANNEL's on a BurningBungalow's MIDI IN) goes to a given filled slot. Audio fades out, the model is swapped and reset, then audio fades back in (5 ms each way, a gap of about 11 ms, no crossfade). LED2 blinks N times for slot N, repeating after 5 s dark; off while dry. The last slot is remembered across power cycles.
 - **Preset persistence:** presets survive switching to another firmware and back. They live in the upper 4 MB of the QSPI flash, outside any firmware image and outside bad_tape's saved values at `0x903FE000`.
 
 ### Link and editor
 
 - **SysEx:** `F0 7D 64 <version> <cmd> … F7`. Device byte `0x64` (bad_tape's is `0x62`). Identity Reply and DFU command follow the bad_tape conventions. `daisy/src/link.h` is the reference and `docs/MIDI.md` is generated from it.
   - **Slots:** the link lists, uploads in chunks, erases, renames, swaps and reads back (READ/DATA) slots, and streams status.
-  - **Parameters:** it sends the parameter table, sets values and assignments and saves them (DUMP, SET, ASSIGN, SAVE; PARAM, VALUES), and sets EXP's channel (EXP CHANNEL).
-  - **Besides SysEx** the pedal takes one message, Control Change 11.
+  - **Parameters:** it sends the parameter table, sets values and assignments and saves them (DUMP, SET, ASSIGN, SAVE; PARAM, VALUES), and sets EXP's channel (EXP CHANNEL) and a BurningBungalow's MIDI IN channel (MIDI IN CHANNEL).
+  - **Besides SysEx** the pedal takes two messages, Control Change 11 and 102, on USB and on a BurningBungalow's MIDI IN.
 - **Editor:** one self-contained HTML file, so it can be hosted anywhere, including in an iframe. Stored slots' metadata and the parameter table are read from the pedal, not kept by the editor. `docs/EDITOR.md`.
   - **Tabs:** preset manager, the controls' assignments (Controls tab), the compressor (Compressor tab: a gain-reduction meter and a row per parameter), the EQ set directly (EQ tab: a draggable response graph and a row per parameter, as bad_tape's) and the FX loop (Loop tab: the mode's signal flow and a row per parameter), plus live status: log, CPU load meter, knob/switch states.
   - **Parameters:** a parameter on a control stays "what you see is what you get" once that control moves; the editor sets parameters and holds them until then.

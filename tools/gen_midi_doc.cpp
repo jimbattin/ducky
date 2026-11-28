@@ -1,9 +1,10 @@
 // Prints docs/MIDI.md (markdown) from the link's protocol tables (daisy/src/link.h kCommands, kResults), the parameter
-// table (daisy/src/params.h), the preset store's constants (daisy/src/preset.h) and the firmware image's
-// (daisy/src/fw_image.h): `make midi-doc`.
+// table (daisy/src/params.h), the expression jack's scaling (daisy/src/controls.h), the preset store's constants
+// (daisy/src/preset.h) and the firmware image's (daisy/src/fw_image.h): `make midi-doc`.
 #include <cstdio>
 #include <cstring>
 
+#include "controls.h"
 #include "fw_image.h"
 #include "link.h"
 #include "midi.h"
@@ -112,10 +113,12 @@ int main() {
     std::printf("\n");
 
     std::printf("## Controls\n\n");
-    std::printf("- Controls 0-7 are Knob 3, Knob 4, Knob 5, Knob 6, SW1, SW2, SW3 and EXP, the expression pedal "
-                "(`k3`-`k6`, `sw1`-`sw3`, `exp` in the log and `tools/pedal.ts`). Each drives one parameter or none "
-                "(7F); a parameter may be on several controls or on none. Knobs 1 and 2 are fixed: the input trim and "
-                "the output volume.\n");
+    std::printf("- Controls 0-8 are Knob 3, Knob 4, Knob 5, Knob 6, SW1, SW2, SW3, EXP, the expression pedal over "
+                "MIDI, and PEDAL, a BurningBungalow's expression pedal jack (`k3`-`k6`, `sw1`-`sw3`, `exp`, `pedal` "
+                "in the log and `tools/pedal.ts`). Each drives one parameter or none (7F); a parameter may be on "
+                "several controls or on none. Knobs 1 and 2 are fixed: the input trim and the output volume. A "
+                "HotHouse has no PEDAL: ASSIGN of control 8 answers bad-request and a saved PEDAL assignment is "
+                "ignored.\n");
     std::printf("- A knob takes any parameter. A choice parameter on a knob splits its travel evenly between its "
                 "values, and changes %g of a step past each boundary, so a knob resting on one does not flip.\n",
                 double(dkparam::kChoiceHysteresis));
@@ -123,21 +126,29 @@ int main() {
                 "middle, 2 up. A two-value one is 0 in the middle and 1 up or down.\n");
     std::printf("- EXP takes any parameter, as a knob does. Its position is the last CC %u (Expression) value / 127 "
                 "received on the Seed's USB MIDI port, e.g. from a USB-MIDI expression pedal acting as USB host, on "
-                "the channel EXP CHANNEL sets (any channel unless set). Each CC writes the parameter; until the first "
-                "one after power-up the parameter keeps its saved value.\n",
+                "the channel EXP CHANNEL sets, or on a BurningBungalow's MIDI IN jack on the channel MIDI IN CHANNEL "
+                "sets (any channel unless set). Each CC writes the parameter; until the first one after power-up the "
+                "parameter keeps its saved value.\n",
                 unsigned(dkmidi::kExpressionCc));
-    std::printf("- Presets: CC %u with value 0-7 on EXP CHANNEL's channel switches to slot 1-8, as FS2 does; a value "
-                "past the slots, or an empty or broken slot, is ignored.\n",
+    std::printf("- PEDAL takes any parameter, as a knob does, and writes it every block from the jack: the reading "
+                "from %g (heel) to %g (toe) of the ADC's range spread over the travel (controls.h PedalTravel). An "
+                "empty jack reads about 4 %%, about 1 %% of travel: there is no plug detection.\n",
+                double(dkctl::kPedalHeel), double(dkctl::kPedalToe));
+    std::printf("- Presets: CC %u with value 0-7 switches to slot 1-8, as FS2 does, on EXP CHANNEL's channel on the "
+                "USB MIDI port or MIDI IN CHANNEL's on a BurningBungalow's MIDI IN jack; a value past the slots, or "
+                "an empty or broken slot, is ignored.\n",
                 unsigned(dkmidi::kPresetCc));
     std::printf("- Pickup: a control writes its parameter when it moves. SET, and ASSIGN of a control, hold the "
-                "control: the parameter keeps its value until a knob or EXP has moved more than %g %% of its travel "
+                "control: the parameter keeps its value until a knob, EXP or PEDAL has moved more than %g %% of its "
+                "travel "
                 "from where it was, or a switch changes position. When a parameter is on several controls, the one "
                 "moved last has it and the others are held. VALUES' held bits show the held controls.\n",
                 double(dkparam::kPickup) * 100.0);
-    std::printf("- At power-up every parameter on a knob or switch takes its control's position (with several "
-                "controls on it, one of theirs); one on EXP or on no control takes its saved value.\n");
+    std::printf("- At power-up every parameter on a knob, a switch or PEDAL takes its control's position (with "
+                "several controls on it, one of theirs); one on EXP or on no control takes its saved value.\n");
     std::printf("- ASSIGN and SET act at once but are lost at power-off. SAVE writes the assignments, the expression "
-                "channel and the values to the settings record (docs/FIRMWARE.md \"Settings record\"); with no "
+                "and MIDI IN channels and the values to the settings record (docs/FIRMWARE.md \"Settings record\"); "
+                "with no "
                 "record the pedal starts in the factory layout with every parameter at its default. The settings are "
                 "global: presets hold neither assignments nor values.\n");
     std::printf("- Factory layout (params.h kFactoryAssign):");
@@ -170,7 +181,8 @@ int main() {
 
     std::printf("## Firmware update\n\n");
     std::printf("The image is the `.bin` of an `APP=xfade` (the default) or `APP=weight` build "
-                "(`daisy/build/hothouse-*/ducky_*.bin`), %u-%u bytes. The Daisy bootloader copies it from QSPI "
+                "(`daisy/build/<board>-*/ducky_*.bin`, `<board>` hothouse or burningbungalow), %u-%u bytes. The "
+                "Daisy bootloader copies it from QSPI "
                 "0x%08X into SRAM 0x%08X at boot, so the running firmware never executes from the flash it "
                 "rewrites. It starts with the vector table; at 0x%X it carries a %u-byte tag: `DKFW` (0x%08X "
                 "little-endian), version %u, the board (the Identity Reply's), the Identity Reply's flags, each a "

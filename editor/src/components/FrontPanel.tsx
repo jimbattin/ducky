@@ -1,7 +1,7 @@
 import { FIXED_KNOBS, knobPosition } from "../controls";
 import { resonanceInactive } from "../eqModel";
 import { typographic } from "../format";
-import { CONTROLS, type Control, POSITION, switchLabels } from "../link/params";
+import { CONTROLS, type Control, isBurningBungalow, POSITION, switchLabels } from "../link/params";
 import type { ParamInfo } from "../link/protocol";
 import type { State } from "../state";
 import { CpuMeter } from "./CpuMeter";
@@ -23,6 +23,7 @@ const controlsOf = (kind: Control["kind"]) =>
 const KNOB_SLOTS = controlsOf("knob");
 const SWITCH_SLOTS = controlsOf("switch");
 const EXP_SLOTS = controlsOf("expression");
+const PEDAL_SLOTS = controlsOf("pedal");
 
 /** A switch's position names without the unit they all end in (" dB/oct"), which goes to the accessible name. */
 function splitUnit(labels: readonly string[]): { options: readonly string[]; unit: string } {
@@ -35,8 +36,9 @@ function splitUnit(labels: readonly string[]): { options: readonly string[]; uni
 
 /**
  * The pedal's own controls as its STATUS and VALUES streams report them: the footswitches, Knobs 1 and 2 in their
- * units, what each of Knobs 3-6, SW1-SW3 and EXP drives (the Controls tab assigns them) with that parameter's value,
- * and the CPU load. A control marked Held waits to be moved before it takes its parameter back. Read-only.
+ * units, what each of Knobs 3-6, SW1-SW3, EXP and, on a BurningBungalow, PEDAL (its expression pedal jack, with the
+ * jack's position) drives (the Controls tab assigns them) with that parameter's value, and the CPU load. A control
+ * marked Held waits to be moved before it takes its parameter back. Read-only.
  */
 export function FrontPanel({ s }: { s: State }) {
   const st = s.status;
@@ -148,6 +150,22 @@ export function FrontPanel({ s }: { s: State }) {
               </div>
             );
           })}
+          {isBurningBungalow(s.identity?.board) &&
+            PEDAL_SLOTS.map(({ control, c }) => {
+              const p = assigned(c);
+              const text = readoutOf(p);
+              return (
+                <div key={control.id}>
+                  <div class="pedal-knob-head">
+                    <span class="pedal-id">{control.id}</span>
+                    <span class="pedal-knob-name">{nameOf(p)}</span>
+                    {values?.held[c] && <HeldBadge kind={control.kind} />}
+                    <output>{text}</output>
+                  </div>
+                  <KnobGauge label={`Expression pedal ${nameOf(p)}`} norm={st ? st.pedal / 1000 : 0} text={text} />
+                </div>
+              );
+            })}
         </div>
       </GroupBox>
       <GroupBox title="CPU load">

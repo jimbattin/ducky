@@ -3,7 +3,7 @@
 // parameter. Pure TypeScript: shared by the editor and tools/pedal.ts. The table itself comes from the pedal (DUMP).
 
 import { fmtHz, signedDb } from "../format";
-import { OMNI, type ParamInfo } from "./protocol";
+import { BOARD, OMNI, type ParamInfo } from "./protocol";
 
 /** A continuous parameter's top code (params.h kCodeMax). */
 export const CODE_MAX = 16383;
@@ -11,15 +11,21 @@ export const CODE_MAX = 16383;
 const BYPASS = 0.02;
 
 export interface Control {
-  /** The pedal's legend: "K3" ... "SW3", "EXP". */
+  /** The pedal's legend: "K3" ... "SW3", "EXP", "PEDAL". */
   id: string;
-  /** The log's and tools/pedal.ts's name: "k3" ... "sw3", "exp". */
+  /** The log's and tools/pedal.ts's name: "k3" ... "sw3", "exp", "pedal". */
   key: string;
-  /** A knob takes any parameter, a switch choices, the expression pedal (MIDI CC 11) any. */
-  kind: "knob" | "switch" | "expression";
+  /**
+   * A knob takes any parameter, a switch choices, the expression pedal over MIDI (CC 11) any, a BurningBungalow's
+   * expression pedal jack (PEDAL) any.
+   */
+  kind: "knob" | "switch" | "expression" | "pedal";
 }
 
-/** The control slots, by their wire index 0-7: Knobs 3-6, SW1-SW3, then EXP. Knobs 1 and 2 are fixed. */
+/**
+ * The control slots, by their wire index 0-8: Knobs 3-6, SW1-SW3, EXP, then PEDAL (a BurningBungalow's only). Knobs 1
+ * and 2 are fixed.
+ */
 export const CONTROLS: readonly Control[] = [
   { id: "K3", key: "k3", kind: "knob" },
   { id: "K4", key: "k4", kind: "knob" },
@@ -29,14 +35,18 @@ export const CONTROLS: readonly Control[] = [
   { id: "SW2", key: "sw2", kind: "switch" },
   { id: "SW3", key: "sw3", kind: "switch" },
   { id: "EXP", key: "exp", kind: "expression" },
+  { id: "PEDAL", key: "pedal", kind: "pedal" },
 ];
 
 /** The legends of the controls that drive parameter id, given VALUES's assignments. */
 export const controlsOn = (assign: readonly (number | null)[], id: number): string[] =>
   CONTROLS.filter((_, c) => assign[c] === id).map((control) => control.id);
 
-/** An EXP CHANNEL channel as the log and tools/pedal.ts write it: "omni" or 1-16. */
+/** An EXP CHANNEL or MIDI IN CHANNEL channel as the log and tools/pedal.ts write it: "omni" or 1-16. */
 export const channelName = (ch: number): string => (ch === OMNI ? "omni" : String(ch));
+
+/** A BurningBungalow (Identity's board byte): it has PEDAL, the expression pedal jack, and MIDI IN. */
+export const isBurningBungalow = (board: number | null | undefined): boolean => board === BOARD.burningBungalow;
 
 /** The value of a code: a continuous parameter's position 0..1 along its taper, a choice's index. */
 export const paramValue = (p: ParamInfo, code: number): number =>
@@ -93,10 +103,10 @@ export function shownParam(params: readonly ParamInfo[], codes: readonly number[
   return type !== undefined && codes[type.id] === COMP_OTA ? { ...p, unit: "%", min: 0, max: 100 } : p;
 }
 
-/** Control `control` (0-7) may hold p: a knob or EXP any parameter, a switch a choice; null (none) always. */
+/** Control `control` (0-8) may hold p: a knob, EXP or PEDAL any parameter, a switch a choice; null (none) always. */
 export const accepts = (control: number, p: ParamInfo | null): boolean => {
   const kind = CONTROLS[control]?.kind;
-  return p === null || kind === "knob" || kind === "expression" || p.taper === "choice";
+  return p === null || kind === "knob" || kind === "expression" || kind === "pedal" || p.taper === "choice";
 };
 
 /**

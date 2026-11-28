@@ -51,7 +51,8 @@ morph-check:
 
 # The firmware update over USB-MIDI on the attached pedal, unattended (tools/firmware_check.ts): needs the pedal on
 # DK_USB_PORT running Ducky, its MIDI port free (no editor tab, no tools/usb_log.py), Chrome and an empty slot. It
-# reflashes the pedal several times and ends on the working tree's xfade image. Not part of `make test`.
+# reflashes the pedal several times and ends on the working tree's xfade image. BOARD=burningbungalow selects the
+# BurningBungalow images (hothouse by default). Not part of `make test`.
 firmware-check:
 	bun tools/firmware_check.ts
 

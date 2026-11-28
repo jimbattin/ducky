@@ -1,5 +1,5 @@
-// daisy/src/param_store.h: the arbitration between the controls and the link's SET and ASSIGN, and the expression
-// pedal's CC 11.
+// daisy/src/param_store.h: the arbitration between the controls and the link's SET and ASSIGN, the expression
+// pedal's CC 11 and the expression jack (PEDAL).
 #include "param_store.h"
 
 #include <gtest/gtest.h>
@@ -8,11 +8,11 @@ using namespace dkparam;
 
 namespace {
 
-// The cuts on Knobs 3-6 and SW1-SW2, eq_enable on SW3, morph on EXP.
+// The cuts on Knobs 3-6 and SW1-SW2, eq_enable on SW3, morph on EXP, nothing on PEDAL.
 Settings Layout() {
     Settings s = FactorySettings();
-    const uint8_t assign[kControlSlots] = {kHighCutRes,  kHighCutFreq,  kLowCutFreq, kLowCutRes,
-                                           kLowCutSlope, kHighCutSlope, kEqEnable,   kMorph};
+    const uint8_t assign[kControlSlots] = {kHighCutRes,  kHighCutFreq,  kLowCutFreq, kLowCutRes, kLowCutSlope,
+                                           kHighCutSlope, kEqEnable,    kMorph,      kNoParam};
     for (int c = 0; c < kControlSlots; ++c) s.assign[c] = assign[c];
     return s;
 }
@@ -22,15 +22,16 @@ struct Rig {
     Store store;
     float knobs[kKnobSlots] = {0.5f, 0.5f, 0.5f, 0.5f};
     uint8_t toggles[kSwitchSlots] = {1, 1, 1};
+    float pedal = kNoPedal;
 
     Rig() {
         store.Init(Layout());
         Update();
     }
-    void Update() { store.Update(knobs, toggles); }
-    void Set(uint8_t id, float v) { store.Apply({EditKind::kSet, id, 0, v}, knobs); }
-    void Assign(uint8_t slot, uint8_t id) { store.Apply({EditKind::kAssign, slot, id, 0.0f}, knobs); }
-    void Exp(float v) { store.Apply({EditKind::kExpression, 0, 0, v}, knobs); }
+    void Update() { store.Update(knobs, toggles, pedal); }
+    void Set(uint8_t id, float v) { store.Apply({EditKind::kSet, id, 0, v}, knobs, pedal); }
+    void Assign(uint8_t slot, uint8_t id) { store.Apply({EditKind::kAssign, slot, id, 0.0f}, knobs, pedal); }
+    void Exp(float v) { store.Apply({EditKind::kExpression, 0, 0, v}, knobs, pedal); }
     bool Held(int slot) const { return (store.HeldBits() >> slot) & 1; }
 };
 
@@ -41,7 +42,7 @@ TEST(Store, FirstUpdateFollowsControls) {
     s.Init(Layout());
     const float knobs[kKnobSlots] = {0.1f, 0.2f, 0.3f, 0.4f};
     const uint8_t toggles[kSwitchSlots] = {2, 0, 1};
-    s.Update(knobs, toggles);
+    s.Update(knobs, toggles, kNoPedal);
     EXPECT_EQ(s.Value(kHighCutRes), 0.1f);
     EXPECT_EQ(s.Value(kHighCutFreq), 0.2f);
     EXPECT_EQ(s.Value(kLowCutFreq), 0.3f);
@@ -208,4 +209,52 @@ TEST(Store, ExpressionHoldsAKnobOnTheSameParameter) {
     EXPECT_EQ(r.store.Value(kLowCutFreq), 0.9f);
     EXPECT_FALSE(r.Held(7));
     EXPECT_TRUE(r.Held(2));
+}
+
+TEST(Store, PedalFollowsLikeAKnob) {
+    Rig r;
+    r.pedal = 0.5f;
+    const float before = r.store.Value(kBell1Gain);
+    r.Assign(kPedalSlot, kBell1Gain);
+    r.Update();
+    EXPECT_EQ(r.store.Value(kBell1Gain), before);
+    EXPECT_TRUE(r.Held(kPedalSlot));
+    r.pedal = 0.7f;
+    r.Update();
+    EXPECT_EQ(r.store.Value(kBell1Gain), 0.7f);
+    EXPECT_FALSE(r.Held(kPedalSlot));
+}
+
+TEST(Store, SetHoldsPedalUntilPickup) {
+    Rig r;
+    r.pedal = 0.5f;
+    r.Assign(kPedalSlot, kBell1Gain);
+    r.pedal = 0.6f;
+    r.Update();
+    EXPECT_EQ(r.store.Value(kBell1Gain), 0.6f);
+    r.Set(kBell1Gain, 0.2f);
+    r.Update();
+    EXPECT_EQ(r.store.Value(kBell1Gain), 0.2f);
+    EXPECT_EQ(r.store.HeldBits(), 1 << kPedalSlot);
+    r.pedal = 0.62f;
+    r.Update();
+    EXPECT_EQ(r.store.Value(kBell1Gain), 0.2f);
+    EXPECT_TRUE(r.Held(kPedalSlot));
+    r.pedal = 0.7f;
+    r.Update();
+    EXPECT_EQ(r.store.Value(kBell1Gain), 0.7f);
+    EXPECT_EQ(r.store.HeldBits(), 0);
+}
+
+// A board without the jack: a saved PEDAL assignment leaves its parameter at the saved value.
+TEST(Store, NoPedalNeverWrites) {
+    Settings s = Layout();
+    s.assign[kPedalSlot] = kBell1Gain;
+    s.value[kBell1Gain] = 0.25f;
+    Store store;
+    store.Init(s);
+    const float knobs[kKnobSlots] = {0.5f, 0.5f, 0.5f, 0.5f};
+    const uint8_t toggles[kSwitchSlots] = {1, 1, 1};
+    for (int i = 0; i < 4; ++i) store.Update(knobs, toggles, kNoPedal);
+    EXPECT_EQ(store.Value(kBell1Gain), 0.25f);
 }

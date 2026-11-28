@@ -5,7 +5,7 @@ interface Props {
   label: string;
   /** The pedal's parameter table. */
   params: readonly ParamInfo[];
-  /** The control (0-7) the menu assigns. */
+  /** The control (0-8) the menu assigns. */
   control: number;
   /** The assigned parameter's id; null: none. */
   value: number | null;

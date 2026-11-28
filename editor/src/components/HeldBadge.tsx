@@ -1,6 +1,11 @@
 import type { Control } from "../link/params";
 
-const NOUN: Record<Control["kind"], string> = { knob: "knob", switch: "switch", expression: "expression pedal" };
+const NOUN: Record<Control["kind"], string> = {
+  knob: "knob",
+  switch: "switch",
+  expression: "MIDI expression pedal",
+  pedal: "expression pedal",
+};
 
 /** Marks a held control: its parameter was set elsewhere and waits for the control to move (docs/MIDI.md "Controls"). */
 export function HeldBadge({ kind }: { kind: Control["kind"] }) {

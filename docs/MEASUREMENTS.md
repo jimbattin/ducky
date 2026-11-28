@@ -36,6 +36,8 @@ Seed 3, compressor in blend, MISO, `morph` at 50 % (on no control), 3–15 s eac
 
 - **The Seed 3 agrees with the Seed 1.2** within 6 permille on the morph preset with an IR (864 / 875 against 870 / 880; 506 / 514 against 508 / 517); no `morph shed`.
 
+BurningBungalow (a Seed 3), xfade build, MISO, compressor off, slot 1 (no target, no IR), the expression jack read every block: 407 / 411 with PEDAL on none, 408 / 412 with PEDAL on `morph` (writing it every block), 0 underruns, 3–5 s each. Not measured on the BurningBungalow: the morph preset with an IR, the worst case above.
+
 ## Morph
 
 The xfade build, Seed 1.2:
@@ -147,6 +149,7 @@ FIRMWARE over the link (`make firmware-check` twice, `pedal.ts firmware`, the ed
 - **Load after the update:** the xfade build on slot 1 read 436 / 440 permille, 0 underruns, as in "Live load".
 - **Against the Seed 1.2:** its COMMIT took 741–753 ms for the xfade image and 950–961 ms for the weight image, the same four blocks; the Seed 3 shows no such difference. Not explained.
 - **Not measured:** underruns during COMMIT itself (the counter restarts with the new image), and a power cut during COMMIT.
+- **BurningBungalow:** `BOARD=burningbungalow make firmware-check` passed on a Seed 3 in a BurningBungalow: 6 updates, COMMIT 734–754 ms, 3.7–4.0 s each, 0 retries; the other board's tag (board 1, HotHouse) `invalid` 4 (board). The settings record survived every restart.
 
 ## Preset store and switching
 

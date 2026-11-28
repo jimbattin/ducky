@@ -24,20 +24,31 @@
 //   info N                                   the preset in slot N: its name, model metadata, IR, gate and morph
 //                                            target, with a trained path's waypoint count (read back)
 //   param list | param get NAME | param set NAME VALUE | param assign CONTROL NAME|none | param channel omni|1-16 |
-//   param save                               the parameters (docs/MIDI.md "Parameters"): each one's value and
+//   param midi-in omni|1-16 | param save
+//                                            the parameters (docs/MIDI.md "Parameters"): each one's value and
 //                                            controls; VALUE in the parameter's unit, a choice's label or index, or
-//                                            `off`; CONTROL k3-k6, sw1-sw3 or exp; channel sets the MIDI channel
-//                                            exp's CC 11 and the preset CC 102 are taken from; save keeps the
-//                                            layout, the channel and the values for the next power-up
+//                                            `off`; CONTROL k3-k6, sw1-sw3, exp or pedal (a BurningBungalow's);
+//                                            channel sets the MIDI channel exp's CC 11 and the preset CC 102 are
+//                                            taken from on USB; midi-in the channel a BurningBungalow's MIDI IN takes
+//                                            CC 11 and CC 102 on; save keeps the layout, the channels and the values
+//                                            for the next power-up
 //   status [SECONDS]                         STATUS and LOG lines for SECONDS (default 5) or until Ctrl-C
-//   firmware FILE.bin                        write a firmware image (daisy/build/hothouse-*/ducky_*.bin) and restart
+//   firmware FILE.bin                        write a firmware image (daisy/build/<board>-*/ducky_*.bin) and restart
 //                                            into it; waits for the pedal to come back
 
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { firmwareKind, firmwareProblem } from "../editor/src/link/firmware";
-import { accepts, CONTROLS, channelName, formatParam, parseParamValue, shownParam } from "../editor/src/link/params";
+import {
+  accepts,
+  CONTROLS,
+  channelName,
+  formatParam,
+  isBurningBungalow,
+  parseParamValue,
+  shownParam,
+} from "../editor/src/link/params";
 import {
   MAX_CHANNEL,
   OMNI,
@@ -65,7 +76,7 @@ const USAGE = `usage: bun tools/pedal.ts [--port BUS-PORT] COMMAND
   gate N on|off [THRESHOLD_DB ATTACK_MS HOLD_MS RELEASE_MS RATIO]
   morph N M|none [--train | --path FILE]
   param list | param get NAME | param set NAME VALUE | param assign CONTROL NAME|none | param channel omni|1-16
-  param save
+  param midi-in omni|1-16 | param save
   status [SECONDS]
   firmware FILE.bin`;
 
@@ -174,22 +185,24 @@ if (command === "gate") {
   }
 }
 
-// param's subcommand and, for assign, its control (0-7); for channel, the channel (OMNI or 1-16).
+// param's subcommand and, for assign, its control (0-8); for channel and midi-in, the channel (OMNI or 1-16).
 let paramControl = -1;
 let paramChannel = -1;
 if (command === "param") {
-  const arity: Record<string, number> = { list: 1, get: 2, set: 3, assign: 3, channel: 2, save: 1 };
+  const arity: Record<string, number> = { list: 1, get: 2, set: 3, assign: 3, channel: 2, "midi-in": 2, save: 1 };
   if (arity[rest[0]!] !== rest.length)
-    usage("param: list, get NAME, set NAME VALUE, assign CONTROL NAME|none, channel omni|1-16 or save");
+    usage(
+      "param: list, get NAME, set NAME VALUE, assign CONTROL NAME|none, channel omni|1-16, midi-in omni|1-16 or save",
+    );
   if (rest[0] === "assign") {
     paramControl = CONTROLS.findIndex((c) => c.key === rest[1]!.toLowerCase());
-    if (paramControl < 0) usage("param: CONTROL is k3-k6, sw1-sw3 or exp");
+    if (paramControl < 0) usage("param: CONTROL is k3-k6, sw1-sw3, exp or pedal");
   }
-  if (rest[0] === "channel") {
+  if (rest[0] === "channel" || rest[0] === "midi-in") {
     const text = rest[1]!.toLowerCase();
     if (text === "omni") paramChannel = OMNI;
     else if (/^\d+$/.test(text) && Number(text) >= 1 && Number(text) <= MAX_CHANNEL) paramChannel = Number(text);
-    else usage("param: channel is omni or 1-16");
+    else usage(`param: ${rest[0]} is omni or 1-16`);
   }
 }
 
@@ -407,6 +420,20 @@ try {
         console.log(`exp channel = ${channelName(paramChannel)}: ok`);
         break;
       }
+      // MIDI IN and PEDAL are a BurningBungalow's: a HotHouse answers bad-request.
+      const bungalowOnly =
+        rest[0] === "midi-in"
+          ? "midi-in"
+          : rest[0] === "assign" && CONTROLS[paramControl]!.kind === "pedal"
+            ? CONTROLS[paramControl]!.id
+            : null;
+      if (bungalowOnly !== null && !isBurningBungalow(identity.board))
+        fail(`param: ${bungalowOnly} is a BurningBungalow's; this pedal is board ${identity.board}`);
+      if (rest[0] === "midi-in") {
+        await session.midiInChannel(paramChannel);
+        console.log(`midi in channel = ${channelName(paramChannel)}: ok`);
+        break;
+      }
       const d = await session.dump();
       const named = (name: string): ParamInfo =>
         d.params.find((p) => p.name === name) ?? fail(`param: no parameter ${name}`);
@@ -421,6 +448,7 @@ try {
       if (rest[0] === "list") {
         for (const p of d.params) console.log(line(p));
         console.log(`exp channel ${channelName(d.values.expChannel)}`);
+        if (isBurningBungalow(identity.board)) console.log(`midi in channel ${channelName(d.values.midiInChannel)}`);
       } else if (rest[0] === "get") {
         console.log(line(named(rest[1]!)));
       } else if (rest[0] === "set") {

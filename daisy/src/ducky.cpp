@@ -16,8 +16,8 @@
 // Two threads share single-writer atomics and the gEdits ring only:
 // - AudioCallback (the audio DMA interrupt, in ITCM): controls, parameter edits (param_store.h), the preset switch,
 //   the loop and morph steps, the chain, the meters, the LEDs, the load.
-// - main(): the link (usb_link.h; onCommand, serveReplies), the preset switch (servePresets), the QSPI writes
-//   (writeFlash), the log lines.
+// - main(): the link (usb_link.h; onCommand, serveReplies), a BurningBungalow's MIDI IN (midi_in.h), the preset
+//   switch (servePresets), the QSPI writes (writeFlash), the log lines.
 // A preset switch: gSwapReq -> the callback fades out and parks (gSwapParked) -> loadPreset -> gSwapLoaded -> the
 // callback takes gNext* and fades in. FPSCR.FZ is set for the main loop only: the callback's interrupt context takes
 // FPDSCR's 0 (docs/M7_PERFORMANCE.md "Core state").
@@ -45,6 +45,7 @@
 #include "ir.h"
 #include "memory.h"
 #include "midi.h"
+#include "midi_in.h"
 #include "model.h"
 #include "morph.h"
 #include "param_store.h"
@@ -159,7 +160,8 @@ std::atomic<uint32_t> gFs2Presses{0};      // FS2 presses since boot
 std::atomic<uint32_t> gSwapParked{0};      // the gSwapReq the callback has parked for (release)
 std::atomic<float> gParamPub[dkparam::kParamCount];       // gStore's values, published every block
 std::atomic<uint8_t> gAssignPub[dkparam::kControlSlots];  // gStore's assignments, published every block
-std::atomic<uint8_t> gHeldPub{0};                         // gStore's held bits, published every block
+std::atomic<uint16_t> gHeldPub{0};                        // gStore's held bits, published every block
+std::atomic<float> gPedal{0.0f};  // the expression jack's travel 0..1 (PedalTravel), published every block
 std::atomic<uint32_t> gEditsDone{0};  // gEditsTaken once those edits' values are published (release)
 // Main loop -> callback.
 std::atomic<bool> gPeakReset{false};  // restart gPeakAcc, gOutPeakAcc, gRinPeakAcc and gRoutPeakAcc
@@ -172,8 +174,8 @@ std::atomic<uint8_t> gBlinkCount{0};
 // settings for one block; the reserved byte is 0, so no published pair equals gGateSeen's initial value.
 std::atomic<uint32_t> gGateWord[2];
 std::atomic<bool> gMeterReset{false};      // restart gGateLevelAcc, gGateGainAcc and gCompGainAcc
-SpscRing<dkparam::Edit, 16> gEdits;        // SET, ASSIGN and CC 11 (onCommand, onControlChange), applied by the
-                                           // callback's next block
+SpscRing<dkparam::Edit, 16> gEdits;        // SET, ASSIGN and CC 11 from USB or MIDI IN (onCommand,
+                                           // takeControlChange), applied by the callback's next block
 float gNextLevel = 1.0f, gNextInCal = 1.0f;  // the loaded preset's gains, IR and model, published by gSwapLoaded
 bool gNextIrOn = false, gNextModelOn = false;
 // The loaded preset's morph, published by gSwapLoaded: whether it has a target, then
@@ -231,7 +233,8 @@ bool gWatch = false;  // STATUS every kWatchPeriodMs
 uint32_t gWatchAt = 0;
 uint16_t gLoadAvgPm = 0, gLoadMaxPm = 0;  // the last `load` line's values
 uint32_t gEditsSent = 0;                  // edits pushed to gEdits since boot
-uint8_t gExpChannel = dkmidi::kOmni;      // CC 11's and CC 102's channel (EXP CHANNEL, the settings record)
+uint8_t gExpChannel = dkmidi::kOmni;      // USB's CC 11 and CC 102 channel (EXP CHANNEL, the settings record)
+uint8_t gMidiInChannel = dkmidi::kOmni;   // MIDI IN's CC 11 and CC 102 channel (MIDI IN CHANNEL, the settings record)
 int gExpCc = -1;                          // the last CC 11 value taken, -1 before the first (the ctl line)
 int gSettingsIndex = -1;                  // the settings sector holding the newest record; -1 = none (factory)
 uint32_t gSettingsSeq = 0;
@@ -388,21 +391,27 @@ void logLoop() {
     dkusb::Log("loop %s", kLoopNames[gLoopLogged < 3 ? gLoopLogged : 0]);
 }
 
-// The expression channel as the log writes it: `omni` or 1-16 (formatted into buf).
-const char* expChannelText(char (&buf)[4]) {
-    if (gExpChannel == dkmidi::kOmni) return "omni";
-    std::snprintf(buf, sizeof buf, "%u", unsigned(gExpChannel));
+// A MIDI channel setting as the log writes it: `omni` or 1-16 (formatted into buf).
+const char* channelText(uint8_t channel, char (&buf)[4]) {
+    if (channel == dkmidi::kOmni) return "omni";
+    std::snprintf(buf, sizeof buf, "%u", unsigned(channel));
     return buf;
 }
 
 void logExpChannel() {
     char b[4];
-    dkusb::Log("exp channel %s", expChannelText(b));
+    dkusb::Log("exp channel %s", channelText(gExpChannel, b));
+}
+
+void logMidiInChannel() {
+    char b[4];
+    dkusb::Log("midi in channel %s", channelText(gMidiInChannel, b));
 }
 
 // The settings record in use (`settings factory` with none), the live layout: each knob and switch slot's parameter,
-// then the expression slot's with its channel, and the loop mode. Seven parameters on one control each fit the layout
-// line; a longer layout (a parameter on several controls) is cut at 120 characters.
+// then the expression slot's with its channel, on a BurningBungalow PEDAL's with MIDI IN's channel, and the loop
+// mode. Seven parameters on one control each fit the layout line; a longer layout (a parameter on several controls)
+// is cut at 120 characters.
 void logSettings() {
     if (gSettingsIndex < 0)
         dkusb::Log("settings factory");
@@ -415,7 +424,9 @@ void logSettings() {
     }
     dkusb::Log("layout k3 %s k4 %s k5 %s k6 %s sw1 %s sw2 %s sw3 %s", n[0], n[1], n[2], n[3], n[4], n[5], n[6]);
     char b[4];
-    dkusb::Log("exp %s channel %s", n[dkparam::kExpressionSlot], expChannelText(b));
+    dkusb::Log("exp %s channel %s", n[dkparam::kExpressionSlot], channelText(gExpChannel, b));
+    if (dkboard::kHasPedal)
+        dkusb::Log("pedal %s midi in channel %s", n[dkparam::kPedalSlot], channelText(gMidiInChannel, b));
     logLoop();
 }
 
@@ -433,18 +444,20 @@ void logFatal() {
     dkusb::Log("ir fft");
 }
 
-// The controls once a second: the knobs (%), the toggles, the footswitches held and the last CC 11 value (`-` before
-// the first).
+// The controls once a second: the knobs (%), the toggles, the footswitches held, the last CC 11 value (`-` before
+// the first) and the expression jack's travel (%; `-` on a board without it).
 void logControls() {
     int k[dkboard::kKnobs];
     for (int i = 0; i < dkboard::kKnobs; ++i) k[i] = pct(gKnob[i].load(std::memory_order_relaxed));
     const uint8_t fs = gFsHeld.load(std::memory_order_relaxed);
     char e[12] = "-";
     if (gExpCc >= 0) std::snprintf(e, sizeof e, "%d", gExpCc);
-    dkusb::Log("ctl k %d %d %d %d %d %d sw %u %u %u fs %d %d exp %s", k[0], k[1], k[2], k[3], k[4], k[5],
+    char p[12] = "-";
+    if (dkboard::kHasPedal) std::snprintf(p, sizeof p, "%d", pct(gPedal.load(std::memory_order_relaxed)));
+    dkusb::Log("ctl k %d %d %d %d %d %d sw %u %u %u fs %d %d exp %s pedal %s", k[0], k[1], k[2], k[3], k[4], k[5],
                unsigned(gToggle[0].load(std::memory_order_relaxed)),
                unsigned(gToggle[1].load(std::memory_order_relaxed)),
-               unsigned(gToggle[2].load(std::memory_order_relaxed)), fs & 1, (fs >> 1) & 1, e);
+               unsigned(gToggle[2].load(std::memory_order_relaxed)), fs & 1, (fs >> 1) & 1, e, p);
 }
 
 void logStatus() {
@@ -514,14 +527,17 @@ DK_ITCM void takeNextPreset() {
 
 // The audio callback (docs/FIRMWARE.md "Threads": its steps in order).
 
-// Steps 1-2: the controls, the toggles filtered, all published; FS1 toggles the mute; FS2 presses are counted.
-DK_ITCM void readControls(uint8_t (&tog)[dkboard::kToggles]) {
+// Steps 1-2: the controls, the toggles filtered, all published; FS1 toggles the mute; FS2 presses are counted. pedal:
+// the expression jack's travel, or kNoPedal on a board without it.
+DK_ITCM void readControls(uint8_t (&tog)[dkboard::kToggles], float& pedal) {
     hw.Process();
     for (int t = 0; t < dkboard::kToggles; ++t) {
         tog[t] = gToggleFilter[t].Process(hw.Toggle(t));
         gToggle[t].store(tog[t], std::memory_order_relaxed);
     }
     for (int k = 0; k < dkboard::kKnobs; ++k) gKnob[k].store(hw.Knob(k), std::memory_order_relaxed);
+    pedal = dkboard::kHasPedal ? dkctl::PedalTravel(hw.Pedal()) : dkparam::kNoPedal;
+    gPedal.store(dkboard::kHasPedal ? pedal : 0.0f, std::memory_order_relaxed);
     gFsHeld.store(uint8_t((hw.FootswitchPressed(0) ? 1 : 0) | (hw.FootswitchPressed(1) ? 2 : 0)),
                   std::memory_order_relaxed);
     if (hw.FootswitchRising(0)) {
@@ -546,15 +562,15 @@ static_assert(dkparam::kFirstSlotKnob + dkparam::kKnobSlots == dkboard::kKnobs &
 
 // Step 3: the link's queued SETs and ASSIGNs, then the control slots write their parameters (param_store.h); the
 // result is published, then the count of edits it includes (awaitEdits).
-DK_ITCM void stepParams(const uint8_t (&tog)[dkboard::kToggles]) {
+DK_ITCM void stepParams(const uint8_t (&tog)[dkboard::kToggles], float pedal) {
     float knobs[dkparam::kKnobSlots];
     for (int s = 0; s < dkparam::kKnobSlots; ++s) knobs[s] = hw.Knob(dkparam::kFirstSlotKnob + s);
     dkparam::Edit e;
     while (gEdits.Pop(e)) {
-        gStore.Apply(e, knobs);
+        gStore.Apply(e, knobs, pedal);
         ++gEditsTaken;
     }
-    gStore.Update(knobs, tog);
+    gStore.Update(knobs, tog, pedal);
     publishParams();
     gEditsDone.store(gEditsTaken, std::memory_order_release);
 }
@@ -681,8 +697,9 @@ DK_ITCM void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffe
     gLoad.OnBlockStart();
     const uint32_t start = System::GetTick();
     uint8_t tog[dkboard::kToggles];
-    readControls(tog);
-    stepParams(tog);
+    float pedal;
+    readControls(tog, pedal);
+    stepParams(tog, pedal);
     stepSwap();
     stepLoop();
     const bool parked = gSwap == Swap::kParked;  // the main loop owns the engine, the IR and the morph weights
@@ -894,6 +911,7 @@ bool saveSettings(uint32_t& ms) {
     for (int c = 0; c < dkparam::kControlSlots; ++c) s.assign[c] = gAssignPub[c].load(std::memory_order_relaxed);
     for (int i = 0; i < dkparam::kParamCount; ++i) s.value[i] = gParamPub[i].load(std::memory_order_relaxed);
     s.exp_channel = gExpChannel;
+    s.midi_in_channel = gMidiInChannel;
     uint8_t buf[dkparam::kSettingsBytes];
     dkparam::BuildSettings(buf, gSettingsSeq + 1, s);
     uint32_t seq = 0;
@@ -1025,11 +1043,11 @@ void awaitEdits() {
     }
 }
 
-// On EXP CHANNEL's channel (any with omni): CC 11 sets EXP's position, applied by the next block (param_store.h); CC
+// On the port's channel (any with omni): CC 11 sets EXP's position, applied by the next block (param_store.h); CC
 // 102 switches to slot value + 1 through servePresets, as FS2 does. A preset CC past the slots, or naming a slot that
 // is not ok, is logged and ignored.
-void onControlChange(const dkmidi::Cc& c) {
-    if (!dkmidi::ChannelMatches(gExpChannel, c.channel)) return;
+void takeControlChange(const dkmidi::Cc& c, uint8_t channel) {
+    if (!dkmidi::ChannelMatches(channel, c.channel)) return;
     if (c.number == dkmidi::kExpressionCc) {
         gExpCc = c.value;
         pushEdit({dkparam::EditKind::kExpression, 0, 0, float(c.value) / 127.0f});
@@ -1043,6 +1061,11 @@ void onControlChange(const dkmidi::Cc& c) {
             retarget(c.value);
     }
 }
+
+// The Seed's USB MIDI port, on EXP CHANNEL's channel.
+void onUsbControlChange(const dkmidi::Cc& c) { takeControlChange(c, gExpChannel); }
+// A BurningBungalow's MIDI IN jack, on MIDI IN CHANNEL's channel.
+void onMidiInControlChange(const dkmidi::Cc& c) { takeControlChange(c, gMidiInChannel); }
 
 // UPLOAD COMMIT: validates the staged image, writes its slot, and reloads or retargets playback.
 void commitUpload(uint8_t cmd, const uint8_t*, size_t n) {
@@ -1297,10 +1320,11 @@ void setParam(uint8_t cmd, const uint8_t* p, size_t n) {
     result(cmd, Result::kOk, dkparam::ToCode(d, v));
 }
 
-// ASSIGN: puts a parameter (or none) on a control slot, applied by the next block.
+// ASSIGN: puts a parameter (or none) on a control slot, applied by the next block. PEDAL only on a board with the
+// jack.
 void assignControl(uint8_t cmd, const uint8_t* p, size_t n) {
     using dklink::Result;
-    if (n != 2 || !dkparam::Accepts(p[0], p[1])) {
+    if (n != 2 || !dkparam::Accepts(p[0], p[1]) || (!dkboard::kHasPedal && p[0] == dkparam::kPedalSlot)) {
         result(cmd, Result::kBadRequest, 0);
         return;
     }
@@ -1395,6 +1419,15 @@ bool onCommand(uint8_t cmd, const uint8_t* p, size_t n) {
             logExpChannel();
             result(cmd, Result::kOk, 0);
             return true;
+        case dklink::kMidiInChannel:
+            if (!dkboard::kHasMidiIn || n != 1 || p[0] > dkmidi::kChannels) {
+                result(cmd, Result::kBadRequest, 0);
+                return true;
+            }
+            gMidiInChannel = p[0];
+            logMidiInChannel();
+            result(cmd, Result::kOk, 0);
+            return true;
         default: return false;
     }
 }
@@ -1409,6 +1442,7 @@ dklink::ValuesFrame valuesFrame() {
     for (int c = 0; c < dkparam::kControlSlots; ++c) v.assign[c] = gAssignPub[c].load(std::memory_order_relaxed);
     v.held = gHeldPub.load(std::memory_order_relaxed);
     v.exp_channel = gExpChannel;
+    v.midi_in_channel = gMidiInChannel;
     for (int i = 0; i < dkparam::kParamCount; ++i)
         v.code[i] = dkparam::ToCode(dkparam::kParams[i], gParamPub[i].load(std::memory_order_relaxed));
     return v;
@@ -1462,6 +1496,9 @@ void serveReplies(uint32_t now) {
         s.gate_level = tenthsBelow(gGateLevel.load(std::memory_order_relaxed));
         s.gate_cut = tenthsBelow(gGateGain.load(std::memory_order_relaxed));
         s.comp_cut = tenthsBelow(gCompGain.load(std::memory_order_relaxed));
+        s.pedal = dkboard::kHasPedal ? uint16_t(std::clamp(lroundf(gPedal.load(std::memory_order_relaxed) * 1000.0f),
+                                                           0L, 1000L))
+                                     : 0;
         if (tx.AppendStatus(s)) {
             gWatchAt = now;
             gMeterReset.store(true, std::memory_order_relaxed);
@@ -1480,6 +1517,7 @@ int main() {
 
     // The Identity Reply's flags tell hosts which morph this image plays.
     dkusb::Init(hw.seed, DK_MORPH_XFADE ? 0 : dklink::kIdentityWeightMorph);
+    if constexpr (dkboard::kHasMidiIn) dkmidiin::Init();
 #if DK_MORPH_XFADE
     gEngine.Bind(gNearA, gFarA, kFarRings);
     gEngineB.Bind(gNearB, gFarB, kFarRings);
@@ -1509,11 +1547,14 @@ int main() {
     takeNextPreset();
     gSettingsIndex = dkparam::NewestSettings(mapped(dkparam::kSettingsOffset[0]), mapped(dkparam::kSettingsOffset[1]),
                                              gSettingsSeq);
-    const dkparam::Settings settings =
+    dkparam::Settings settings =
         gSettingsIndex < 0 ? dkparam::FactorySettings()
                            : dkparam::DecodeSettings(mapped(dkparam::kSettingsOffset[gSettingsIndex]));
+    // A HotHouse has no PEDAL: a saved assignment (from a BurningBungalow's record) is ignored.
+    if (!dkboard::kHasPedal) settings.assign[dkparam::kPedalSlot] = dkparam::kNoParam;
     gStore.Init(settings);
     gExpChannel = settings.exp_channel;
+    gMidiInChannel = settings.midi_in_channel;
     publishParams();
     logBoot();
 
@@ -1546,7 +1587,8 @@ int main() {
     for (;;) {
         serveReplies(System::GetNow());
         // Slot commands block for their flash writes: the time is read after them.
-        dkusb::Serve(logBoot, onCommand, onControlChange);
+        dkusb::Serve(logBoot, onCommand, onUsbControlChange);
+        if constexpr (dkboard::kHasMidiIn) dkmidiin::Serve(onMidiInControlChange);
         // FIRMWARE COMMIT's RESULT went out with this Serve (serveReplies appended it): the pending state record
         // first, then the restart into the new image.
         if (gRestartDue && !gResultDue) {

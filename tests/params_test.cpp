@@ -50,7 +50,10 @@ TEST(Accepts, SwitchesTakeChoicesOnly) {
     EXPECT_TRUE(Accepts(7, kNoParam));
     EXPECT_TRUE(Accepts(7, kBell1Gain));
     EXPECT_TRUE(Accepts(7, kLowCutSlope));
-    EXPECT_FALSE(Accepts(8, kNoParam));
+    EXPECT_TRUE(Accepts(8, kNoParam));
+    EXPECT_TRUE(Accepts(8, kBell1Gain));
+    EXPECT_TRUE(Accepts(8, kLowCutSlope));
+    EXPECT_FALSE(Accepts(9, kNoParam));
     EXPECT_FALSE(Accepts(-1, kNoParam));
     EXPECT_FALSE(Accepts(0, kParamCount));
 }

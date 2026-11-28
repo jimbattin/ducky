@@ -1,5 +1,5 @@
 # Ducky
-Ducky is a NAM (Neural Amp Modeler) player for the DaisySeed, hosted in a HotHouse pedal platform.
+Ducky is a NAM (Neural Amp Modeler) player for the DaisySeed, hosted in a HotHouse pedal platform or a BurningBungalow (a HotHouse fork with an expression pedal jack and a TRS MIDI IN; `../BurningBungalow/`), chosen at build time (`BOARD=`).
 
 It supports 8 presets. Each preset contains a NAM Model (A2-lite only), an optional IR block, a noise gate (off by default) and an optional morph target (another preset). Presets do not track Input/Output gain, compressor, EQ, loop or morph position settings: those are global.
 
@@ -18,12 +18,12 @@ It supports 8 presets. Each preset contains a NAM Model (A2-lite only), an optio
 Every command runs from the repo root. A new machine or a new Seed: `docs/FIRMWARE.md` "Getting started". Flashing, the log, the bench and the converters: `docs/FIRMWARE.md` "Commands"
 - `make test`: host GoogleTest, and the `docs/MIDI.md` staleness check
 - `make -C editor test check`: editor and converter tests, tsc, Biome
-- `make -C daisy -j`: the firmware (`APP=weight`, `APP=bench` and `APP=latency` build the other images)
+- `make -C daisy -j`: the firmware (`APP=weight`, `APP=bench` and `APP=latency` build the other images; `BOARD=burningbungalow` builds them for a BurningBungalow)
 - `make -C editor serve|html`: the editor with hot reload, or as one file
 - `tools/flash_when_ready.sh`: unattended DFU flash over USB-MIDI
 - `make -C daisy program-boot`: installs the Daisy bootloader on a new Seed (ROM DFU: hold BOOT, tap RESET)
 - `bun tools/pedal.ts list|info|upload|erase|rename|swap|gate|morph|param|status|firmware`: slot and parameter management, and the firmware update (`firmware FILE.bin`, no `dfu-util`), over USB-MIDI while the pedal plays
-- `DK_USB_PORT=3-4 make firmware-check`: the firmware update checked unattended on the pedal, through `pedal.ts` and the editor in Chrome (it reflashes the pedal; `docs/FIRMWARE.md` "Firmware update")
+- `DK_USB_PORT=3-4 make firmware-check`: the firmware update checked unattended on the pedal, through `pedal.ts` and the editor in Chrome (it reflashes the pedal; `BOARD=burningbungalow` on a BurningBungalow; `docs/FIRMWARE.md` "Firmware update")
 
 ## IO Configuration
 A global loop mode (`loop_mode`, saved in the settings record) picks one of three:
@@ -42,10 +42,10 @@ Morph: a preset with a morph target runs its model and the target preset's model
 
 ## Controls
 - FS1: Mute. LED1 active when not muted; off when muted
-- FS2: Next preset (skips empty slots, wraps). LED2 blinks N times for slot N, repeating after 5 s dark. MIDI CC 102 (value 0-7, on EXP's channel) selects slot 1-8; an empty slot is ignored
+- FS2: Next preset (skips empty slots, wraps). LED2 blinks N times for slot N, repeating after 5 s dark. MIDI CC 102 (value 0-7, on EXP's channel over USB, or MIDI IN's channel on a BurningBungalow's MIDI IN jack) selects slot 1-8; an empty slot is ignored
 - Knob 1: Input Gain trim, relative (Noon is the model's input calibration from `input_level_dbu`, ±12 dB). Fixed
 - Knob 2: Output Volume (Noon is unity). Fixed
-- Knobs 3-6, SW1-SW3 and EXP (an expression pedal: MIDI CC 11 on the Seed's USB MIDI port) are assignable: each drives one parameter of the table (`daisy/src/params.h`) or none. A switch takes only choice parameters. The factory layout (`kFactoryAssign`), the pickup rule and the parameters: `docs/MIDI.md` "Controls", "Parameters"
+- Knobs 3-6, SW1-SW3, EXP (an expression pedal: MIDI CC 11 on the Seed's USB MIDI port, or a BurningBungalow's MIDI IN jack) and, on a BurningBungalow, PEDAL (its expression pedal jack, factory none) are assignable: each drives one parameter of the table (`daisy/src/params.h`) or none. A switch takes only choice parameters. The factory layout (`kFactoryAssign`), the pickup rule and the parameters: `docs/MIDI.md` "Controls", "Parameters"
 - A parameter on a control is "What you see is what you get" on the pedal; the editor can set one, and it holds until its control moves
 - The assignments and the values are global, and kept across power cycles by an explicit save (the settings record)
 

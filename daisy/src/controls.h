@@ -1,7 +1,8 @@
-// Toggle hysteresis and LED2's blink pattern. Host-portable (no libDaisy, no allocation), covered by
-// tests/controls_test.cpp. Toggle positions (board.h): 0 down, 1 middle, 2 up.
+// Toggle hysteresis, LED2's blink pattern and the expression jack's scaling. Host-portable (no libDaisy, no
+// allocation), covered by tests/controls_test.cpp. Toggle positions (board.h): 0 down, 1 middle, 2 up.
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 
 #include "dsp/blocks.h"
@@ -76,5 +77,14 @@ public:
 private:
     int n_ = 0, remaining_ = 0, phase_ = 0;
 };
+
+// The expression jack's reading (0..1) as pedal travel: kPedalHeel and below 0, kPedalToe and above 1, linear between.
+// Room at the toe for a 10K-50K pedal (its ring is fed through 220R) and the Seed's ADC spread; an empty jack reads
+// about 0.04 (no plug detection), about 1 % of travel.
+constexpr float kPedalHeel = 0.03f, kPedalToe = 0.92f;
+DK_ITCM inline float PedalTravel(float raw) {
+    const float x = (raw - kPedalHeel) * (1.0f / (kPedalToe - kPedalHeel));
+    return std::fmin(std::fmax(x, 0.0f), 1.0f);
+}
 
 }  // namespace dkctl

@@ -12,6 +12,7 @@ import {
   fromSeptets,
   fwBeginMsg,
   gateMsg,
+  midiInChannelMsg,
   morphMsg,
   pack7,
   parseMessage,
@@ -107,6 +108,8 @@ test("STATUS parses", () => {
     0x75,
     0x00,
     0x25,
+    0x05,
+    0x00,
     0xf7,
   );
   expect(parseMessage(m)).toEqual({
@@ -123,6 +126,7 @@ test("STATUS parses", () => {
     gateLevelDb: -63.2,
     gateCutDb: 24.5,
     compCutDb: 3.7,
+    pedal: 640,
   });
 });
 
@@ -248,23 +252,26 @@ test("VALUES parses", () => {
     1, 0, 8192, 1, 8192, 16383, 0, 8192, 8192, 0, 8192, 8192, 0, 16383, 8192, 1, 0, 12287, 1, 16383, 0, 8192, 8192, 0,
     0,
   ];
-  const p = [...Array<number>(8).fill(0x7f), 0x01, 0x05, 0x03, 0x19, ...codes.flatMap((c) => [c >> 7, c & 0x7f])];
+  const p = [...Array<number>(9).fill(0x7f), 0x02, 0x05, 0x03, 0x07, 0x19, ...codes.flatMap((c) => [c >> 7, c & 0x7f])];
   expect(parseMessage(pedalMsg(CMD.values, p))).toEqual({
     type: "values",
-    assign: Array(8).fill(null),
-    held: [true, false, true, false, false, false, false, true],
+    assign: Array(9).fill(null),
+    held: [true, false, true, false, false, false, false, false, true],
     expChannel: 3,
+    midiInChannel: 7,
     codes,
   });
   expect(parseMessage(pedalMsg(CMD.values, p.slice(0, -1)))).toBeNull();
   const some = [...p];
   some[3] = 0x04;
   expect(parseMessage(pedalMsg(CMD.values, some))).toMatchObject({
-    assign: [null, null, null, 4, null, null, null, null],
+    assign: [null, null, null, 4, null, null, null, null, null],
   });
-  const badChannel = [...p];
-  badChannel[10] = 17;
-  expect(parseMessage(pedalMsg(CMD.values, badChannel))).toBeNull();
+  for (const at of [11, 12]) {
+    const badChannel = [...p];
+    badChannel[at] = 17;
+    expect(parseMessage(pedalMsg(CMD.values, badChannel))).toBeNull();
+  }
 });
 
 test("setMsg and assignMsg frames", () => {
@@ -272,6 +279,7 @@ test("setMsg and assignMsg frames", () => {
   expect([...assignMsg(4, 6)]).toEqual([0xf0, 0x7d, 0x64, 0x01, 0x10, 0x04, 0x06, 0xf7]);
   expect([...assignMsg(0, null)]).toEqual([0xf0, 0x7d, 0x64, 0x01, 0x10, 0x00, 0x7f, 0xf7]);
   expect([...expChannelMsg(5)]).toEqual([0xf0, 0x7d, 0x64, 0x01, 0x1a, 0x05, 0xf7]);
+  expect([...midiInChannelMsg(5)]).toEqual([0xf0, 0x7d, 0x64, 0x01, 0x1e, 0x05, 0xf7]);
 });
 
 test("PARAMS match docs/MIDI.md's Parameters table", () => {

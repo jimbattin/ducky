@@ -17,7 +17,9 @@ Settings Sample() {
     s.assign[1] = kBell2Freq;
     s.assign[6] = kEqEnable;
     s.assign[7] = kMorph;
+    s.assign[8] = kBell1Gain;
     s.exp_channel = 10;
+    s.midi_in_channel = 5;
     s.value[kEqEnable] = 0.0f;
     s.value[kLowCutFreq] = 0.25f;
     s.value[kHighCutFreq] = 0.75f;
@@ -42,6 +44,23 @@ void PutF32(std::vector<uint8_t>& r, size_t off, float v) {
 void Seal(std::vector<uint8_t>& r, size_t n) {
     const size_t body = kSettingsHeader + 4 * n;
     dkbin::PutLe32(r.data() + body, dkbin::Crc32(r.data(), body));
+}
+
+// A version 3 record (before PEDAL) with `slots` control slots (7: before the expression slot, its channel byte 0),
+// built by hand: assign[slots] from byte 12, values from byte 20.
+std::vector<uint8_t> RecordBeforePedal(uint32_t seq, const Settings& s, uint8_t slots) {
+    std::vector<uint8_t> r(kSettingsHeaderBeforePedal + 4 * kParamCount + 4, 0);
+    dkbin::PutLe32(r.data(), kSettingsMagic);
+    dkbin::PutLe32(r.data() + 4, seq);
+    r[8] = kSettingsVersionBeforePedal;
+    r[9] = slots;
+    r[10] = kParamCount;
+    r[11] = slots == kSettingsSlotsBeforeExp ? 0 : s.exp_channel;
+    for (int c = 0; c < slots; ++c) r[12 + c] = s.assign[c];
+    for (int i = 0; i < kParamCount; ++i) PutF32(r, kSettingsHeaderBeforePedal + 4 * i, s.value[i]);
+    const size_t body = kSettingsHeaderBeforePedal + 4 * kParamCount;
+    dkbin::PutLe32(r.data() + body, dkbin::Crc32(r.data(), body));
+    return r;
 }
 
 }  // namespace
@@ -74,41 +93,69 @@ TEST(Settings, RoundTrip) {
     for (int c = 0; c < kControlSlots; ++c) EXPECT_EQ(d.assign[c], s.assign[c]) << c;
     for (int i = 0; i < kParamCount; ++i) EXPECT_EQ(d.value[i], s.value[i]) << i;
     EXPECT_EQ(d.exp_channel, 10);
+    EXPECT_EQ(d.midi_in_channel, 5);
 }
 
-// A record written before the expression slot (7 slots, byte 11 and byte 19 zero) leaves exp at the factory layout's.
-TEST(Settings, SevenSlotRecordLeavesExpAtFactory) {
+// A version 3 record written before the expression slot (7 slots, byte 11 zero) leaves exp and pedal at the factory
+// layout's.
+TEST(Settings, SevenSlotRecordLeavesExpAndPedalAtFactory) {
     const Settings s = Sample();
-    std::vector<uint8_t> r = Record(4, s);
-    r[9] = 7;
-    r[11] = 0;
-    r[19] = 0;
-    Seal(r, kParamCount);
+    const std::vector<uint8_t> r = RecordBeforePedal(4, s, 7);
     uint32_t seq = 0;
     ASSERT_TRUE(SettingsValid(r.data(), seq));
+    EXPECT_EQ(seq, 4u);
     const Settings d = DecodeSettings(r.data());
     for (int c = 0; c < 7; ++c) EXPECT_EQ(d.assign[c], s.assign[c]) << c;
     EXPECT_EQ(d.assign[7], kFactoryAssign[7]);
+    EXPECT_EQ(d.assign[8], kFactoryAssign[8]);
+    for (int i = 0; i < kParamCount; ++i) EXPECT_EQ(d.value[i], s.value[i]) << i;
     EXPECT_EQ(d.exp_channel, 0);
+    EXPECT_EQ(d.midi_in_channel, 0);
+}
+
+// A version 3 record written before PEDAL (8 slots) keeps its slots and expression channel; PEDAL takes the factory
+// layout's, MIDI IN omni.
+TEST(Settings, EightSlotRecordLeavesPedalAtFactory) {
+    const Settings s = Sample();
+    const std::vector<uint8_t> r = RecordBeforePedal(5, s, 8);
+    uint32_t seq = 0;
+    ASSERT_TRUE(SettingsValid(r.data(), seq));
+    const Settings d = DecodeSettings(r.data());
+    for (int c = 0; c < 8; ++c) EXPECT_EQ(d.assign[c], s.assign[c]) << c;
+    EXPECT_EQ(d.assign[8], kFactoryAssign[8]);
+    for (int i = 0; i < kParamCount; ++i) EXPECT_EQ(d.value[i], s.value[i]) << i;
+    EXPECT_EQ(d.exp_channel, 10);
+    EXPECT_EQ(d.midi_in_channel, 0);
 }
 
 TEST(Settings, OtherSlotCountsAreInvalid) {
-    for (uint8_t slots : {6, 9}) {
+    for (uint8_t slots : {6, 7, 8, 10}) {
         std::vector<uint8_t> r = Record(4, Sample());
         r[9] = slots;
         Seal(r, kParamCount);
         uint32_t seq = 0;
         EXPECT_FALSE(SettingsValid(r.data(), seq)) << int(slots);
     }
+    for (uint8_t slots : {6, 9}) {
+        std::vector<uint8_t> r = RecordBeforePedal(4, Sample(), 8);
+        r[9] = slots;
+        const size_t body = kSettingsHeaderBeforePedal + 4 * kParamCount;
+        dkbin::PutLe32(r.data() + body, dkbin::Crc32(r.data(), body));
+        uint32_t seq = 0;
+        EXPECT_FALSE(SettingsValid(r.data(), seq)) << "version 3, " << int(slots);
+    }
 }
 
 TEST(Settings, ChannelPast16DecodesToOmni) {
     std::vector<uint8_t> r = Record(4, Sample());
     r[11] = 17;
+    r[12] = 17;
     Seal(r, kParamCount);
     uint32_t seq = 0;
     ASSERT_TRUE(SettingsValid(r.data(), seq));
-    EXPECT_EQ(DecodeSettings(r.data()).exp_channel, 0);
+    const Settings d = DecodeSettings(r.data());
+    EXPECT_EQ(d.exp_channel, 0);
+    EXPECT_EQ(d.midi_in_channel, 0);
 }
 
 TEST(Settings, FlippedPayloadByteIsInvalid) {
@@ -163,8 +210,8 @@ TEST(Settings, NanValueDecodesToTheDefault) {
 
 TEST(Settings, ContinuousParameterOnASwitchDecodesToNone) {
     std::vector<uint8_t> r = Record(2, Sample());
-    r[12 + 4] = kLowCutFreq;
-    r[12 + 5] = 0x50;  // no such parameter
+    r[13 + 4] = kLowCutFreq;
+    r[13 + 5] = 0x50;  // no such parameter
     Seal(r, kParamCount);
     uint32_t seq = 0;
     ASSERT_TRUE(SettingsValid(r.data(), seq));
