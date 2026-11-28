@@ -38,7 +38,7 @@ Loop pre-model: L INPUT -> Compressor -> Send level -> R Out => [loop pedals] =>
 
 Loop post-model: L INPUT -> Compressor -> Input trim -> [NAM Model] -> level match × gate × Send level -> R Out => [loop pedals] => R In -> Return level -> [IR] -> EQ -> Output volume -> Mute -> L Out
 
-Morph: a preset with a morph target runs its model and the target preset's model and crossfades their outputs (equal power) at the global `morph` parameter's position (0 %: its own model, 100 %: the target's; its own IR and gate throughout). A second image, the weight build (`make -C daisy APP=weight`), runs one model instead, its weights blended into the target's along a straight line or a trained path: `docs/MORPH.md`
+Morph: a preset with a morph target runs its model and the target preset's model and crossfades their outputs (equal power on the square of the position: the target fades in slowly) at the global `morph` parameter's position (0 %: its own model, 100 %: the target's; its own IR and gate throughout). A second image, the weight build (`make -C daisy APP=weight`), runs one model instead, its weights blended into the target's along a straight line or a trained path: `docs/MORPH.md`
 
 ## Controls
 - FS1: Mute. LED1 active when not muted; off when muted

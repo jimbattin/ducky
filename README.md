@@ -78,7 +78,7 @@ A preset can name another preset as its morph target. The global `morph` paramet
 
 ### Crossfade (the default build)
 
-Both models run on every block and the knob mixes their outputs at equal power: `cos(πt/2)` of the preset's model plus `sin(πt/2)` of the target's. It sounds like the two amps side by side at every position and needs no preparation, at the cost of a second engine: about 790 permille of the block period, against 430 for the weight morph.
+Both models run on every block and the knob mixes their outputs at equal power on the square of its position: `cos(πt²/2)` of the preset's model plus `sin(πt²/2)` of the target's, so the target fades in slowly (−20 dB at a quarter of the travel, −8 dB at half). It sounds like the two amps side by side at every position and needs no preparation, at the cost of a second engine: about 790 permille of the block period, against 430 for the weight morph.
 
 ![Crossfade morph: two networks with fixed weights, their outputs mixed as the knob turns](docs/images/morph/xfade_morph.gif)
 

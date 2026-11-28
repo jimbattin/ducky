@@ -9,9 +9,10 @@
 // the loop modes send on R Out and return on R In before the model (pre-model) or between the model and the IR
 // (post-model). With no valid slot the pedal plays dry: no model, IR or gate.
 //
-// Morph: the xfade build runs the preset's model and its morph target's in two engines and crossfades their outputs
-// at equal power (runXfade); the first overrun stops the second engine until the next load (`morph shed`). The weight
-// build runs one engine on the blend of the two models' weights (stepMorph, morph.h).
+// Morph: the xfade build runs the preset's model and its target's in two engines and crossfades their outputs, equal
+// power on the square of the blend position so the target fades in slowly (runXfade); the first overrun stops the
+// second engine until the next load (`morph shed`). The weight build runs one engine on the blend of the two models'
+// weights (stepMorph, morph.h).
 //
 // Two threads share single-writer atomics and the gEdits ring only:
 // - AudioCallback (the audio DMA interrupt, in ITCM): controls, parameter edits (param_store.h), the preset switch,
@@ -646,15 +647,16 @@ DK_ITCM void driveLeds() {
 #if DK_MORPH_XFADE
 DK_DTCM float gMixT = -1.0f, gMixCos = 1.0f, gMixSin = 0.0f;  // the position stepMorph's cosine and sine are of
 
-// Step 6, first: the crossfade's gains. The blend position follows the morph parameter (smoothed every block, so it
-// stays settled); with a morph target each model's gain is its equal-power share of the position (computed when the
-// position moves) times its level match.
+// Step 6, first: the crossfade's gains. The blend position t follows the morph parameter (smoothed every block, so it
+// stays settled); with a morph target the models' gains are cos and sin of (pi/2) t^2 (computed when the position
+// moves) times each one's level match: equal power, the target fading in slowly over the first half of the travel
+// (-20 dB at 25 %, -8 dB at 50 %, -2 dB at 75 %).
 DK_ITCM void stepMorph(float value, bool parked) {
     const float t = dkmorph::BlendPosition(gMorphKnob.Process(value));
     if (parked || !gMorphOn) return;
     if (t != gMixT) {
         constexpr float kHalfPi = 1.57079633f;
-        const float angle = kHalfPi * t;
+        const float angle = kHalfPi * t * t;
         gMixCos = cosf(angle);
         gMixSin = sinf(angle);
         gMixT = t;

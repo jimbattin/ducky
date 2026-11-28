@@ -22,7 +22,8 @@ is the unaligned one (the block's identity transform), which is what the analysi
 different amps and what a trained path uses.
 
 The crossfade ("On the pedal: both models at once"): two networks whose weights stay put, each one's
-level-matched output of a plucked note at its own input calibration, the equal-power gains, and their mix.
+level-matched output of a plucked note at its own input calibration, the equal-power gains on t² (the pedal's
+daisy/src/ducky.cpp stepMorph: the target fades in slowly), and their mix.
 """
 import argparse
 import math
@@ -284,7 +285,7 @@ def crossfade(a, b):
     span = 1.08 * max(np.abs(ya).max(), np.abs(yb).max())
     peak = max(np.abs(a.weights).max(), np.abs(b.weights).max())
 
-    stage = Stage('Crossfade morph', 'both networks run, their weights fixed; the knob mixes their outputs at equal power',
+    stage = Stage('Crossfade morph', 'both networks run, their weights fixed; the knob mixes their outputs at equal power on t²',
                   a, b, knots, labels)
     fig = stage.fig
 
@@ -310,7 +311,7 @@ def crossfade(a, b):
         lines.append(wave([x, 0.44, 0.325, 0.15], y, colour, True))
 
     travel = np.linspace(0, 1, 501)
-    angles = np.array([blend_position(v) for v in travel]) * math.pi / 2
+    angles = np.array([blend_position(v) ** 2 for v in travel]) * math.pi / 2
     gx, cursor = stage.travel_axes([0.30, 0.10, 0.27, 0.25], knots, labels)
     gx.plot(travel, np.cos(angles), color=COOL, lw=1.6)
     gx.plot(travel, np.sin(angles), color=WARM, lw=1.6)
@@ -326,10 +327,10 @@ def crossfade(a, b):
 
     def draw(v):
         t = blend_position(v)
-        gains = math.cos(t * math.pi / 2), math.sin(t * math.pi / 2)
+        gains = math.cos(t * t * math.pi / 2), math.sin(t * t * math.pi / 2)
         stage.readout.set_text(f'blend position t = {t:.3f}\n'
-                               f'gain A = cos(πt/2) = {gains[0]:.3f}\n'
-                               f'gain B = sin(πt/2) = {gains[1]:.3f}\n'
+                               f'gain A = cos(πt²/2) = {gains[0]:.3f}\n'
+                               f'gain B = sin(πt²/2) = {gains[1]:.3f}\n'
                                f'out = gain A·A + gain B·B\n'
                                f'both engines always run')
         for line, caption, gain, (_, _, y, _, label) in zip(lines, captions, gains, columns):
